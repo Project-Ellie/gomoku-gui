@@ -659,6 +659,92 @@ mod tests {
         game
     }
 
+    /// A file of our own, so that the tests do not touch the user's files.
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("gomoku-test-{name}-{}.json", std::process::id()))
+    }
+
+    fn remove(path: &Path) {
+        assert!(
+            std::fs::remove_file(path).is_ok(),
+            "the test file {} is removed",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn saving_clears_the_change_mark() {
+        let path = scratch("saving");
+        let settings = Settings::default();
+        let mut session = Session::new(&settings);
+        session.place_now(gomoku_core::point(7, 7).expect("inside"));
+        assert!(session.changed(), "a new move is a change to save");
+        session.save_to(&path);
+        assert!(!session.changed(), "the game is in a file now");
+        assert_eq!(session.path.as_deref(), Some(path.as_path()));
+        assert!(path.exists(), "the file is written");
+        session.place_now(gomoku_core::point(8, 8).expect("inside"));
+        assert!(session.changed(), "and the next move changes it again");
+        remove(&path);
+    }
+
+    #[test]
+    fn a_saved_game_opens_exactly_as_it_was_saved() {
+        let path = scratch("round-trip");
+        let settings = Settings::default();
+        let mut writer = Session::new(&settings);
+        writer.game = game();
+        writer.save_to(&path);
+
+        let mut reader = Session::new(&settings);
+        reader.open(&path);
+        assert_eq!(reader.game.len(), 9, "every move came back");
+        assert_eq!(
+            reader.game.stones().collect::<Vec<_>>(),
+            writer.game.stones().collect::<Vec<_>>(),
+            "in the same places, with the same colours"
+        );
+        assert!(!reader.changed(), "an opened game is not a change to save");
+        remove(&path);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_game_is_reported() {
+        let path = scratch("rubbish");
+        assert!(std::fs::write(&path, b"this is not a game").is_ok());
+        let settings = Settings::default();
+        let mut session = Session::new(&settings);
+        session.place_now(gomoku_core::point(7, 7).expect("inside"));
+        session.open(&path);
+        match session.dialog {
+            Some(Dialog::Message { ref title, .. }) => {
+                assert_eq!(title, "The game could not be opened");
+            }
+            ref other => panic!("expected a message dialog, got {other:?}"),
+        }
+        assert_eq!(session.game.len(), 1, "the game in hand is untouched");
+        assert!(session.path.is_none(), "and it still has no name");
+        remove(&path);
+    }
+
+    #[test]
+    fn looking_back_does_not_change_the_game() {
+        let settings = Settings::default();
+        let mut session = Session::new(&settings);
+        session.place_now(gomoku_core::point(7, 7).expect("inside"));
+        session.save_to(&scratch("looking"));
+        assert!(!session.changed());
+        session.rewind();
+        assert!(!session.changed(), "a view is not a change");
+        session.seek(0);
+        assert!(!session.changed());
+        session.forward();
+        assert!(!session.changed());
+        session.undo();
+        assert!(session.changed(), "but taking a move back is one");
+        remove(&scratch("looking"));
+    }
+
     #[test]
     fn the_winning_line_is_found_across_the_board() {
         let mut game = Game::new();

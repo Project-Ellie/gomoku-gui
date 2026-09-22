@@ -553,13 +553,14 @@ impl ApplicationHandler for App {
                 self.dirty = true;
             }
         }
-        // The interface claims the pointer only while it is dragging something,
-        // such as the divider of the side panel. Everywhere else the board is
+        // The interface takes the pointer while it is dragging something, such as
+        // the divider of the side panel. It also reports that the pointer is over
+        // it everywhere else in the window, which must not stop play: the board is
         // drawn outside egui, so the application decides who a click belongs to.
         let wants_pointer = self
             .state
             .as_ref()
-            .map(|state| state.egui.egui_wants_pointer_input())
+            .map(|state| state.egui.egui_is_using_pointer())
             .unwrap_or(false)
             || !self.session.on_board();
         let wants_keyboard = self

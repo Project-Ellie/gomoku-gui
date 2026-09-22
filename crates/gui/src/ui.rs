@@ -495,3 +495,115 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
         session.dialog = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Run the interface over a window of a fixed size, with a pointer in a
+    /// given place, and report what it drew and what it claimed.
+    fn run(session: &mut Session, pointer: egui::Pos2) -> (Requests, Claim) {
+        let context = egui::Context::default();
+        let mut requests = Requests::default();
+        let mut claim = Claim::default();
+        // The application records the pointer as the cursor moves; a test must
+        // do the same, or the board hit test sees no pointer.
+        session.pointer = [pointer.x, pointer.y];
+        // Two passes: egui decides who owns the pointer from the pass before.
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 900.0),
+                )),
+                events: vec![egui::Event::PointerMoved(pointer)],
+                ..Default::default()
+            };
+            let mut output = context.run_ui(input, |ui| {
+                requests = draw(ui, session);
+            });
+            // Nothing renders in a test, so the atlas is thrown away on purpose.
+            output.textures_delta.clear();
+            claim = Claim {
+                over_egui: context.egui_wants_pointer_input(),
+                using: context.egui_is_using_pointer(),
+            };
+        }
+        (requests, claim)
+    }
+
+    /// What the interface says about the pointer, in the two ways it can say it.
+    #[derive(Debug, Default)]
+    struct Claim {
+        /// The pointer is over the interface, or the interface is dragging.
+        over_egui: bool,
+        /// The interface is dragging something right now.
+        using: bool,
+    }
+
+    /// The application blocks the pointer when the interface is dragging, or when
+    /// the pointer is not over the board. Testing both halves here means that a
+    /// change to either one cannot quietly make the board unclickable.
+    fn pointer_blocked(session: &Session, claim: &Claim) -> bool {
+        claim.using || !session.on_board()
+    }
+
+    #[test]
+    fn a_click_on_the_board_reaches_the_game() {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let (_, claim) = run(&mut session, egui::pos2(400.0, 400.0));
+        assert!(
+            session.on_board(),
+            "the application must know the pointer is over the board: {:?}",
+            session.viewport_points
+        );
+        assert!(
+            !pointer_blocked(&session, &claim),
+            "the click must reach the game: {claim:?}"
+        );
+        assert!(
+            claim.over_egui,
+            "the interface reports the pointer as its own over the whole window, \
+             which is why the application uses the narrower test"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_panel_does_not() {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let (_, claim) = run(&mut session, egui::pos2(1150.0, 450.0));
+        assert!(!session.on_board(), "the side panel is not the board");
+        assert!(
+            pointer_blocked(&session, &claim),
+            "a click on the panel is the interface's"
+        );
+    }
+
+    #[test]
+    fn every_dialog_draws() {
+        let point = gomoku_core::point(7, 7).expect("inside the board");
+        let dialogs = [
+            Dialog::Truncate { count: 3, point },
+            Dialog::Unsaved { then: After::Quit },
+            Dialog::Resume {
+                source: Some(PathBuf::from("/tmp/game.json")),
+            },
+            Dialog::Resume { source: None },
+            Dialog::Message {
+                title: "The game could not be opened".to_string(),
+                body: "the record has no marker".to_string(),
+            },
+        ];
+        for dialog in dialogs {
+            let mut session = Session::new(&gomoku_core::Settings::default());
+            session.dialog = Some(dialog);
+            // The interface must draw it without complaint, over the board.
+            let (_, claim) = run(&mut session, egui::pos2(600.0, 450.0));
+            assert!(
+                claim.over_egui,
+                "a dialog takes the pointer while it is open"
+            );
+        }
+    }
+}
