@@ -123,6 +123,7 @@ pub struct Record {
     #[serde(default)]
     pub players: Players,
     /// When the game started, in UTC.
+    #[serde(with = "time::serde::rfc3339")]
     pub created: OffsetDateTime,
     /// The result of the game.
     pub result: StoredOutcome,
@@ -255,6 +256,10 @@ mod tests {
     fn a_record_round_trips_through_json() {
         let original = record();
         let text = original.to_json().expect("the record encodes");
+        assert!(
+            text.contains("\"created\": \"2026-09-22T18:04:11Z\""),
+            "the created field must be RFC 3339 in UTC, got:\n{text}"
+        );
         let parsed = Record::from_json(&text).expect("the text parses");
         assert_eq!(parsed, original);
 
