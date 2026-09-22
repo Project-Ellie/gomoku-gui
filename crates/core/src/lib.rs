@@ -9,6 +9,7 @@ mod error;
 mod game;
 mod notation;
 mod record;
+mod storage;
 
 pub use error::{ConfigError, GameError, RecordError};
 pub use game::{Game, MetaData, Outcome, WinMethod};
@@ -17,3 +18,4 @@ pub use record::{
     BOARD_SIZE, FORMAT_MARKER, FORMAT_VERSION, Players, Record, StoredColor, StoredMethod,
     StoredOutcome,
 };
+pub use storage::{load, save, write_atomic};
