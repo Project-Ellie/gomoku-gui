@@ -223,8 +223,13 @@ impl Session {
             .into_iter()
             .flatten()
         {
-            if let Err(error) = std::fs::remove_file(&path) {
-                log::warn!("the autosave {} was left behind: {error}", path.display());
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                // There is usually nothing to throw away, which is not a problem.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    log::warn!("the autosave {} was left behind: {error}", path.display())
+                }
             }
         }
         self.notice = Some("the autosave was discarded".to_string());
