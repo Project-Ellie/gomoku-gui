@@ -12,7 +12,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use crate::audio::{self, Voicing};
+use crate::audio;
 
 /// The rate the files are written at.
 const RATE: u32 = 48_000;
@@ -227,52 +227,64 @@ pub fn audition(directory: &Path) -> Result<()> {
     std::fs::create_dir_all(directory)
         .with_context(|| format!("cannot create {}", directory.display()))?;
 
-    // Each sound, with the group it belongs to and what it is for.
-    let mut wanted: Vec<(&str, &str, String, Voicing)> = vec![
+    // Every sound to render, with the group it belongs to. The mixes of the sound
+    // that was chosen come first, because that is what is being decided.
+    let mut wanted: Vec<(&str, audio::Candidate)> = vec![
         (
             "The sound the game makes now",
-            "0-the-sound-now",
-            "Four ringing modes, which sound hollow.".to_string(),
-            *audio::IN_USE,
+            audio::Candidate::single(
+                "0-the-sound-now".to_string(),
+                "Four ringing modes, which sound hollow.".to_string(),
+                *audio::IN_USE,
+            ),
         ),
         (
             "Number 13, which you picked",
-            "13-wood",
-            audio::intent_of(&audio::chosen()),
-            audio::chosen(),
+            audio::Candidate::single(
+                "13-wood".to_string(),
+                audio::intent_of(&audio::chosen()),
+                audio::chosen(),
+            ),
         ),
         (
             "Number 3, its parent",
-            "3-deep-board",
-            "A thick board: lower, and a little longer.".to_string(),
-            audio::DEEP_BOARD,
+            audio::Candidate::single(
+                "3-deep-board".to_string(),
+                "A thick board: lower, and a little longer.".to_string(),
+                audio::DEEP_BOARD,
+            ),
         ),
     ];
-    for candidate in audio::candidates() {
+    for candidate in audio::mixes() {
         wanted.push((
-            "Earlier rounds, for reference",
-            Box::leak(candidate.name.into_boxed_str()),
-            candidate.intent,
-            candidate.voicing,
+            "The quiet sound of 27, mixed with the ringing stone",
+            candidate,
         ));
     }
     for candidate in audio::quieter() {
-        wanted.push((
-            "Quieter than 13",
-            Box::leak(candidate.name.into_boxed_str()),
-            candidate.intent,
-            candidate.voicing,
-        ));
+        wanted.push(("Quieter than 13", candidate));
+    }
+    for candidate in audio::candidates() {
+        wanted.push(("Earlier rounds, for reference", candidate));
     }
 
     let mut sounds = Vec::new();
-    for (group, name, intent, voicing) in wanted {
-        let samples = audio::render_click(RATE, 7, false, &voicing);
-        write_wav(&directory.join(format!("{name}.wav")), &samples, RATE)?;
+    for (group, candidate) in wanted {
+        // One voicing takes the simple path; the two are the same sound, which a
+        // test in the audio module holds.
+        let samples = match candidate.parts.as_slice() {
+            [(_, voicing)] => audio::render_click(RATE, 7, false, voicing),
+            parts => audio::render_mix(RATE, 7, false, parts),
+        };
+        write_wav(
+            &directory.join(format!("{}.wav", candidate.name)),
+            &samples,
+            RATE,
+        )?;
         sounds.push(Sound {
             group: group.to_string(),
-            name: name.to_string(),
-            intent,
+            name: candidate.name,
+            intent: candidate.intent,
             analysis: analyse(&samples, RATE),
         });
     }
