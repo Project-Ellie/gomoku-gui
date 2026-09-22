@@ -1,0 +1,11 @@
+/target
+
+# macOS
+.DS_Store
+
+# proptest failure persistence
+proptest-regressions/
+*.proptest-regressions
+
+# local screenshots from visual verification
+/artifacts
