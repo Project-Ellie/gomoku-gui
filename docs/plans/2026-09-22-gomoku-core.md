@@ -2484,6 +2484,10 @@ with:
     Io { path: PathBuf, source: std::io::Error },
 ```
 
+The quoted `Display` message in the same section does not match the code. Replace
+`This version of Gomoku can open version 1.` with
+`This version of Gomoku opens version 1.`
+
 - [ ] **Step 3: Remove the test row**
 
 The numbered check table lives in `docs/architecture/02_CORE_LOGIC.md` only, and
@@ -2494,6 +2498,21 @@ In `docs/architecture/07_TESTING.md`, in the malformed input table, delete the r
 
 ```
 | `result: won` in the middle of the list | `PrematureResult` |
+```
+
+That deletion removes the table's only correct description of the `IllegalMove`
+path, and the row above it is wrong. An occupied point is caught by the repeated
+point check and returns `RepeatedPoint`. `IllegalMove` is for a move that the
+engine rejects after the game has ended. Replace:
+
+```
+| A move onto an occupied point | `IllegalMove` with the index |
+```
+
+with:
+
+```
+| A move after the game ended | `IllegalMove` with the index |
 ```
 
 - [ ] **Step 4: Correct the error strategy record**
@@ -2514,6 +2533,20 @@ with:
   also implements `PartialEq` and `Eq`, so tests compare it directly.
   `RecordError` and `ConfigError` carry an `std::io::Error` source, which is
   not comparable, so their tests match on the variant with `matches!`.
+```
+
+The same record still contradicts that decision further down. Replace:
+
+```
+- A test can assert `Err(RecordError::UnsupportedVersion(2))` instead of a string
+  match.
+```
+
+with:
+
+```
+- A test can match the variant with `matches!`, for example
+  `Err(RecordError::UnsupportedVersion(2))`, instead of a string match.
 ```
 
 - [ ] **Step 5: Update the status in the README**
@@ -2540,7 +2573,7 @@ schema. The graphical crate is not started.
 - Implementation plan for the core crate: [docs/plans/2026-09-22-gomoku-core.md](docs/plans/2026-09-22-gomoku-core.md)
 ```
 
-And in the same file, replace:
+And in the same file, add the plan directory to the documentation table. Replace:
 
 ```
 | [docs/specs/](docs/specs/) | The approved design, requirements, and build order |
@@ -2551,6 +2584,25 @@ with:
 ```
 | [docs/specs/](docs/specs/) | The approved design, requirements, and build order |
 | [docs/plans/](docs/plans/) | Implementation plans |
+```
+
+Finally, the `Build and run` section offers a command that cannot work yet, because
+the graphical crate does not exist. Replace:
+
+```bash
+cargo build
+cargo run --release -p gomoku-gui
+```
+
+with:
+
+```bash
+# Build the workspace
+cargo build
+
+# Run the application. This works when the graphical crate lands, which the
+# Status section describes as not started.
+cargo run --release -p gomoku-gui
 ```
 
 - [ ] **Step 6: Verify the documentation claims against the code**
