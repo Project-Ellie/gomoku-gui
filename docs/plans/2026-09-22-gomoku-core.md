@@ -1629,7 +1629,21 @@ Run: `cargo test -p gomoku-core`
 Expected: 15 new tests pass in `record::tests`, and the 21 earlier unit tests still
 pass.
 
-If the timestamp in the JSON is not the form the plan expects, that is acceptable: RFC 3339 allows both `Z` and `+00:00`. Do not change the code for it. Record what the encoder produced in your report file, because Task 5 freezes it in the golden file.
+The `created` field must be RFC 3339 text, for example `2026-09-22T18:04:11Z`.
+The `time` crate does not write that by default, not even with the
+`serde-human-readable` feature: it writes its own space-separated form,
+`2026-09-22 18:04:11.0 +00:00:00`. That contradicts
+`docs/architecture/03_PERSISTENCE.md`. Add the attribute to the field:
+
+```rust
+    /// When the game started, in UTC.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created: OffsetDateTime,
+```
+
+`time::serde::rfc3339` needs no extra feature, because `serde-human-readable`
+already turns on `formatting` and `parsing`. Reading accepts RFC 3339 as well, so
+the round trip holds.
 
 - [ ] **Step 6: Run the gates**
 
