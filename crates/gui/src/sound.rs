@@ -35,13 +35,16 @@ pub struct Analysis {
     pub rms: f32,
     /// Where the energy sits on average, in Hz. Higher is brighter.
     pub centroid: f32,
+    /// How far the energy is spread around the centroid, in Hz. A single tone is
+    /// narrow; a material that beats with itself is wide.
+    pub width: f32,
     /// The share of the energy below 500 Hz.
     pub low: f32,
     /// The share between 500 Hz and 2 kHz.
     pub mid: f32,
     /// The share above 2 kHz.
     pub high: f32,
-    /// The time from the peak until the level is 40 dB down, in milliseconds.
+    /// The time from the peak until the level is 20 dB down, in milliseconds.
     pub decay_ms: f32,
 }
 
@@ -64,9 +67,11 @@ pub fn analyse(samples: &[f32], rate: u32) -> Analysis {
     let mut low = 0.0_f32;
     let mut mid = 0.0_f32;
     let mut high = 0.0_f32;
-    for step in 0..BANDS {
+    let mut energies = [0.0_f32; BANDS];
+    for (step, stored) in energies.iter_mut().enumerate() {
         let frequency = BAND_START + step as f32 * BAND_WIDTH;
         let energy = goertzel(&samples[..window], rate, frequency);
+        *stored = energy;
         total += energy;
         weighted += energy * frequency;
         if frequency < 500.0 {
@@ -78,11 +83,26 @@ pub fn analyse(samples: &[f32], rate: u32) -> Analysis {
         }
     }
     let share = |part: f32| if total > 0.0 { part / total } else { 0.0 };
+    let centroid = if total > 0.0 { weighted / total } else { 0.0 };
+    let variance = if total > 0.0 {
+        energies
+            .iter()
+            .enumerate()
+            .map(|(step, energy)| {
+                let distance = BAND_START + step as f32 * BAND_WIDTH - centroid;
+                energy * distance * distance
+            })
+            .sum::<f32>()
+            / total
+    } else {
+        0.0
+    };
 
     Analysis {
         peak,
         rms,
-        centroid: if total > 0.0 { weighted / total } else { 0.0 },
+        centroid,
+        width: variance.sqrt(),
         low: share(low),
         mid: share(mid),
         high: share(high),
@@ -103,7 +123,11 @@ fn goertzel(samples: &[f32], rate: u32, frequency: f32) -> f32 {
     (previous * previous + before * before - coefficient * previous * before).max(0.0)
 }
 
-/// The time from the peak until the level is 40 dB down, in milliseconds.
+/// The time from the peak until the level is 20 dB down, in milliseconds.
+///
+/// Twenty decibels rather than forty, because forty is past the end of a knock:
+/// a body that decays over 35 ms needs 160 ms to fall that far, so the number
+/// would say nothing about how the knock sounds.
 fn decay_ms(samples: &[f32], rate: u32, peak: f32) -> f32 {
     let peak_index = samples
         .iter()
@@ -112,7 +136,7 @@ fn decay_ms(samples: &[f32], rate: u32, peak: f32) -> f32 {
         .map(|(index, _)| index)
         .unwrap_or(0);
     let step = (rate as usize / 200).max(1);
-    let threshold = peak * 0.01;
+    let threshold = peak * 0.1;
     let mut index = peak_index;
     while index + step < samples.len() {
         let level = samples[index..index + step]
@@ -151,6 +175,8 @@ pub fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<()> {
 
 /// One sound that was rendered.
 struct Sound {
+    /// The group of sounds it belongs to.
+    group: String,
     /// The name of the file, and the heading on the page.
     name: String,
     /// What the sound is for.
@@ -169,18 +195,34 @@ pub fn audition(directory: &Path) -> Result<()> {
     let samples = audio::render_click(RATE, 7, false, audio::IN_USE);
     write_wav(&directory.join("0-the-sound-now.wav"), &samples, RATE)?;
     sounds.push(Sound {
+        group: "The sound the game makes now".to_string(),
         name: "0-the-sound-now".to_string(),
-        intent: "The sound the game makes at present: four ringing modes.".to_string(),
+        intent: "Four ringing modes, which sound hollow.".to_string(),
         analysis: analyse(&samples, RATE),
     });
 
-    for candidate in audio::CANDIDATES {
+    // The variations of the sound he picked come first, then the round that the
+    // deep board came from.
+    let mut all: Vec<(String, audio::Candidate)> = Vec::new();
+    for candidate in audio::variations() {
+        let group = if candidate.name.ends_with("soft") {
+            "Softer than number 3"
+        } else {
+            "Number 3, with the wood moving"
+        };
+        all.push((group.to_string(), candidate));
+    }
+    for candidate in audio::candidates() {
+        all.push(("The first round".to_string(), candidate));
+    }
+    for (group, candidate) in all {
         let samples = audio::render_click(RATE, 7, false, &candidate.voicing);
         let file = directory.join(format!("{}.wav", candidate.name));
         write_wav(&file, &samples, RATE)?;
         sounds.push(Sound {
-            name: candidate.name.to_string(),
-            intent: candidate.intent.to_string(),
+            group,
+            name: candidate.name.clone(),
+            intent: candidate.intent.clone(),
             analysis: analyse(&samples, RATE),
         });
     }
@@ -201,15 +243,21 @@ pub fn audition(directory: &Path) -> Result<()> {
 /// A table of the measurements, for the terminal.
 fn table(sounds: &[Sound]) -> String {
     let mut text = String::from(
-        "  name                    peak   rms  centroid    low   mid  high   decays\n",
+        "  name                    peak   rms  centroid  width    low   mid  high  to -20 dB\n",
     );
+    let mut group = "";
     for sound in sounds {
+        if sound.group != group {
+            group = &sound.group;
+            text.push_str(&format!("\n  -- {group}\n"));
+        }
         text.push_str(&format!(
-            "  {:22} {:5.2} {:5.2}  {:5.0} Hz {:4.0}% {:4.0}% {:4.0}%  {:5.0} ms\n",
+            "  {:22} {:5.2} {:5.2}  {:5.0} Hz {:4.0} Hz {:4.0}% {:4.0}% {:4.0}%  {:5.0} ms\n",
             sound.name,
             sound.analysis.peak,
             sound.analysis.rms,
             sound.analysis.centroid,
+            sound.analysis.width,
             sound.analysis.low * 100.0,
             sound.analysis.mid * 100.0,
             sound.analysis.high * 100.0,
@@ -239,15 +287,21 @@ fn html(sounds: &[Sound]) -> String {
          All of them are at the same peak level, so what changes is the sound, not the loudness.</p>\n\
          <ol>\n",
     );
+    let mut group = "";
     for sound in sounds {
+        if sound.group != group {
+            group = &sound.group;
+            page.push_str(&format!("</ol><h2>{group}</h2><ol>\n"));
+        }
         page.push_str(&format!(
             "<li><div class=\"name\">{}</div><div class=\"intent\">{}</div>\
-             <div class=\"numbers\">centroid {:.0} Hz &middot; low {:.0}% &middot; mid {:.0}% \
-             &middot; high {:.0}% &middot; decays in {:.0} ms</div>\
+             <div class=\"numbers\">centroid {:.0} Hz &middot; width {:.0} Hz &middot; low {:.0}% \
+             &middot; mid {:.0}% &middot; high {:.0}% &middot; to -20 dB in {:.0} ms</div>\
              <audio controls preload=\"none\" src=\"{}.wav\"></audio></li>\n",
             sound.name,
             sound.intent,
             sound.analysis.centroid,
+            sound.analysis.width,
             sound.analysis.low * 100.0,
             sound.analysis.mid * 100.0,
             sound.analysis.high * 100.0,

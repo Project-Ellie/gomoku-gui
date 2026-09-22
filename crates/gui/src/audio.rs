@@ -25,6 +25,44 @@ use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
 /// and level.
 pub type Mode = (f32, f32, f32);
 
+/// The most modes that one part of a knock can have.
+pub const MAX_MODES: usize = 6;
+
+/// A silent mode, used for the entries that are not needed.
+const SILENT: Mode = (0.0, 0.0, 0.0);
+
+/// The modes of one part of a knock: the body of the board, or the stone.
+///
+/// The list is of a fixed size so that a voicing costs nothing to copy and can be
+/// built while the program runs, which is how the variations of a voicing are
+/// made. The entries past `count` are silent.
+#[derive(Debug, Clone, Copy)]
+pub struct Modes {
+    list: [Mode; MAX_MODES],
+    count: usize,
+}
+
+impl Modes {
+    /// A list of modes, up to [`MAX_MODES`].
+    pub const fn new(list: &[Mode]) -> Modes {
+        let mut modes = [SILENT; MAX_MODES];
+        let mut index = 0;
+        while index < list.len() && index < MAX_MODES {
+            modes[index] = list[index];
+            index += 1;
+        }
+        Modes {
+            list: modes,
+            count: index,
+        }
+    }
+
+    /// The modes that are used.
+    pub fn used(&self) -> &[Mode] {
+        &self.list[..self.count]
+    }
+}
+
 /// How a knock sounds.
 ///
 /// These numbers are what the ear hears as warm, dry, or hollow, so they are
@@ -39,9 +77,19 @@ pub struct Voicing {
     /// milliseconds.
     pub contact_decay: f32,
     /// The modes of the board itself. Low, and quickly damped.
-    pub body: &'static [Mode],
+    pub body: Modes,
     /// The modes of the stone. Higher than the board, and shorter still.
-    pub stone: &'static [Mode],
+    pub stone: Modes,
+    /// How far the frequency falls over the life of a mode, as a fraction. A real
+    /// contact settles as it spreads, so the pitch drops; a mode that holds its
+    /// pitch sounds synthetic.
+    pub glide: f32,
+    /// How far the partials of one mode are spread, as a fraction. A mode made of
+    /// one frequency rings like a tuning fork; a spread one beats with itself,
+    /// which is what a piece of wood does.
+    pub spread: f32,
+    /// The level of the noise that the wood radiates along with its modes.
+    pub whisper: f32,
     /// The top of the knock: a low pass at this frequency, in Hz. Wood eats the
     /// high end, which is what makes a knock sound warm rather than sharp.
     pub tone: f32,
@@ -61,116 +109,257 @@ pub const CURRENT: Voicing = Voicing {
     contact: 0.35,
     contact_centre: 3000.0,
     contact_decay: 0.0006,
-    body: &[],
-    stone: &[
+    body: Modes::new(&[]),
+    stone: Modes::new(&[
         (420.0, 0.055, 1.00),
         (1150.0, 0.032, 0.60),
         (2600.0, 0.018, 0.32),
         (5400.0, 0.009, 0.18),
-    ],
+    ]),
     tone: 20000.0,
     roughness: 0.0,
+    glide: 0.0,
+    spread: 0.0,
+    whisper: 0.0,
     length: 0.180,
 };
 
 /// A voicing that was listened to, and the reason it exists.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Candidate {
     /// The name of the file that `--knock` writes.
-    pub name: &'static str,
-    /// What the sound is for, in the words of the ear.
-    pub intent: &'static str,
+    pub name: String,
+    /// What the sound is for, in the words of the ear, and in numbers.
+    pub intent: String,
     /// The voicing itself.
     pub voicing: Voicing,
 }
 
-/// The voicings that were auditioned. `--knock` renders each of them.
-pub const CANDIDATES: &[Candidate] = &[
-    Candidate {
-        name: "1-dry-clack",
-        intent: "The contact on its own: dry, short, almost no tone.",
-        voicing: Voicing {
+/// The deep board that the owner picked out of the first round.
+///
+/// A thick board: the contact is low and round, the body is a low pair of modes,
+/// and the whole knock is dark.
+pub const DEEP_BOARD: Voicing = Voicing {
+    contact: 0.8,
+    contact_centre: 1600.0,
+    contact_decay: 0.0015,
+    body: Modes::new(&[(140.0, 0.035, 0.70), (310.0, 0.020, 0.35)]),
+    stone: Modes::new(&[(2000.0, 0.014, 0.15)]),
+    tone: 3500.0,
+    roughness: 0.25,
+    glide: 0.0,
+    spread: 0.0,
+    whisper: 0.0,
+    length: 0.120,
+};
+
+/// The voicings of the first round, which the owner listened to.
+pub fn candidates() -> Vec<Candidate> {
+    let mut made = Vec::new();
+    let mut add = |name: &str, intent: &str, voicing: Voicing| {
+        made.push(Candidate {
+            name: name.to_string(),
+            intent: intent.to_string(),
+            voicing,
+        });
+    };
+    add(
+        "1-dry-clack",
+        "The contact on its own: dry, short, almost no tone.",
+        Voicing {
             contact: 1.0,
             contact_centre: 2200.0,
             contact_decay: 0.0012,
-            body: &[(260.0, 0.012, 0.25)],
-            stone: &[(3000.0, 0.008, 0.15)],
+            body: Modes::new(&[(260.0, 0.012, 0.25)]),
+            stone: Modes::new(&[(3000.0, 0.008, 0.15)]),
             tone: 6000.0,
             roughness: 0.3,
+            glide: 0.0,
+            spread: 0.0,
+            whisper: 0.0,
             length: 0.060,
         },
-    },
-    Candidate {
-        name: "2-wooden-tok",
-        intent: "The board answers: a wooden tok with a low body.",
-        voicing: Voicing {
+    );
+    add(
+        "2-wooden-tok",
+        "The board answers: a wooden tok with a low body.",
+        Voicing {
             contact: 0.9,
             contact_centre: 1800.0,
             contact_decay: 0.0015,
-            body: &[(190.0, 0.022, 0.55), (430.0, 0.014, 0.30)],
-            stone: &[(2400.0, 0.012, 0.20)],
+            body: Modes::new(&[(190.0, 0.022, 0.55), (430.0, 0.014, 0.30)]),
+            stone: Modes::new(&[(2400.0, 0.012, 0.20)]),
             tone: 4500.0,
             roughness: 0.25,
+            glide: 0.0,
+            spread: 0.0,
+            whisper: 0.0,
             length: 0.090,
         },
-    },
-    Candidate {
-        name: "3-deep-board",
-        intent: "A thick board: lower, and a little longer.",
-        voicing: Voicing {
-            contact: 0.8,
-            contact_centre: 1600.0,
-            contact_decay: 0.0015,
-            body: &[(140.0, 0.035, 0.70), (310.0, 0.020, 0.35)],
-            stone: &[(2000.0, 0.014, 0.15)],
-            tone: 3500.0,
-            roughness: 0.25,
-            length: 0.120,
-        },
-    },
-    Candidate {
-        name: "4-stone-ring",
-        intent: "The stone rings a little, as slate does.",
-        voicing: Voicing {
+    );
+    add(
+        "3-deep-board",
+        "A thick board: lower, and a little longer.",
+        DEEP_BOARD,
+    );
+    add(
+        "4-stone-ring",
+        "The stone rings a little, as slate does.",
+        Voicing {
             contact: 0.9,
             contact_centre: 2000.0,
             contact_decay: 0.0012,
-            body: &[(200.0, 0.020, 0.45)],
-            stone: &[(2700.0, 0.030, 0.40), (4100.0, 0.018, 0.20)],
+            body: Modes::new(&[(200.0, 0.020, 0.45)]),
+            stone: Modes::new(&[(2700.0, 0.030, 0.40), (4100.0, 0.018, 0.20)]),
             tone: 6500.0,
             roughness: 0.2,
+            glide: 0.0,
+            spread: 0.0,
+            whisper: 0.0,
             length: 0.110,
         },
-    },
-    Candidate {
-        name: "5-muted",
-        intent: "Laid down rather than dropped: dark, soft, and short.",
-        voicing: Voicing {
+    );
+    add(
+        "5-muted",
+        "Laid down rather than dropped: dark, soft, and short.",
+        Voicing {
             contact: 0.6,
             contact_centre: 1400.0,
             contact_decay: 0.0010,
-            body: &[(230.0, 0.016, 0.50)],
-            stone: &[(1800.0, 0.010, 0.12)],
+            body: Modes::new(&[(230.0, 0.016, 0.50)]),
+            stone: Modes::new(&[(1800.0, 0.010, 0.12)]),
             tone: 2600.0,
             roughness: 0.2,
+            glide: 0.0,
+            spread: 0.0,
+            whisper: 0.0,
             length: 0.070,
         },
-    },
-    Candidate {
-        name: "6-warm-low",
-        intent: "The darkest of the set: a low body and a short tail.",
-        voicing: Voicing {
+    );
+    add(
+        "6-warm-low",
+        "The darkest of the set: a low body and a short tail.",
+        Voicing {
             contact: 0.85,
             contact_centre: 1500.0,
             contact_decay: 0.0014,
-            body: &[(170.0, 0.028, 0.65), (600.0, 0.012, 0.20)],
-            stone: &[(2200.0, 0.010, 0.10)],
+            body: Modes::new(&[(170.0, 0.028, 0.65), (600.0, 0.012, 0.20)]),
+            stone: Modes::new(&[(2200.0, 0.010, 0.10)]),
             tone: 3000.0,
             roughness: 0.22,
+            glide: 0.0,
+            spread: 0.0,
+            whisper: 0.0,
             length: 0.100,
         },
-    },
-];
+    );
+    made
+}
+
+/// How many variations of the deep board were made.
+pub const VARIATIONS: usize = 20;
+
+/// The variations of the deep board, twenty of them, in two runs of ten.
+///
+/// Every one of them is a little less aggressive than the deep board, and none of
+/// them holds its pitch the way a pair of pure modes does. The first run makes the
+/// contact softer and the tone darker and does nothing else, so that the effect of
+/// softness can be heard on its own. The second run moves the wood: the modes
+/// fall in pitch, the partials spread and beat, noise joins the body, and the tone
+/// darkens with it.
+///
+/// The two runs are written as formulas rather than as twenty separate tables, so
+/// the numbers below are the whole story. The page states the numbers that each
+/// one came out with.
+pub fn variations() -> Vec<Candidate> {
+    let mut made = Vec::with_capacity(VARIATIONS);
+
+    // The first run: softer and darker, and nothing else, so that softness can be
+    // heard on its own.
+    for step in 0..10 {
+        // The run starts past the deep board rather than at it, so that every
+        // variation is a change from the sound he picked.
+        let share = (step + 1) as f32 / 10.0;
+        let soft = Voicing {
+            // The contact gets quieter, lower, and slower, which rounds off the
+            // attack, and the tone closes down over it.
+            contact: 0.80 - 0.35 * share,
+            contact_centre: 1600.0 - 750.0 * share,
+            contact_decay: 0.0015 + 0.0022 * share,
+            tone: 3500.0 - 1600.0 * share,
+            length: 0.120 + 0.020 * share,
+            ..DEEP_BOARD
+        };
+        made.push(Candidate {
+            name: format!("{:02}-soft", step + 1),
+            intent: intent_of(&soft),
+            voicing: soft,
+        });
+    }
+
+    // The second run: the same contact, softened a little, and then the wood. The
+    // modes fall in pitch as the contact settles, each mode is a cluster that
+    // beats with itself, and the body radiates a breath of noise.
+    for step in 0..10 {
+        let share = (step + 1) as f32 / 10.0;
+        let woody = Voicing {
+            contact: 0.80 - 0.20 * share,
+            contact_centre: 1600.0 - 250.0 * share,
+            contact_decay: 0.0015 + 0.0010 * share,
+            body: scaled(DEEP_BOARD.body, 1.0 - 0.08 * share, 1.0 + 0.45 * share, 1.0),
+            roughness: 0.25 + 0.30 * share,
+            glide: 0.060 * share,
+            spread: 0.10 * share,
+            whisper: 0.30 * share,
+            tone: 3500.0 - 1000.0 * share,
+            length: 0.120 + 0.030 * share,
+            ..DEEP_BOARD
+        };
+        made.push(Candidate {
+            name: format!("{:02}-wood", step + 11),
+            intent: intent_of(&woody),
+            voicing: woody,
+        });
+    }
+
+    made
+}
+
+/// A mode list with the frequencies multiplied, the decay times multiplied, and
+/// the levels multiplied.
+fn scaled(modes: Modes, frequency: f32, decay: f32, level: f32) -> Modes {
+    let mut list = [SILENT; MAX_MODES];
+    let used = modes.used();
+    for (index, &(f, d, l)) in used.iter().enumerate() {
+        list[index] = (f * frequency, d * decay, l * level);
+    }
+    // Only the modes that were in the list: an entry that stays silent must not
+    // be counted, because a mode of zero decay has no meaning in the renderer.
+    Modes::new(&list[..used.len()])
+}
+
+/// What a variation changed, in the numbers.
+fn intent_of(voicing: &Voicing) -> String {
+    let body: Vec<String> = voicing
+        .body
+        .used()
+        .iter()
+        .map(|(frequency, decay, _)| format!("{frequency:.0} Hz/{:.0} ms", decay * 1000.0))
+        .collect();
+    format!(
+        "contact {:.2} at {:.0} Hz over {:.1} ms, body {}, tone {:.0} Hz, \
+         glides {:.0}%, partials spread {:.0}%, roughness {:.2}, noise {:.2}",
+        voicing.contact,
+        voicing.contact_centre,
+        voicing.contact_decay * 1000.0,
+        body.join(" and "),
+        voicing.tone,
+        voicing.glide * 100.0,
+        voicing.spread * 100.0,
+        voicing.roughness,
+        voicing.whisper,
+    )
+}
 
 /// The voicing the game plays.
 pub const IN_USE: &Voicing = &CURRENT;
@@ -250,14 +439,37 @@ pub fn render_click(sample_rate: u32, seed: u32, damped: bool, voicing: &Voicing
     let mut samples = vec![0.0_f32; length];
     let mut rng = Rng::new(seed);
 
-    // Every mode wanders a little, so that no two knocks are the same.
-    let mut modes: Vec<Mode> = Vec::with_capacity(voicing.body.len() + voicing.stone.len());
-    for &(frequency, decay, level) in voicing.body.iter().chain(voicing.stone.iter()) {
+    // Every mode wanders a little, and every mode is a cluster of partials a
+    // little apart, which beat against each other. One partial on its own rings
+    // like a tuning fork; a cluster sounds like a material.
+    let mut partials: Vec<Mode> = Vec::new();
+    let mut longest_body = 0.0_f32;
+    let body_count = voicing.body.used().len();
+    for (index, &(frequency, decay, level)) in voicing
+        .body
+        .used()
+        .iter()
+        .chain(voicing.stone.used().iter())
+        .filter(|(_, decay, level)| *level != 0.0 && *decay > 0.0)
+        .enumerate()
+    {
         let frequency = frequency * (1.0 + 0.05 * rng.next());
         let decay = decay * (1.0 + 0.12 * rng.next()) * if damped { 0.86 } else { 1.0 };
         let level = level * (1.0 + 0.18 * rng.next()) * if damped { 0.92 } else { 1.0 };
-        modes.push((frequency, decay, level));
+        if index < body_count {
+            longest_body = longest_body.max(decay);
+        }
+        if voicing.spread > 0.0 {
+            let share = level / 3.0_f32.sqrt();
+            partials.push((frequency * (1.0 - voicing.spread), decay, share));
+            partials.push((frequency, decay, share));
+            partials.push((frequency * (1.0 + voicing.spread), decay, share));
+        } else {
+            partials.push((frequency, decay, level));
+        }
     }
+    // The phase of each partial is carried forward, because its frequency moves.
+    let mut phases = vec![0.0_f32; partials.len()];
 
     // The contact: noise with the top and the bottom taken off it, so that it
     // clacks instead of hissing.
@@ -273,6 +485,16 @@ pub fn render_click(sample_rate: u32, seed: u32, damped: bool, voicing: &Voicing
     let tone_alpha = 1.0 - (-std::f32::consts::TAU * voicing.tone / rate).exp();
     let mut tone = 0.0_f32;
 
+    // The breath: the noise that wood radiates along with its body. It is what
+    // stops a knock from being two clean tones.
+    let whisper_decay = if longest_body > 0.0 {
+        longest_body
+    } else {
+        voicing.length * 0.2
+    };
+    let breath_alpha = 1.0 - (-std::f32::consts::TAU * (voicing.tone * 0.6) / rate).exp();
+    let mut breath = 0.0_f32;
+
     for (index, sample) in samples.iter_mut().enumerate() {
         let time = index as f32 / rate;
         let noise = rng.next();
@@ -287,17 +509,24 @@ pub fn render_click(sample_rate: u32, seed: u32, damped: bool, voicing: &Voicing
             0.0
         };
 
-        // The board, and then the stone.
+        // The board, and then the stone. The frequency of each partial falls as
+        // the contact settles, which is what a real board does.
         let mut value = 0.0;
-        for &(frequency, decay, level) in &modes {
+        for ((frequency, decay, level), phase) in partials.iter().zip(phases.iter_mut()) {
+            let settled = 1.0 - voicing.glide * (1.0 - (-time / (decay * 0.5)).exp());
+            *phase += std::f32::consts::TAU * frequency * settled / rate;
             let wander = 1.0 + voicing.roughness * noise;
-            value += level
-                * wander
-                * (std::f32::consts::TAU * frequency * time).sin()
-                * (-time / decay).exp();
+            value += level * wander * phase.sin() * (-time / decay).exp();
         }
 
-        tone += tone_alpha * (value + contact - tone);
+        let breath_noise = if voicing.whisper > 0.0 {
+            breath += breath_alpha * (noise - breath);
+            breath * voicing.whisper * (-time / whisper_decay).exp()
+        } else {
+            0.0
+        };
+
+        tone += tone_alpha * (value + contact + breath_noise - tone);
         *sample = tone;
     }
 
@@ -552,10 +781,13 @@ mod tests {
     }
 
     #[test]
-    fn every_candidate_is_a_sound_of_its_own() {
-        // The point of the set is that the owner can tell them apart, so no two
-        // of them may come out the same.
-        for (index, candidate) in CANDIDATES.iter().enumerate() {
+    fn every_sound_is_a_sound_of_its_own() {
+        // The point of the set is that the owner can tell the sounds apart, so no
+        // two of them may come out the same.
+        let mut all = candidates();
+        all.extend(variations());
+        assert_eq!(all.len(), 6 + VARIATIONS);
+        for (index, candidate) in all.iter().enumerate() {
             let samples = render_click(48_000, 3, false, &candidate.voicing);
             assert_eq!(
                 samples.len(),
@@ -566,7 +798,7 @@ mod tests {
                 "{} is silent",
                 candidate.name
             );
-            for other in CANDIDATES.iter().skip(index + 1) {
+            for other in all.iter().skip(index + 1) {
                 let other_samples = render_click(48_000, 3, false, &other.voicing);
                 assert_ne!(
                     samples, other_samples,
@@ -578,11 +810,60 @@ mod tests {
     }
 
     #[test]
-    fn a_damped_knock_is_quieter() {
+    fn every_variation_changes_the_deep_board() {
+        // Each variation must be its own sound, and none of them may hold its
+        // pitch the way the deep board does: that is what the owner asked for.
+        let base = render_click(48_000, 3, false, &DEEP_BOARD);
+        let mut moved = 0;
+        for candidate in variations() {
+            let samples = render_click(48_000, 3, false, &candidate.voicing);
+            assert_ne!(samples, base, "{} is the deep board itself", candidate.name);
+            if candidate.voicing.glide > 0.0 {
+                moved += 1;
+            }
+        }
+        assert_eq!(moved, 10, "ten of the variations must move the pitch");
+    }
+
+    #[test]
+    fn a_mode_that_glides_falls_in_pitch() {
+        // The frequency must fall over the life of the mode, which is what makes
+        // the sound move the way wood does.
+        let gliding = Voicing {
+            contact: 0.0,
+            body: Modes::new(&[(400.0, 0.100, 1.0)]),
+            stone: Modes::new(&[]),
+            roughness: 0.0,
+            tone: 20000.0,
+            glide: 0.10,
+            ..DEEP_BOARD
+        };
+        let plain = Voicing {
+            glide: 0.0,
+            ..gliding
+        };
+        let count_crossings = |voicing: &Voicing| {
+            let samples = render_click(48_000, 5, false, voicing);
+            samples
+                .windows(2)
+                .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+                .count()
+        };
+        let (glided, still) = (count_crossings(&gliding), count_crossings(&plain));
+        assert!(
+            glided < still,
+            "a mode that falls in pitch completes fewer cycles: {glided} against {still}"
+        );
+    }
+
+    #[test]
+    fn a_damped_knock_carries_less_energy() {
+        // Every knock is normalised to the same peak before it is played, so a
+        // damped one is quieter in energy rather than in peak.
         let plain = render_click(48_000, 5, false, &CURRENT);
         let damped = render_click(48_000, 5, true, &CURRENT);
-        let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
-        assert!(peak(&damped) < peak(&plain));
+        let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
+        assert!(energy(&damped) < energy(&plain));
     }
 
     #[test]
