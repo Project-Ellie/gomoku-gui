@@ -2765,8 +2765,9 @@ file, and change the import line to `use engine::{Board, Color, Move, Status};`:
         prop_assert_eq!(game.outcome(), won);
 
         for step in steps {
-            // A placement is skipped: the move list must stay won and fixed.
-            if let Step::Play(_) = step {
+            // A placement or an undo is skipped: the move list must stay won
+            // and fixed while the view moves.
+            if let Step::Play(_) | Step::Undo = step {
                 continue;
             }
             apply(&mut game, step);
@@ -2962,8 +2963,10 @@ later change adds.
 A strengthened test that cannot fail is worthless. Prove that the new `Err(_)`
 arm in Step 4 works:
 
-1. Temporarily change `play` so that it refuses a legal placement, for example
-   by moving the `GameError::GameOver` check to the top of the function.
+1. Temporarily make `play` refuse a legal placement, for example by inverting the
+   occupied-cell check so that it returns `GameError::Occupied` for an empty point.
+   A mutation that only moves an existing guard is not observable: the property
+   already checks that the board is ongoing before it places a stone.
 2. Run `cargo test -p gomoku-core --test invariants play_while_rewound` and save
    the output to `.superpowers/sdd/2026-09-22-gomoku-core/task-8-mutation.txt`.
    Expected: the property FAILS with "a legal placement was refused".
@@ -2973,7 +2976,8 @@ arm in Step 4 works:
 - [ ] **Step 10: Run the gates and the strengthened run**
 
 Run: `cargo test`
-Expected: 21 unit tests and 4 property tests pass.
+Expected: every test passes, and the property tests now number four. Do not compare
+against a hard-coded total; read the count from the output.
 
 Run: `PROPTEST_CASES=2000 cargo test -p gomoku-core --test invariants`
 Expected: 4 property tests pass. Save the output to
