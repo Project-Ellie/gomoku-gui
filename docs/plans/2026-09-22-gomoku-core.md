@@ -25,6 +25,11 @@ Scope note: this plan covers the core crate only. The specification is `docs/spe
 - Gates before every commit, all three green: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all`.
 - Comments and doc comments are written in Simplified Technical English: short sentences, active voice, one instruction per sentence.
 - Add no dependency that is not listed in this plan.
+- Model policy for every subagent dispatch in this project: pass
+  `model: "deepseek/deepseek-v4-flash"` explicitly, for implementers and for
+  reviewers. The `reviewer` agent's configured default is a more expensive
+  model and must not be inherited. An omitted model parameter silently
+  inherits the session default, so always state it.
 
 ---
 
@@ -336,6 +341,37 @@ git commit -m "feat(core): add the workspace, core crate, error types, and notat
 - Consumes: `gomoku_core::GameError` from Task 1.
 - Produces: `gomoku_core::Game` with `new`, `started_at`, `meta`, `set_players`, `stone_at`, `stones`, `status`, `outcome`, `to_move`, `moves`, `len`, `is_empty`, `cursor`, `is_rewound`, `pending_truncation`, `last_move`, `play`, `undo`, `rewind`, `forward`, `seek`, `live`; and the types `MetaData`, `Outcome`, `WinMethod`.
 
+**Review amendments from Task 1 — apply these two small edits first.** The Task 1
+review recommended them, and they belong to files that Task 1 already committed,
+so they land here rather than by rewriting that commit.
+
+1. In `crates/core/src/notation.rs`, put the invariant above the indexing line,
+   because that index can panic if the function signature ever changes:
+
+```rust
+    // Move::col() is at most 14, so the index is always inside the array.
+    let letter = COLUMN_LETTERS[point.col() as usize] as char;
+```
+
+2. In `crates/core/src/error.rs`, replace the catch-all arm of
+   `From<PlayError> for GameError` with an explicit arm for the third engine
+   variant. A catch-all silently reclassifies any variant that the engine adds
+   later; an explicit arm turns that into a compile error.
+
+Replace:
+
+```rust
+            other => GameError::Rejected(other),
+```
+
+with:
+
+```rust
+            // Explicit, so that a new engine variant fails to compile here
+            // instead of being silently reclassified.
+            PlayError::BadOpeningCounts => GameError::Rejected(PlayError::BadOpeningCounts),
+```
+
 Engine facts this task relies on, all verified:
 `Board::new()`, `Board::play(Move) -> Result<(), PlayError>`, `Board::undo()` (panics on an empty history), `Board::moves() -> &[Move]`, `Board::stone_at(Move) -> Option<Color>`, `Board::status() -> Status`, `Board::to_move() -> Color`, `Status::{Ongoing, Won(Color), Draw}`, `Color::{Black, White}`, `PlayError::{Occupied, GameOver, BadOpeningCounts}`, `Move::new(row, col) -> Option<Move>`, `Move::row()`, `Move::col()`.
 
@@ -357,12 +393,13 @@ mod tests {
         Game::started_at(datetime!(2026-09-22 18:04:11 UTC))
     }
 
-    /// Five black stones on row 7 at columns 3 to 7, with white replies.
+    /// Five black stones on row 7 at columns 3 to 7. White replies on the
+    /// diagonal (3,0), (4,1), (5,2), (6,3), which is only four stones.
     fn near_win() -> Game {
         let mut game = game();
-        for (black, white) in [(3, 0), (4, 0), (5, 0), (6, 0)] {
-            game.play(point(7, black)).expect("empty cell");
-            game.play(point(0, white)).expect("empty cell");
+        for index in 0..4 {
+            game.play(point(7, 3 + index)).expect("empty cell");
+            game.play(point(3 + index, index)).expect("empty cell");
         }
         game.play(point(7, 7)).expect("empty cell");
         game
@@ -489,6 +526,8 @@ mod tests {
         let mut game = game();
         game.play(point(7, 7)).expect("empty cell");
         game.play(point(7, 8)).expect("empty cell");
+        // Leave the live position first, so that the clamp is observable.
+        game.seek(0);
         assert!(game.seek(999));
         assert_eq!(game.cursor(), 2);
         assert!(game.seek(0));
@@ -839,7 +878,7 @@ pub use game::{Game, MetaData, Outcome, WinMethod};
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p gomoku-core`
-Expected: 21 tests pass, in `notation::tests` and `game::tests`.
+Expected: 20 tests pass: 4 in `notation::tests` and 16 in `game::tests`.
 
 - [ ] **Step 6: Run the gates**
 
@@ -849,9 +888,12 @@ Expected: no warnings, no diff, all tests pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/core
+git add crates/core Cargo.lock
 git commit -m "feat(core): add the Game aggregate with undo, rewind, and truncation"
 ```
+
+`Cargo.lock` belongs in version control for an application, and Task 1's add
+list missed it. It is added here, with the first task that builds against it.
 
 ---
 
@@ -1109,9 +1151,9 @@ mod tests {
 
     fn won_game() -> Game {
         let mut game = Game::started_at(datetime!(2026-09-22 18:04:11 UTC));
-        for (black, white) in [(3, 0), (4, 0), (5, 0), (6, 0)] {
-            game.play(point(7, black)).expect("the cell is empty");
-            game.play(point(0, white)).expect("the cell is empty");
+        for index in 0..4 {
+            game.play(point(7, 3 + index)).expect("the cell is empty");
+            game.play(point(3 + index, index)).expect("the cell is empty");
         }
         game.play(point(7, 7)).expect("the cell is empty");
         game
@@ -2412,5 +2454,5 @@ The core crate is complete when every item below is true.
 - [ ] `cargo fmt --all --check` reports nothing.
 - [ ] No `unwrap`, `expect`, or `panic!` in `crates/core/src` outside a proven invariant with a comment above it.
 - [ ] `crates/core/tests/golden/hotseat-v1.json` is committed and the encoder still produces it byte for byte.
-- [ ] The `engine` crate has no modification: `git -C ../rust-ml status --short gomoku` is empty.
+- [ ] The `engine` crate has no modification by this project: the output of `git -C ../rust-ml status --short gomoku` still equals the baseline recorded in the ledger at the start of the plan. That checkout already carried unrelated staged work from its owner, so an empty status is not the test.
 - [ ] No document claims a check that the code does not make.
