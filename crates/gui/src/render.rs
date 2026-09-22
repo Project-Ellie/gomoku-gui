@@ -116,20 +116,27 @@ pub struct StoneInstance {
 pub struct StoneMaterial {
     /// Linear albedo.
     pub albedo: [f32; 3],
-    /// Base roughness.
+    /// Base roughness. Higher is duller.
     pub roughness: f32,
+    /// How much of the light the surface reflects and how strongly it shines.
+    /// A polished shell stone takes the full reflection; slate is duller and
+    /// mostly scatters the light, so it takes little.
+    pub gloss: f32,
     /// 0.0 for slate, 1.0 for shell.
     pub kind: f32,
 }
 
-/// The slate stone: a dark blue-grey solid with a polished surface.
+/// The slate stone: a dark blue-grey solid with a matte, slightly dusty surface.
 ///
-/// Linear albedo, from sRGB (0.33, 0.335, 0.355): dark, but a stone rather than
-/// a hole in the board. Its shine comes from the specular lobes and the room
-/// reflection, not from a lighter colour.
+/// Linear albedo, from sRGB (0.28, 0.285, 0.30). Slate is not polished like
+/// glass: it scatters most of the light, keeps a broad and weak highlight, and
+/// reflects very little of its surroundings. A low gloss is what stops it looking
+/// wet, and a higher roughness spreads what highlight there is instead of
+/// breaking it into a hard, shiny ring.
 pub const SLATE: StoneMaterial = StoneMaterial {
-    albedo: [0.089, 0.092, 0.103],
-    roughness: 0.30,
+    albedo: [0.062, 0.065, 0.075],
+    roughness: 0.58,
+    gloss: 0.22,
     kind: 0.0,
 };
 
@@ -139,6 +146,7 @@ pub const SLATE: StoneMaterial = StoneMaterial {
 pub const SHELL: StoneMaterial = StoneMaterial {
     albedo: [0.760, 0.762, 0.735],
     roughness: 0.20,
+    gloss: 1.0,
     kind: 1.0,
 };
 
@@ -652,7 +660,8 @@ impl Renderer {
             // The photograph supplies the colour, so the first field is a
             // brightness multiplier rather than a tone.
             wood_a: [look.gain, look.gain, look.gain, 0.0],
-            wood_b: [0.0, 0.0, 0.0, 0.0],
+            // How much each stone material shines: slate, then shell.
+            wood_b: [SLATE.gloss, SHELL.gloss, 0.0, 0.0],
             // The pore depth is the fourth field; the colour is unused because
             // the pores darken the photograph.
             wood_c: [0.0, 0.0, 0.0, look.pores],

@@ -132,12 +132,15 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
     // stone; the tight one is the reflection of the light itself.
     let wide = specular(n, v, l, min(roughness * 1.6, 0.7), 0.045);
     let tight = specular(n, v, l, roughness * 0.55, 0.055);
-    var shine = vec3<f32>(tight * 1.55 + wide * 0.50);
+    // The gloss of the material decides how much of the light is reflected at
+    // all. Slate scatters, so it takes a small share.
+    let gloss = select(g.wood_b.x, g.wood_b.y, kind > 0.5);
+    var shine = vec3<f32>(tight * 1.55 + wide * 0.50) * gloss;
 
     // The room, reflected. This is the term that makes a stone look glossy.
     let reflection = environment(reflect(-v, n), roughness);
     let weight = fresnel(n_dot_v, 0.05);
-    shine += reflection * weight * 0.80;
+    shine += reflection * weight * 0.80 * gloss;
 
     if (kind > 0.5) {
         // Shell: light that has travelled through the stone and comes out at the
@@ -149,17 +152,20 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
         diffuse += vec3<f32>(0.18, 0.21, 0.26) * rim * thickness * 0.50;
         shine *= vec3<f32>(0.92, 0.97, 1.0);
     } else {
-        // Slate: a cool, narrow rim that separates it from the board, and a
-        // slightly warm highlight.
-        let rim = pow(1.0 - n_dot_v, 3.5);
-        diffuse += vec3<f32>(0.10, 0.11, 0.13) * rim;
+        // Slate: only the faintest separation from the board, and a warm, weak
+        // highlight. A bright ring here is what makes a dark stone look like a
+        // washer, so there is almost none.
+        let rim = pow(1.0 - n_dot_v, 4.0);
+        diffuse += vec3<f32>(0.020, 0.022, 0.026) * rim;
         shine *= vec3<f32>(1.0, 0.95, 0.88);
     }
 
-    // Contact darkening at the base, so the stone sits on the board.
+    // Contact darkening at the base, so the stone sits on the board. It is spread
+    // over most of the stone rather than gathered at the edge: a narrow dark band
+    // beside a lighter one reads as a ring.
     let radius = length(in.local);
-    let contact = smoothstep(0.44, 0.30, radius);
-    var colour = diffuse * mix(0.65, 1.0, contact) + shine;
+    let contact = smoothstep(0.50, 0.22, radius);
+    var colour = diffuse * mix(0.80, 1.0, contact) + shine;
 
     if (kind > 0.5) {
         let edge = smoothstep(0.36, 0.47, radius);
