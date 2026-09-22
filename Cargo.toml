@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/gui"]
+members = ["crates/core", "crates/engine", "crates/gui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,7 +9,9 @@ license = "Apache-2.0"
 rust-version = "1.85"
 
 [workspace.dependencies]
-engine = { path = "../rust-ml/gomoku/crates/engine" }
+# The rules engine is a copy of the one in the rust-ml repository, so that
+# this repository builds on its own. See docs/decisions/ADR-008.
+engine = { path = "crates/engine" }
 gomoku-core = { path = "crates/core" }
 anyhow = "1"
 log = "0.4"
@@ -20,4 +22,5 @@ time = { version = "0.3", features = ["serde", "serde-human-readable", "macros"]
 toml = "1"
 thiserror = "2"
 proptest = "1"
+criterion = "0.5"
 tempfile = "3"

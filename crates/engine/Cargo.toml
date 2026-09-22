@@ -1,0 +1,31 @@
+[package]
+name = "engine"
+description = "Gomoku rules engine: bitboards, win detection, symmetries, Swap2, tactics, encoding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Design: docs/13-engine-design.md. Dependency island — no Burn, no I/O.
+
+[features]
+testutil = []
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+
+# The differential suite needs the reference engine, which only exists
+# under the `testutil` feature. `required-features` makes cargo SKIP
+# this target when the feature is off instead of failing to compile.
+# Run it with: cargo test -p engine --features testutil
+[[test]]
+name = "differential"
+required-features = ["testutil"]
+
+[[bench]]
+name = "win_detection"
+harness = false

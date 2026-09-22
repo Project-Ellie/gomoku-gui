@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (owner-approved, 2026-09-22)
+Superseded by [ADR-008](ADR-008-engine-vendored.md), which copies the engine into
+this repository so that a clone builds on its own. The facade described below is
+unchanged; only the source of the crate moved.
 
 ## Context
 

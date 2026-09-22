@@ -9,14 +9,17 @@ No server. No network. One window.
 
 ## Status
 
-The application opens a window with a wooden board and stone pieces. You can
-place stones, hear them land, pan, and zoom.
+The application is complete for two players at one screen: it opens a window
+with a wooden board and stone pieces, a menu bar, a side panel, file dialogs, and
+overlays. Games are saved and loaded, and the game in progress survives a crash.
 
 - `gomoku-core` — game state, undo and rewind history, notation, the versioned
   record format, and the settings schema. Complete.
-- `gomoku-gui` — the window, the board and stone shaders, and the stone knock.
-  Under construction: the sitting now has placing, panning, zooming, and undo.
-  Saving, loading, the move list, and the overlays arrive next.
+- `gomoku-engine` — the rules engine. A copy of the engine from
+  `Project-Ellie/rust-ml`, so that this repository builds on its own. See
+  [ADR-008](docs/decisions/ADR-008-engine-vendored.md).
+- `gomoku-gui` — the window, the board and stone shaders, the stone knock, and
+  the interface. Complete.
 
 - Approved design: [docs/specs/2026-09-22-gomoku-gui-design.md](docs/specs/2026-09-22-gomoku-gui-design.md)
 - Implementation plan for the core crate: [docs/plans/2026-09-22-gomoku-core.md](docs/plans/2026-09-22-gomoku-core.md)
@@ -25,16 +28,15 @@ place stones, hear them land, pan, and zoom.
 
 - Rust 1.85 or later (edition 2024). Verified with 1.98.1.
 - macOS with Metal. Verified on an M1 Max, macOS 26.6.2.
-- The sibling rules engine checkout:
+- Nothing else. The rules engine is part of this repository, so a clone builds
+  on its own.
 
 ```
-workspace/
-├── gomoku-gui/                       this repository
-└── rust-ml/gomoku/crates/engine      rules engine, path dependency
+gomoku-gui/
+├── crates/engine      the rules engine
+├── crates/core        game state, history, records, settings
+└── crates/gui         the window and the interface
 ```
-
-Without that directory the build fails. See
-[ADR-002](docs/decisions/ADR-002-engine-reuse.md).
 
 ## Build and run
 
@@ -47,23 +49,17 @@ cargo build
 cargo test
 ```
 
-| Input | Action |
-|---|---|
-| Left click on an intersection | Place a stone |
-| Left drag | Pan the view |
-| Scroll, or pinch | Zoom about the pointer |
-| `u`, or Backspace | Take the last stone back |
-| `f`, or `0` | Fit the whole board |
-| `v` | Turn the board around |
-| Escape | Quit |
-
 ### Check the look without a window
 
 `--preview` renders one frame to a file, which is how the shaders are checked on
-a machine with no display:
+a machine with no display. `--preview-ui` draws the interface as well, and
+`--scale N` renders at the number of pixels per interface point that a scaled
+display has:
 
 ```bash
 cargo run -p gomoku-gui -- --demo --preview artifacts/board.bmp --size 1200
+cargo run -p gomoku-gui -- --demo --preview artifacts/ui.bmp --size 1100 \
+    --preview-ui --scale 2
 ```
 
 `--frames N` quits after N frames, which is a smoke test of the whole pipeline.
@@ -125,3 +121,7 @@ cost are recorded in [ADR-003](docs/decisions/ADR-003-record-format.md).
 ## Licence
 
 Apache-2.0, the same as `rust-ml` and `DeepGomoku`.
+
+The rules engine in `crates/engine` comes from `Project-Ellie/rust-ml` and keeps
+its licence and its authorship. See
+[ADR-008](docs/decisions/ADR-008-engine-vendored.md).
