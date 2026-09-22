@@ -279,7 +279,15 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let renderer = Renderer::new(&device, &queue, format, SAMPLES);
+        let wood = match crate::render::WoodTexture::load() {
+            Ok(wood) => wood,
+            Err(error) => {
+                log::error!("the wood photograph could not be loaded: {error:#}");
+                event_loop.exit();
+                return Err(error);
+            }
+        };
+        let renderer = Renderer::new(&device, &queue, format, SAMPLES, &wood);
         let multisampled = create_multisampled(&device, &config);
         let _ = event_loop;
         Ok(State {
@@ -500,9 +508,9 @@ impl ApplicationHandler for App {
     }
 }
 
-/// The uniform block for a camera and a window, with the default materials.
-pub fn globals_for(camera: &Camera, size: [u32; 2]) -> Globals {
-    let mut globals = Renderer::default_globals(size[0], size[1]);
+/// The same, with a chosen board material.
+pub fn globals_for_wood(camera: &Camera, size: [u32; 2], look: crate::render::WoodLook) -> Globals {
+    let mut globals = Renderer::globals_with_wood(size[0], size[1], look);
     globals.view = [
         camera.centre[0],
         camera.centre[1],

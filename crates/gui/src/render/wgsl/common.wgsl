@@ -28,6 +28,22 @@ struct Globals {
 
 @group(0) @binding(0) var<uniform> g: Globals;
 
+/// The owner's photograph of a real wooden board.
+@group(1) @binding(0) var wood_texture: texture_2d<f32>;
+/// A linear sampler, repeating in both directions.
+@group(1) @binding(1) var wood_sampler: sampler;
+
+/// Mirror tiling: the tile is reflected at every boundary, so that its edges
+/// meet exactly and no seam shows.
+fn mirror_uv(t: vec2<f32>) -> vec2<f32> {
+    return abs(fract(t) * 2.0 - 1.0);
+}
+
+/// The perceived brightness of a colour.
+fn luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
 /// A board point in cells to framebuffer pixels.
 fn project_board(p: vec2<f32>) -> vec2<f32> {
     var d = p - g.view.xy;

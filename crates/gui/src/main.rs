@@ -29,6 +29,7 @@ fn main() -> Result<()> {
     let mut frames: Option<u32> = None;
     let mut demo = false;
     let mut pixels_per_cell: Option<f32> = None;
+    let mut gain: Option<f32> = None;
     let mut centre: Option<[f32; 2]> = None;
 
     let mut arguments = std::env::args().skip(1);
@@ -54,6 +55,14 @@ fn main() -> Result<()> {
                 );
             }
             "--demo" => demo = true,
+            "--wood-gain" => {
+                gain = Some(
+                    arguments
+                        .next()
+                        .and_then(|value| value.parse().ok())
+                        .context("--wood-gain needs a number")?,
+                );
+            }
             "--pixels-per-cell" => {
                 pixels_per_cell = Some(
                     arguments
@@ -83,7 +92,7 @@ fn main() -> Result<()> {
     let game = if demo { demo_game() } else { Game::new() };
 
     if let Some(path) = preview {
-        return write_preview(&path, size, &game, pixels_per_cell, centre);
+        return write_preview(&path, size, &game, pixels_per_cell, centre, gain);
     }
 
     let audio = audio::Audio::start();
@@ -103,6 +112,7 @@ fn print_help() {
   --preview FILE.bmp  render one frame to a file and exit
   --size N            the window or preview size in pixels (default 1100)
   --pixels-per-cell N zoom for a preview (default: fit the board)
+  --wood-gain F       a brightness multiplier on the wood photograph (default 1)
   --centre X,Y        the board point at the preview centre (default 7,7)
 
 Place a stone with the left mouse button. Drag to pan, scroll to zoom.
@@ -140,9 +150,17 @@ fn write_preview(
     game: &Game,
     pixels_per_cell: Option<f32>,
     centre: Option<[f32; 2]>,
+    gain: Option<f32>,
 ) -> Result<()> {
     let gpu = preview::HeadlessGpu::new()?;
-    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, preview::PREVIEW_FORMAT, SAMPLES);
+    let wood = render::WoodTexture::load()?;
+    let mut renderer = Renderer::new(
+        &gpu.device,
+        &gpu.queue,
+        preview::PREVIEW_FORMAT,
+        SAMPLES,
+        &wood,
+    );
     let board_size = [size, size];
     let mut camera = Camera::fit(board_size);
     if let Some(pixels) = pixels_per_cell {
@@ -151,7 +169,14 @@ fn write_preview(
     if let Some(centre) = centre {
         camera.centre = centre;
     }
-    renderer.set_globals(&gpu.queue, &app::globals_for(&camera, board_size));
+    let look = render::WoodLook {
+        gain: gain.unwrap_or(render::WOOD.gain),
+        ..render::WOOD
+    };
+    renderer.set_globals(
+        &gpu.queue,
+        &app::globals_for_wood(&camera, board_size, look),
+    );
     renderer.set_stones(&gpu.queue, &app::stone_instances(game));
     gpu.write_frame(path, size, size, &renderer)?;
     println!("wrote {}", path.display());

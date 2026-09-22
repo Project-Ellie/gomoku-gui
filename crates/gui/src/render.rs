@@ -5,8 +5,70 @@
 //! slide when the view moves. The stones are one lens mesh, drawn instanced.
 //! Nothing overlaps, so there is no depth buffer: the passes run in order.
 
+use anyhow::Context as _;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt as _;
+
+/// The board's wood: a photograph of a real board, from the owner's collection.
+const WOOD_PNG: &[u8] = include_bytes!("../assets/wood-left.png");
+
+/// The decoded photograph.
+pub struct WoodTexture {
+    /// The width in pixels.
+    pub width: u32,
+    /// The height in pixels.
+    pub height: u32,
+    /// The pixels, as RGBA8.
+    pub rgba: Vec<u8>,
+}
+
+impl WoodTexture {
+    /// Decode the embedded photograph.
+    ///
+    /// # Errors
+    /// An error when the embedded image is not a readable PNG.
+    pub fn load() -> anyhow::Result<WoodTexture> {
+        // A Cursor, because the PNG decoder seeks within its input.
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(WOOD_PNG));
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let mut reader = decoder
+            .read_info()
+            .context("the wood texture could not be read")?;
+        let capacity = reader
+            .output_buffer_size()
+            .context("the wood texture has no readable size")?;
+        let mut buffer = vec![0; capacity];
+        let info = reader
+            .next_frame(&mut buffer)
+            .context("the wood texture could not be decoded")?;
+        buffer.truncate(info.buffer_size());
+
+        let pixels = info.width as usize * info.height as usize;
+        let rgba = match info.color_type {
+            png::ColorType::Rgba => buffer,
+            png::ColorType::Rgb => {
+                let mut out = Vec::with_capacity(pixels * 4);
+                for pixel in buffer.chunks_exact(3) {
+                    out.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+                }
+                out
+            }
+            png::ColorType::Grayscale => {
+                let mut out = Vec::with_capacity(pixels * 4);
+                for value in buffer {
+                    out.extend_from_slice(&[value, value, value, 255]);
+                }
+                out
+            }
+            other => anyhow::bail!("the wood texture has an unsupported colour type: {other:?}"),
+        };
+        Ok(WoodTexture {
+            width: info.width,
+            height: info.height,
+            rgba,
+        })
+    }
+}
 
 /// The uniform block, shared by all three shaders. Every member is a `vec4`, so
 /// the Rust and WGSL layouts cannot drift apart.
@@ -80,39 +142,28 @@ pub const SHELL: StoneMaterial = StoneMaterial {
     kind: 1.0,
 };
 
-/// A wood or marble preset.
-#[derive(Debug, Clone, Copy)]
-pub struct BoardMaterial {
-    /// The lighter grain tone, or the vein colour for marble.
-    pub light: [f32; 3],
-    /// The darker grain tone.
-    pub dark: [f32; 3],
-    /// The pore colour.
-    pub pore: [f32; 3],
-    /// Grain frequency across the board.
-    pub grain: f32,
-    /// How strongly the rings modulate the colour.
-    pub contrast: f32,
-    /// How strongly the pores show.
-    pub pore_depth: f32,
-    /// Sheen strength.
+/// How the photographed wood is shown.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WoodLook {
+    /// A brightness multiplier on the photograph. The photograph is dark, so a
+    /// value above one is normal.
+    pub gain: f32,
+    /// How strongly the added pores show.
+    pub pores: f32,
+    /// The strength of the varnish sheen.
     pub sheen: f32,
 }
 
-/// The default board: a warm, light wood in the kaya family.
+/// The default look.
 ///
-/// Linear albedo, from sRGB (0.80, 0.69, 0.53) for the light grain and
-/// (0.52, 0.41, 0.28) for the dark lines. The first values were far too
-/// saturated and too dark, which read as printed veneer rather than wood; a
-/// real board sits near saturation 0.35 and value 0.7, a little darker than new
-/// kaya.
-pub const AGED_WOOD: BoardMaterial = BoardMaterial {
-    light: [0.604, 0.434, 0.239],
-    dark: [0.230, 0.140, 0.062],
-    pore: [0.150, 0.085, 0.038],
-    grain: 2.4,
-    contrast: 0.78,
-    pore_depth: 0.38,
+/// The photograph is dark, and a dark board hides dark stones. Measured on this
+/// board, a gain of 4.0 is where the black stones reach 3.3 to 1 contrast and the
+/// white stones 3.7 to 1: both above the 3 to 1 minimum, so either colour can be
+/// placed confidently. Brightening also raises the grain contrast rather than
+/// flattening it, because the tone curve has not yet compressed the wood.
+pub const WOOD: WoodLook = WoodLook {
+    gain: 4.0,
+    pores: 0.35,
     sheen: 0.28,
 };
 
@@ -283,6 +334,7 @@ pub struct Renderer {
     shadow_pipeline: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    wood_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
@@ -298,6 +350,7 @@ impl Renderer {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         sample_count: u32,
+        wood: &WoodTexture,
     ) -> Renderer {
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -329,9 +382,90 @@ impl Renderer {
             }],
         });
 
+        // The photograph, as an sRGB texture, so the GPU converts it to linear
+        // on every sample.
+        let wood_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wood"),
+            size: wgpu::Extent3d {
+                width: wood.width,
+                height: wood.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &wood_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &wood.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * wood.width),
+                rows_per_image: Some(wood.height),
+            },
+            wgpu::Extent3d {
+                width: wood.width,
+                height: wood.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let wood_view = wood_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let wood_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wood"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let wood_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wood layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let wood_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wood"),
+            layout: &wood_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&wood_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&wood_sampler),
+                },
+            ],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipelines"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(&wood_layout)],
             immediate_size: 0,
         });
 
@@ -490,6 +624,7 @@ impl Renderer {
             shadow_pipeline,
             globals,
             bind_group,
+            wood_group,
             vertices,
             indices,
             index_count: mesh_indices.len() as u32,
@@ -503,21 +638,24 @@ impl Renderer {
 
     /// The materials, the room, and the view for a fitted window.
     pub fn default_globals(width: u32, height: u32) -> Globals {
-        let board = AGED_WOOD;
+        Renderer::globals_with_wood(width, height, WOOD)
+    }
+
+    /// The same, with a chosen look for the wood.
+    pub fn globals_with_wood(width: u32, height: u32, look: WoodLook) -> Globals {
         let fit = crate::camera::Camera::fit_scale([width, height]);
         Globals {
             view: [7.0, 7.0, fit, 0.0],
             window: [width as f32, height as f32, 0.0, 0.0],
             light: [LIGHT[0], LIGHT[1], LIGHT[2], 0.0],
-            wood_a: [board.light[0], board.light[1], board.light[2], board.grain],
-            wood_b: [board.dark[0], board.dark[1], board.dark[2], board.contrast],
-            wood_c: [
-                board.pore[0],
-                board.pore[1],
-                board.pore[2],
-                board.pore_depth,
-            ],
-            wood_d: [0.18, 0.48, board.sheen, 0.30],
+            // The photograph supplies the colour, so the first field is a
+            // brightness multiplier rather than a tone.
+            wood_a: [look.gain, look.gain, look.gain, 0.0],
+            wood_b: [0.0, 0.0, 0.0, 0.0],
+            // The pore depth is the fourth field; the colour is unused because
+            // the pores darken the photograph.
+            wood_c: [0.0, 0.0, 0.0, look.pores],
+            wood_d: [0.18, 0.48, look.sheen, 0.30],
             stone_a: [
                 SLATE.albedo[0],
                 SLATE.albedo[1],
@@ -586,6 +724,7 @@ impl Renderer {
             multiview_mask: None,
         });
         pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(1, &self.wood_group, &[]);
 
         pass.set_pipeline(&self.board_pipeline);
         pass.draw(0..3, 0..1);

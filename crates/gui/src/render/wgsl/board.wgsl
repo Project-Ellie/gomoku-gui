@@ -1,9 +1,18 @@
 // The board: background, wooden slab, grid lines, and the slab shadow.
+//
+// The wood is a photograph of a real board, supplied by the owner. It is tiled
+// with mirrored edges and two offset copies are crossfaded, so no seam and no
+// obvious repeat shows. Everything the photograph cannot provide at close range
+// is added procedurally on top, and the lighting never comes from the image.
 
 const SLAB_HALF: f32 = 7.85;
 const SLAB_RADIUS: f32 = 0.25;
 const BEVEL: f32 = 0.22;
 const LINE_LAST: f32 = 14.0;
+
+/// How much of the board one copy of the photograph covers, in cells. The
+/// proportions of the image are kept, so the grain is not stretched.
+const TILE: vec2<f32> = vec2<f32>(5.0, 8.6);
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -32,80 +41,74 @@ fn slab_sdf(p: vec2<f32>) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - SLAB_RADIUS;
 }
 
-/// The wood, in board-space uv: a colour and a height for the normal.
+/// Sample the photograph, with its grain turned to run along the board.
 ///
-/// `texel` is one screen pixel in board units. The fine detail fades out as a
-/// pixel starts to cover more than a pore, so the board never shimmers when it
-/// is small on screen and never looks bare when it is close up.
-///
-/// The grain runs along the x axis, so it varies with y. Real grain is not a set
-/// of even stripes: the bands wander, they are spaced unevenly, and their
-/// contrast varies along the length of the board. Two warped band layers plus a
-/// broad tone variation give that.
+/// The photograph's grain runs down the image, and a board's grain runs along its
+/// long axis, so the two axes are swapped. The proportions of the tile are chosen
+/// so that the swap keeps the grain at its natural width.
+fn sample_wood(t: vec2<f32>) -> vec3<f32> {
+    return textureSample(wood_texture, wood_sampler, mirror_uv(vec2<f32>(t.y, t.x))).rgb;
+}
+
+/// The wood, in board-space uv. `texel` is one screen pixel in board units.
 fn wood(uv: vec2<f32>, texel: f32) -> vec3<f32> {
-    let frequency = g.wood_a.w;
+    let tiled = uv / TILE;
 
-    // Slow wander across the grain, and a second layer at a different scale, so
-    // that bands never repeat at a fixed interval.
-    let wander = (fbm(vec2<f32>(uv.x * 0.55, uv.y * 0.30), 4) - 0.5) * 1.9;
-    let drift = (fbm(vec2<f32>(uv.x * 0.13, uv.y * 0.11), 3) - 0.5) * 3.4;
+    // Three copies of the photograph, at different scales and offsets, mixed by
+    // slow noise. Mirror tiling makes each copy's own edges match, so no seam
+    // shows; the different scales stop the three from repeating in step, which is
+    // what a single copy would do. The changing scale also varies the width of
+    // the grain, as real wood does.
+    let copy_a = sample_wood(tiled);
+    let copy_b = sample_wood(tiled * 0.62 + vec2<f32>(0.31, 0.57));
+    let copy_c = sample_wood(tiled * 1.61 + vec2<f32>(0.63, 0.19));
 
-    // Two band systems, neither of them evenly spaced.
-    let phase_a = uv.y * frequency + wander + drift;
-    let phase_b = uv.y * (frequency * 0.47) + wander * 0.6 + drift * 0.5;
-    let band_a = 0.5 + 0.5 * sin(phase_a * 6.2831853);
-    let band_b = 0.5 + 0.5 * sin(phase_b * 6.2831853);
+    // The weights vary faster than a tile does, so no single copy can own a whole
+    // tile: that is what stops the repeat from showing at any shift.
+    let weight_a = smoothstep(0.20, 0.80, fbm(vec2<f32>(uv.x * 0.15, uv.y * 0.12), 3));
+    let weight_b = smoothstep(0.20, 0.80, fbm(vec2<f32>(uv.x * 0.12 + 5.2, uv.y * 0.16 + 1.7), 3));
+    let total = max(weight_a + weight_b, 1e-3);
+    var albedo = (copy_a * (1.0 - weight_a) + copy_b * weight_a * (1.0 - weight_b)
+        + copy_c * weight_a * weight_b) / total;
+    albedo *= g.wood_a.rgb;
 
-    // Soft, asymmetric bands: a wide light body and a narrow dark line.
-    let grain_a = pow(band_a, 1.7);
-    let grain_b = pow(band_b, 2.6);
-    var grain = mix(grain_a, grain_b, 0.45);
+    // A slow drift of tone across the board, so the eye cannot find the tiles.
+    let figure = fbm(vec2<f32>(uv.x * 0.09, uv.y * 0.08), 3) - 0.5;
+    albedo *= 1.0 + figure * 0.12;
 
-    // A slow drift of tone across the board, as if it came from one part of a
-    // log. Kept small: a strong version reads as a stain rather than as wood.
-    let figure = fbm(vec2<f32>(uv.x * 0.09, uv.y * 0.08), 3);
-    grain = clamp(grain * (0.90 + figure * 0.20), 0.0, 1.0);
+    // Fine pores, added as a darkening. They fade out as one pixel starts to
+    // cover a pore, so the board never shimmers.
+    let pore_detail = smoothstep(0.6, 2.4, 1.0 / max(40.0 * texel, 1e-6));
+    let pores = smoothstep(0.45, 0.80, fbm(vec2<f32>(uv.x * 0.9, uv.y * 40.0), 4)) * pore_detail;
+    albedo *= mix(1.0, 0.55, pores * g.wood_c.w);
 
-    // Fine pores: thin dark marks that follow the grain. About forty to a cell,
-    // which is finer than a pixel when the whole board is on screen, so they
-    // fade with the pixel footprint.
-    let pore_frequency = 40.0;
-    let pores_per_pixel = 1.0 / max(pore_frequency * texel, 1e-6);
-    let pore_fade = smoothstep(0.7, 2.2, pores_per_pixel);
-    let pores = smoothstep(0.42, 0.78, fbm(vec2<f32>(uv.x * 0.9, uv.y * pore_frequency), 4))
-        * pore_fade;
-
-    // A mid-scale mottle that survives at every zoom, so the surface is never
-    // flat even when the pores have faded.
-    let mottle = fbm(vec2<f32>(uv.x * 2.6, uv.y * 7.5), 3) - 0.5;
-
-    let body = mix(g.wood_b.rgb, g.wood_a.rgb, grain * g.wood_b.w);
-    let albedo = mix(body, g.wood_c.rgb, pores * g.wood_c.w) * (1.0 + mottle * 0.07);
-
-    // The height field: one gentle ridge per band, and the pores cut into it.
-    let height = grain * 0.30 - pores * 0.40;
-    let slope_x = (fbm(vec2<f32>((uv.x + 0.02) * 0.9, uv.y * pore_frequency), 3)
-        - fbm(vec2<f32>((uv.x - 0.02) * 0.9, uv.y * pore_frequency), 3)) * pores;
-    let n = normalize(vec3<f32>(-slope_x * 3.0, -(height - 0.5) * 0.55, 1.0));
+    // The normal comes from the photograph's own grain, so the grain lines catch
+    // the light instead of looking printed. Only the gradient across the grain
+    // matters, because the grain runs along the board.
+    let offset = vec2<f32>(0.0, texel * 1.5);
+    let above = luminance(sample_wood((uv + offset) / TILE));
+    let below = luminance(sample_wood((uv - offset) / TILE));
+    let slope = (above - below) / max(2.0 * offset.y, 1e-6);
+    // A little relief across the grain too, from the mottle, so the surface is
+    // not a perfect cylinder.
+    let mottle = fbm(vec2<f32>(uv.x * 2.6, uv.y * 7.5), 3);
+    let n = normalize(vec3<f32>(-(mottle - 0.5) * 0.9, -slope * 0.09, 1.0));
 
     let v = vec3<f32>(0.0, 0.0, 1.0);
     let l = key_light();
     let n_dot_l = max(dot(n, l), 0.0);
     let n_dot_v = max(dot(n, v), 1e-4);
 
-    // Diffuse, with a little wrap so that the surface never goes fully black.
     let wrap = n_dot_l * 0.5 + 0.5;
     let diffuse = albedo * mix(g.env_a.w, 1.0, wrap);
 
-    // Two specular lobes: a tight varnish highlight along the grain, and a wide
-    // soft sheen. The board is varnished, so both are present.
+    // A varnished board has a tight highlight along the grain and a wide sheen,
+    // and it reflects the room. That reflection is what makes it look polished.
     let along = g.wood_d.x;
     let across = g.wood_d.y;
     let tight = specular(n, v, l, along, 0.055);
     let wide = specular(n, v, l, across, 0.035);
     let sheen = pow(1.0 - n_dot_v, 4.0) * g.wood_d.z;
-
-    // The varnish also reflects the room, which is what makes wood look wet.
     let reflection = environment(reflect(-v, n), mix(along, across, 0.5)) * g.wood_d.w;
 
     return tone_map(diffuse + vec3<f32>(tight * 0.55 + wide * 0.30 + sheen * 0.05) + reflection * 0.10);
@@ -151,8 +154,6 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let inward = normalize(vec2<f32>(7.0, 7.0) - uv + vec2<f32>(1e-5, 1e-5));
         let chamfer_normal = normalize(vec3<f32>(-inward * (1.0 - bevel), 0.30));
         let lit = max(dot(chamfer_normal, key_light()), 0.0);
-        // The chamfer is the same wood, lit at a different angle, and it catches
-        // a bright line where it faces the light.
         surface *= mix(0.50, 1.35, lit);
         surface += vec3<f32>(0.05) * pow(lit, 6.0);
     }
