@@ -11,6 +11,11 @@ use crate::storage::{read_to_string, write_atomic};
 /// The most recent record paths that are kept.
 pub const MAX_RECENT: usize = 10;
 
+/// The narrowest the right panel may be, in logical pixels.
+pub const MIN_PANEL_WIDTH: f32 = 120.0;
+/// The widest the right panel may be, in logical pixels.
+pub const MAX_PANEL_WIDTH: f32 = 600.0;
+
 /// Window geometry and state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -86,6 +91,25 @@ impl Default for OverlaySettings {
     }
 }
 
+/// The right panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelSettings {
+    /// The panel width in logical pixels.
+    pub width: f32,
+    /// True when the panel is collapsed.
+    pub collapsed: bool,
+}
+
+impl Default for PanelSettings {
+    fn default() -> PanelSettings {
+        PanelSettings {
+            width: 240.0,
+            collapsed: false,
+        }
+    }
+}
+
 /// The board material.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -157,6 +181,8 @@ pub struct Settings {
     pub view: ViewSettings,
     /// The board overlays.
     pub overlays: OverlaySettings,
+    /// The right panel.
+    pub panel: PanelSettings,
     /// The board material.
     pub board: BoardSettings,
     /// The stone set.
@@ -170,6 +196,11 @@ pub struct Settings {
 impl Settings {
     /// Clamp the values that a hand-edited file can put out of range.
     pub fn sanitize(&mut self) {
+        if !self.panel.width.is_finite() {
+            self.panel.width = PanelSettings::default().width;
+        }
+        self.panel.width = self.panel.width.clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
+
         if !self.audio.volume.is_finite() {
             self.audio.volume = AudioSettings::default().volume;
         }
@@ -276,6 +307,8 @@ mod tests {
         assert!(!settings.overlays.move_numbers);
         assert!(settings.overlays.last_move);
         assert!(settings.overlays.win_line);
+        assert_eq!(settings.panel.width, 240.0);
+        assert!(!settings.panel.collapsed);
         assert_eq!(settings.board.material, "aged_wood");
         assert_eq!(settings.stones.set, "slate_shell");
         assert!(settings.audio.enabled);
@@ -308,8 +341,14 @@ mod tests {
                 flipped: true,
             },
             overlays: OverlaySettings {
+                coordinates: false,
                 move_numbers: true,
-                ..OverlaySettings::default()
+                last_move: false,
+                win_line: false,
+            },
+            panel: PanelSettings {
+                width: 320.0,
+                collapsed: true,
             },
             board: BoardSettings {
                 material: "walnut".to_string(),
@@ -400,6 +439,29 @@ mod tests {
         settings.sanitize();
 
         assert_eq!(settings.audio.volume, AudioSettings::default().volume);
+    }
+
+    #[test]
+    fn sanitize_clamps_the_panel_width() {
+        let mut narrow = Settings {
+            panel: PanelSettings {
+                width: 5.0,
+                ..PanelSettings::default()
+            },
+            ..Settings::default()
+        };
+        narrow.sanitize();
+        assert_eq!(narrow.panel.width, MIN_PANEL_WIDTH);
+
+        let mut not_finite = Settings {
+            panel: PanelSettings {
+                width: f32::INFINITY,
+                ..PanelSettings::default()
+            },
+            ..Settings::default()
+        };
+        not_finite.sanitize();
+        assert_eq!(not_finite.panel.width, PanelSettings::default().width);
     }
 
     #[test]

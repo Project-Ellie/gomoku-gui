@@ -64,7 +64,7 @@ wire text.
 | `ruleset` | string | `freestyle`. |
 | `players.black` | string or absent | Free text, may be empty. |
 | `players.white` | string or absent | Free text, may be empty. |
-| `created` | string | RFC 3339 in UTC, for example `2026-09-22T18:04:11Z`. |
+| `created` | string | RFC 3339, for example `2026-09-22T18:04:11Z`. This application writes UTC. A reader accepts any valid offset. |
 | `result` | object | See below. |
 | `moves` | array of `[column, row]` | Column 0 is left. Row 0 is the top. Both in `0..=14`. Black moves first. |
 
@@ -120,6 +120,10 @@ move_numbers = false
 last_move = true
 win_line = true
 
+[panel]
+width = 240.0
+collapsed = false
+
 [board]
 material = "aged_wood"       # aged_wood | walnut | dark_marble | green_marble
 
@@ -142,6 +146,7 @@ recent = [
 | `window` | Size, position, and maximised state. Restored when the display layout still fits. |
 | `view` | Zoom and pan. `0.0` means the board is fitted and centred at start-up. |
 | `overlays` | The four toggles from the View menu. |
+| `panel` | Right panel width in logical pixels, and whether it is collapsed. The width is clamped to `120..=600`. |
 | `board` | Material preset name. |
 | `stones` | Stone set name. |
 | `audio` | Sound on or off, and the volume in `0.0..=1.0`. |

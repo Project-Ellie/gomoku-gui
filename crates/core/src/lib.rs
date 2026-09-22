@@ -13,9 +13,9 @@ mod record;
 mod storage;
 
 pub use config::{
-    AudioSettings, BoardSettings, ConfigLoad, ConfigNotice, FileSettings, MAX_RECENT,
-    OverlaySettings, Settings, StoneSettings, ViewSettings, WindowSettings, load_settings,
-    save_settings,
+    AudioSettings, BoardSettings, ConfigLoad, ConfigNotice, FileSettings, MAX_PANEL_WIDTH,
+    MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, Settings, StoneSettings,
+    ViewSettings, WindowSettings, load_settings, save_settings,
 };
 pub use error::{ConfigError, GameError, RecordError};
 pub use game::{Game, MetaData, Outcome, WinMethod};

@@ -36,7 +36,7 @@ in step. Delegating needs none.
 
 ## Operations
 
-### `play(point) -> Result<Outcome, GameError>`
+### `play(point) -> Result<(), GameError>`
 
 ```
 1. Reject if stone_at(point).is_some().     -> GameError::Occupied
@@ -46,7 +46,8 @@ in step. Delegating needs none.
 4. self.board.play(point)?                (engine validates again)
 5. self.moves.push(point); self.cursor += 1
 6. If status() is a win or a draw, write it into meta.outcome.
-7. Return the new outcome.
+7. Store the outcome from `Board::status()` in the metadata. The caller reads it
+     with `outcome()`.
 ```
 
 Step 3 is the truncation rule. Core does not show a dialog. The caller asks
@@ -86,11 +87,11 @@ Incremental stepping is used instead of a replay, so a cursor move is O(1)
 regardless of the game length. The board therefore always matches
 `moves[..cursor]`, and invariant I2 holds by construction.
 
-### `new_game()`, `set_players(black, white)`
+### `set_players(black, white)`
 
-A new game clears the move list, the outcome, and the
-cursor. The player names are kept, because the same two people usually play
-the next game.
+There is no `new_game`: a new game is a new `Game`. The caller drops the old one
+and sets the player names again, because the same two people usually play the
+next game.
 
 ## Game-end rules
 
@@ -116,7 +117,7 @@ order below, and the first failure wins.
 | # | Check | Error |
 |---|---|---|
 | 1 | `format` is `gomoku-gui/record` | `RecordError::WrongFormat` |
-| 2 | `version` is 1 | `RecordError::UnsupportedVersion(u32)` |
+| 2 | `version` is at most 1, so a newer file is refused | `RecordError::UnsupportedVersion(u32)` |
 | 3 | `size` is 15 | `RecordError::UnsupportedSize(u32)` |
 | 4 | `ruleset` is `freestyle` | `RecordError::UnsupportedRuleset` |
 | 5 | `moves.len() <= 225` | `RecordError::TooManyMoves` |

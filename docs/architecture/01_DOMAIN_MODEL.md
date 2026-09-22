@@ -58,8 +58,8 @@ pub struct Game {
 
 The aggregate is the only owner of the board. Callers never see `Board`.
 Callers ask `Game` for what they need: `stone_at`, `stones`, `last_move`,
-`status`, `move_number`, `to_move`, `cursor`, `len`, `is_rewound`,
-`pending_truncation`.
+`status`, `outcome`, `to_move`, `moves`, `len`, `is_empty`, `cursor`,
+`is_rewound`, `pending_truncation`.
 
 ## Invariants
 
@@ -109,8 +109,8 @@ pub enum GameError {
     Occupied,
     /// The game is over. Undo or start a new game.
     GameOver,
-    /// The cursor index is beyond the move list.
-    CursorOutOfRange,
+    /// The rules engine rejected the placement.
+    Rejected(PlayError),
 }
 ```
 
