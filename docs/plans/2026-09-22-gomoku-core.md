@@ -2244,22 +2244,13 @@ impl Default for AudioSettings {
 }
 
 /// The file settings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FileSettings {
     /// The directory of the last save or open.
     pub last_directory: Option<PathBuf>,
     /// The most recently used record paths, newest first.
     pub recent: Vec<PathBuf>,
-}
-
-impl Default for FileSettings {
-    fn default() -> FileSettings {
-        FileSettings {
-            last_directory: None,
-            recent: Vec::new(),
-        }
-    }
 }
 
 /// The settings of the application.
@@ -2323,7 +2314,7 @@ pub struct ConfigLoad {
 /// A missing file gives the defaults. A damaged file is moved aside so that
 /// the next start is clean. This function never fails.
 pub fn load_settings(path: &Path) -> ConfigLoad {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(text) = read_to_string(path) else {
         return ConfigLoad {
             settings: Settings::default(),
             notice: Some(ConfigNotice::Missing),
