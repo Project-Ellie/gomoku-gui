@@ -1626,7 +1626,8 @@ pub use record::{
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p gomoku-core`
-Expected: all tests pass, including 13 tests in `record::tests`.
+Expected: 15 new tests pass in `record::tests`, and the 21 earlier unit tests still
+pass.
 
 If the timestamp in the JSON is not the form the plan expects, that is acceptable: RFC 3339 allows both `Z` and `+00:00`. Do not change the code for it. Record what the encoder produced in your report file, because Task 5 freezes it in the golden file.
 
