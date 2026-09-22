@@ -45,6 +45,10 @@ const PANEL_INK: Color32 = Color32::from_rgb(26, 26, 30);
 /// The background of the row that the board is showing, lighter than the panel
 /// so that both stone colours stay visible on it.
 const PANEL_CURRENT: Color32 = Color32::from_rgb(178, 178, 184);
+/// The background of a text field on the middle grey panel. The dark theme gives
+/// a text field a near-black background, which turns the player names into two
+/// black bars.
+const PANEL_FIELD: Color32 = Color32::from_rgb(200, 200, 206);
 /// The colour of a black stone in the move list.
 const SLATE_MARK: Color32 = Color32::from_rgb(22, 22, 26);
 /// The colour of a white stone in the move list.
@@ -231,14 +235,20 @@ fn names(ui: &mut egui::Ui, session: &mut Session) {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Black").color(PANEL_INK));
-        let edit = egui::TextEdit::singleline(&mut black).desired_width(120.0);
+        let edit = egui::TextEdit::singleline(&mut black)
+            .desired_width(120.0)
+            .text_color(PANEL_INK)
+            .background_color(PANEL_FIELD);
         if ui.add(edit).changed() {
             changed = true;
         }
     });
     ui.horizontal(|ui| {
         ui.label(RichText::new("White").color(PANEL_INK));
-        let edit = egui::TextEdit::singleline(&mut white).desired_width(120.0);
+        let edit = egui::TextEdit::singleline(&mut white)
+            .desired_width(120.0)
+            .text_color(PANEL_INK)
+            .background_color(PANEL_FIELD);
         if ui.add(edit).changed() {
             changed = true;
         }
