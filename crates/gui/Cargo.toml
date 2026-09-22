@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 gomoku-core.workspace = true
+serde_json.workspace = true
+directories = "6"
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
@@ -18,6 +20,10 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "1"
 cpal = "0.18"
 png = "0.18"
+egui = "0.36"
+egui-wgpu = "0.36"
+egui-winit = "0.36"
+rfd = "0.17"
 
 [dev-dependencies]
 naga = "30"

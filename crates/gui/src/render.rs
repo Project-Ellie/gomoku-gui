@@ -77,8 +77,10 @@ impl WoodTexture {
 pub struct Globals {
     /// Centre in cells, pixels per cell, flipped (0.0 or 1.0).
     pub view: [f32; 4],
-    /// Framebuffer size in physical pixels.
-    pub window: [f32; 4],
+    /// The framebuffer width and height, then the viewport width and height.
+    pub frame: [f32; 4],
+    /// The viewport origin in the framebuffer.
+    pub origin: [f32; 4],
     /// The direction to the light.
     pub light: [f32; 4],
     /// Wood lighter rgb, grain frequency.
@@ -331,6 +333,24 @@ fn vertex_layouts() -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
             ],
         }),
     ]
+}
+
+/// Give egui's textures to its renderer. Every delta must be applied: egui
+/// reports the ones that were dropped if any are left over.
+pub fn apply_textures(
+    renderer: &mut egui_wgpu::Renderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    delta: &egui::TexturesDelta,
+) {
+    for (id, deltas) in &delta.set {
+        for image in deltas {
+            renderer.update_texture(device, queue, *id, image);
+        }
+    }
+    for id in &delta.free {
+        renderer.free_texture(id);
+    }
 }
 
 /// The most stones that can be on the board at once.
@@ -647,15 +667,18 @@ impl Renderer {
 
     /// The materials, the room, and the view for a fitted window.
     pub fn default_globals(width: u32, height: u32) -> Globals {
-        Renderer::globals_with_wood(width, height, WOOD)
+        Renderer::globals_with_wood(crate::camera::Viewport::window(width, height), WOOD)
     }
 
     /// The same, with a chosen look for the wood.
-    pub fn globals_with_wood(width: u32, height: u32, look: WoodLook) -> Globals {
-        let fit = crate::camera::Camera::fit_scale([width, height]);
+    pub fn globals_with_wood(viewport: crate::camera::Viewport, look: WoodLook) -> Globals {
+        let frame_width = viewport.x * 2.0 + viewport.width;
+        let frame_height = viewport.y * 2.0 + viewport.height;
+        let fit = crate::camera::Camera::fit_scale(viewport);
         Globals {
             view: [7.0, 7.0, fit, 0.0],
-            window: [width as f32, height as f32, 0.0, 0.0],
+            frame: [frame_width, frame_height, viewport.width, viewport.height],
+            origin: [viewport.x, viewport.y, 0.0, 0.0],
             light: [LIGHT[0], LIGHT[1], LIGHT[2], 0.0],
             // The photograph supplies the colour, so the first field is a
             // brightness multiplier rather than a tone.

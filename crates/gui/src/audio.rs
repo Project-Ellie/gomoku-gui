@@ -146,6 +146,9 @@ struct Mixer {
     voices: [Option<(usize, usize)>; VOICES],
     next_voice: usize,
     gain: f32,
+    /// The volume, shared with the user interface. Held as the bits of an `f32`,
+    /// because the audio thread must not take a lock.
+    volume: Arc<AtomicU32>,
     queue: Arc<Queue>,
 }
 
@@ -170,7 +173,8 @@ impl Mixer {
                     }
                 }
             }
-            let value = (sum * self.gain).clamp(-1.0, 1.0);
+            let volume = f32::from_bits(self.volume.load(Ordering::Relaxed));
+            let value = (sum * self.gain * volume).clamp(-1.0, 1.0);
             for sample in frame.iter_mut() {
                 *sample = value;
             }
@@ -181,6 +185,7 @@ impl Mixer {
 /// The sound of the game. Absent when the machine has no output device.
 pub struct Audio {
     queue: Arc<Queue>,
+    volume: Arc<AtomicU32>,
     next_variant: usize,
     // The stream stops when it is dropped, so it is kept for the life of the
     // application.
@@ -215,11 +220,13 @@ impl Audio {
             .collect();
 
         let queue = Arc::new(Queue::new());
+        let volume = Arc::new(AtomicU32::new(0.7_f32.to_bits()));
         let mixer = Mixer {
             buffers,
             voices: [None; VOICES],
             next_voice: 0,
             gain: 0.7,
+            volume: Arc::clone(&volume),
             queue: Arc::clone(&queue),
         };
 
@@ -227,9 +234,16 @@ impl Audio {
         stream.play().ok()?;
         Some(Audio {
             queue,
+            volume,
             next_variant: 0,
             _stream: stream,
         })
+    }
+
+    /// Set the volume, from 0 to 1. Takes effect on the next block.
+    pub fn set_volume(&self, volume: f32) {
+        self.volume
+            .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     /// Play a knock. `neighbours` is how many of the four orthogonal

@@ -4,8 +4,11 @@
 struct Globals {
     // centre.xy in cells, pixels per cell, flipped (0.0 or 1.0)
     view: vec4<f32>,
-    // framebuffer size in physical pixels, unused, unused
-    window: vec4<f32>,
+    // the framebuffer width and height, then the viewport width and height, in
+    // physical pixels
+    frame: vec4<f32>,
+    // the viewport origin in the framebuffer
+    origin: vec4<f32>,
     // light direction, unused
     light: vec4<f32>,
     // wood lighter rgb, grain frequency
@@ -44,18 +47,19 @@ fn luminance(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-/// A board point in cells to framebuffer pixels.
+/// A board point in cells to framebuffer pixels. The board is centred in the
+/// viewport, which is the part of the window the side panel leaves free.
 fn project_board(p: vec2<f32>) -> vec2<f32> {
     var d = p - g.view.xy;
     if (g.view.w > 0.5) {
         d = -d;
     }
-    return g.window.xy * 0.5 + d * g.view.z;
+    return g.origin.xy + g.frame.zw * 0.5 + d * g.view.z;
 }
 
 /// A framebuffer pixel to a board point in cells. The inverse of the above.
 fn unproject_board(frag: vec2<f32>) -> vec2<f32> {
-    var d = (frag - g.window.xy * 0.5) / g.view.z;
+    var d = (frag - g.origin.xy - g.frame.zw * 0.5) / g.view.z;
     if (g.view.w > 0.5) {
         d = -d;
     }
@@ -65,8 +69,8 @@ fn unproject_board(frag: vec2<f32>) -> vec2<f32> {
 /// Framebuffer pixels to clip space, with y up.
 fn to_clip(screen: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(
-        screen.x / g.window.x * 2.0 - 1.0,
-        1.0 - screen.y / g.window.y * 2.0,
+        screen.x / g.frame.x * 2.0 - 1.0,
+        1.0 - screen.y / g.frame.y * 2.0,
         0.0,
         1.0,
     );
@@ -171,6 +175,17 @@ fn environment(n: vec3<f32>, roughness: f32) -> vec3<f32> {
     let spot = pow(max(dot(n, l), 0.0), mix(180.0, 6.0, clamp(roughness, 0.0, 1.0)));
     colour += sky * spot * 0.55;
     return colour;
+}
+
+/// Linear colour to the encoding the framebuffer expects.
+///
+/// The surface is not an sRGB format, because the interface writes its own
+/// encoded colours; if the hardware encoded as well, everything egui drew would
+/// be converted twice. So the board encodes its own output here, once.
+fn encode(c: vec3<f32>) -> vec3<f32> {
+    let low = c * 12.92;
+    let high = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(high, low, c <= vec3<f32>(0.0031308));
 }
 
 /// A gentle filmic response, so that bright areas roll off instead of clipping.

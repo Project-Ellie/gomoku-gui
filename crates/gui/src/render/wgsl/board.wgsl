@@ -140,7 +140,7 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // The table: a dark neutral, a soft pool of light behind the board, and a
     // little noise so that it does not band.
     let centre = vec2<f32>(0.5, 0.5);
-    let radial = length((frag.xy / g.window.xy - centre) * vec2<f32>(1.0, 1.25));
+    let radial = length((frag.xy / g.frame.xy - centre) * vec2<f32>(1.0, 1.25));
     let pool = 1.0 - smoothstep(0.15, 0.95, radial);
     var table = mix(vec3<f32>(0.012, 0.013, 0.016), vec3<f32>(0.045, 0.048, 0.056), pool);
     table += dither(frag.xy) * 0.004;
@@ -184,5 +184,5 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     surface = mix(surface, vec3<f32>(0.004, 0.004, 0.005), line);
     surface *= 1.0 + lip * 0.10;
 
-    return vec4<f32>(tone_map(surface), 1.0);
+    return vec4<f32>(encode(tone_map(surface)), 1.0);
 }

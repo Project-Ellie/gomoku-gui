@@ -9,6 +9,8 @@ mod audio;
 mod camera;
 mod preview;
 mod render;
+mod session;
+mod ui;
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +30,7 @@ fn main() -> Result<()> {
     let mut size: u32 = 1100;
     let mut frames: Option<u32> = None;
     let mut demo = false;
+    let mut ui_preview = false;
     let mut pixels_per_cell: Option<f32> = None;
     let mut gain: Option<f32> = None;
     let mut centre: Option<[f32; 2]> = None;
@@ -55,6 +58,7 @@ fn main() -> Result<()> {
                 );
             }
             "--demo" => demo = true,
+            "--preview-ui" => ui_preview = true,
             "--wood-gain" => {
                 gain = Some(
                     arguments
@@ -92,14 +96,36 @@ fn main() -> Result<()> {
     let game = if demo { demo_game() } else { Game::new() };
 
     if let Some(path) = preview {
-        return write_preview(&path, size, &game, pixels_per_cell, centre, gain);
+        return write_preview(
+            &path,
+            size,
+            &game,
+            pixels_per_cell,
+            centre,
+            gain,
+            ui_preview,
+        );
     }
 
+    // The settings, and the game in progress.
+    let settings = match session::settings_path() {
+        Ok(path) => {
+            let loaded = gomoku_core::load_settings(&path);
+            if let Some(notice) = &loaded.notice {
+                log::info!("settings: {notice:?}");
+            }
+            loaded.settings
+        }
+        Err(error) => {
+            log::warn!("the settings have no home, so the defaults apply: {error}");
+            gomoku_core::Settings::default()
+        }
+    };
     let audio = audio::Audio::start();
     if audio.is_none() {
         log::warn!("no audio output device was found, so the knock is off");
     }
-    app::App::new(game, audio, frames).run()
+    app::App::new(settings, audio, frames).run()
 }
 
 fn print_help() {
@@ -110,6 +136,7 @@ fn print_help() {
   --demo              start from a short opening, so the stones are visible
   --frames N          quit after N frames (a smoke test)
   --preview FILE.bmp  render one frame to a file and exit
+  --preview-ui        include the interface in the preview
   --size N            the window or preview size in pixels (default 1100)
   --pixels-per-cell N zoom for a preview (default: fit the board)
   --wood-gain F       a brightness multiplier on the wood photograph (default 1)
@@ -151,6 +178,7 @@ fn write_preview(
     pixels_per_cell: Option<f32>,
     centre: Option<[f32; 2]>,
     gain: Option<f32>,
+    with_ui: bool,
 ) -> Result<()> {
     let gpu = preview::HeadlessGpu::new()?;
     let wood = render::WoodTexture::load()?;
@@ -162,7 +190,7 @@ fn write_preview(
         &wood,
     );
     let board_size = [size, size];
-    let mut camera = Camera::fit(board_size);
+    let mut camera = Camera::fit(camera::Viewport::window(board_size[0], board_size[1]));
     if let Some(pixels) = pixels_per_cell {
         camera.pixels_per_cell = pixels;
     }
@@ -173,12 +201,28 @@ fn write_preview(
         gain: gain.unwrap_or(render::WOOD.gain),
         ..render::WOOD
     };
-    renderer.set_globals(
-        &gpu.queue,
-        &app::globals_for_wood(&camera, board_size, look),
-    );
+    let viewport = camera::Viewport::window(board_size[0], board_size[1]);
+    let mut globals = Renderer::globals_with_wood(viewport, look);
+    globals.view = [
+        camera.centre[0],
+        camera.centre[1],
+        camera.pixels_per_cell,
+        if camera.flipped { 1.0 } else { 0.0 },
+    ];
+    renderer.set_globals(&gpu.queue, &globals);
     renderer.set_stones(&gpu.queue, &app::stone_instances(game));
-    gpu.write_frame(path, size, size, &renderer)?;
+    if with_ui {
+        let settings = gomoku_core::Settings::default();
+        let mut session = session::Session::new(&settings);
+        session.game = game.clone();
+        session.camera = camera;
+        session.gain = look.gain;
+        session.viewport = viewport;
+        session.pixels_per_point = 1.0;
+        gpu.write_ui_frame(path, size, &renderer, &mut session)?;
+    } else {
+        gpu.write_frame(path, size, size, &renderer)?;
+    }
     println!("wrote {}", path.display());
     Ok(())
 }

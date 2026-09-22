@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 
 /// The colour format used when there is no surface to take a format from.
-pub const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+pub const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A device and queue, with no surface. Used by the preview and by any future
 /// offscreen work.
@@ -56,7 +56,7 @@ impl HeadlessGpu {
         height: u32,
         renderer: &crate::render::Renderer,
     ) -> Result<()> {
-        self.write_frame_with(path, width, height, renderer, |_| {})
+        self.write_frame_with(path, width, height, renderer, |_, _| {})
     }
 
     /// Render one frame, let the caller add more passes, and write a BMP.
@@ -66,7 +66,7 @@ impl HeadlessGpu {
         width: u32,
         height: u32,
         renderer: &crate::render::Renderer,
-        extra: impl FnOnce(&mut wgpu::CommandEncoder),
+        extra: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) -> Result<()> {
         let samples = renderer.sample_count();
         let multisampled = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -126,7 +126,7 @@ impl HeadlessGpu {
                 a: 1.0,
             },
         );
-        extra(&mut encoder);
+        extra(&mut encoder, &view(&resolved));
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &resolved,
@@ -171,6 +171,83 @@ impl HeadlessGpu {
         drop(data);
         readback.unmap();
         Ok(())
+    }
+}
+
+impl HeadlessGpu {
+    /// Render the board, then the interface, into one file. Used to check the
+    /// interface without opening a window.
+    pub fn write_ui_frame(
+        &self,
+        path: &Path,
+        size: u32,
+        renderer: &crate::render::Renderer,
+        session: &mut crate::session::Session,
+    ) -> Result<()> {
+        let context = egui::Context::default();
+        let mut egui_renderer = egui_wgpu::Renderer::new(
+            &self.device,
+            PREVIEW_FORMAT,
+            egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                ..Default::default()
+            },
+        );
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size as f32, size as f32),
+            )),
+            ..Default::default()
+        };
+        let mut requests = crate::ui::Requests::default();
+        let output = context.run_ui(input, |ui| {
+            requests = crate::ui::draw(ui, session);
+        });
+        let _ = requests;
+        let egui::FullOutput {
+            textures_delta,
+            shapes,
+            pixels_per_point,
+            ..
+        } = output;
+        crate::render::apply_textures(
+            &mut egui_renderer,
+            &self.device,
+            &self.queue,
+            &textures_delta,
+        );
+        let jobs = context.tessellate(shapes, pixels_per_point);
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [size, size],
+            pixels_per_point,
+        };
+        let mut textures_delta = textures_delta;
+        textures_delta.clear();
+
+        self.write_frame_with(path, size, size, renderer, |encoder, target| {
+            let uploads =
+                egui_renderer.update_buffers(&self.device, &self.queue, encoder, &jobs, &screen);
+            self.queue.submit(uploads);
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("interface"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let mut pass = pass.forget_lifetime();
+            egui_renderer.render(&mut pass, &jobs, &screen);
+        })
     }
 }
 

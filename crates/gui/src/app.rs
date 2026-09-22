@@ -1,11 +1,13 @@
-//! The window: a surface, the input, and the frame loop.
+//! The window: a surface, the interface, the file handling, and the frame loop.
 //!
-//! Frames are drawn on demand. An idle window costs nothing.
+//! The board is drawn by our own passes. The interface is drawn by egui on top,
+//! in the same surface, after the samples are resolved. Events go to egui first;
+//! the board only sees a pointer or a key that egui did not want.
 
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use gomoku_core::Game;
+use gomoku_core::Settings;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -13,8 +15,10 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::audio::Audio;
-use crate::camera::Camera;
-use crate::render::{Globals, Renderer, SHELL, SLATE, StoneInstance};
+use crate::camera::Viewport;
+use crate::render::{Globals, Renderer, SHELL, SLATE, StoneInstance, WoodTexture};
+use crate::session::{After, Dialog, Session, WindowGeometry};
+use crate::ui::{self, Requests};
 
 /// How far the pointer may move and still count as a click rather than a drag.
 const CLICK_SLOP: f32 = 4.0;
@@ -23,21 +27,18 @@ const SAMPLES: u32 = 4;
 
 /// The application.
 pub struct App {
-    game: Game,
-    camera: Camera,
+    session: Session,
+    settings: Settings,
     audio: Option<Audio>,
     state: Option<State>,
-    /// Where the pointer is, in physical pixels.
-    pointer: [f32; 2],
     /// Where the left button went down, if it is down.
     press: Option<[f32; 2]>,
     /// The number of frames to draw before quitting. Used by the smoke test.
     frame_limit: Option<u32>,
     frames: u32,
     dirty: bool,
-    /// True once the loop has been asked to stop, so that a queued redraw does
-    /// not draw one more frame.
     closing: bool,
+    geometry: WindowGeometry,
 }
 
 struct State {
@@ -48,38 +49,62 @@ struct State {
     queue: wgpu::Queue,
     renderer: Renderer,
     multisampled: wgpu::Texture,
+    egui: egui::Context,
+    egui_state: egui_winit::State,
+    egui_renderer: egui_wgpu::Renderer,
 }
 
 impl App {
     /// A new application. `frame_limit` quits after that many frames.
-    pub fn new(game: Game, audio: Option<Audio>, frame_limit: Option<u32>) -> App {
+    pub fn new(settings: Settings, audio: Option<Audio>, frame_limit: Option<u32>) -> App {
+        let geometry = WindowGeometry {
+            width: settings.window.width,
+            height: settings.window.height,
+            x: settings.window.x,
+            y: settings.window.y,
+            maximized: settings.window.maximized,
+        };
         App {
-            game,
-            camera: Camera::fit([1200, 950]),
+            session: Session::new(&settings),
+            settings,
             audio,
             state: None,
-            pointer: [0.0, 0.0],
             press: None,
             frame_limit,
             frames: 0,
             dirty: true,
             closing: false,
+            geometry,
         }
     }
 
     /// Open the window and run until it is closed.
     pub fn run(mut self) -> Result<()> {
+        if let Some(offer) = self.session.autosave_to_offer() {
+            self.session.dialog = Some(Dialog::Resume { source: offer });
+        }
         let event_loop = EventLoop::new().context("cannot open an event loop")?;
         event_loop.set_control_flow(ControlFlow::Wait);
-        event_loop
-            .run_app(&mut self)
-            .context("the window loop failed")
+        let result = event_loop.run_app(&mut self);
+        self.write_settings();
+        result.context("the window loop failed")
     }
 
-    fn size(&self) -> [u32; 2] {
-        match &self.state {
-            Some(state) => [state.config.width, state.config.height],
-            None => [1200, 950],
+    /// Write the settings, and the game in progress, on the way out.
+    fn write_settings(&mut self) {
+        match crate::session::settings_path() {
+            Ok(path) => {
+                let settings = self.session.settings(&self.geometry);
+                if let Err(error) = gomoku_core::save_settings(&path, &settings) {
+                    log::warn!("the settings could not be saved: {error}");
+                }
+            }
+            Err(error) => log::warn!("the settings have no home: {error}"),
+        }
+        if self.session.changed() {
+            self.session.autosave();
+        } else if self.session.game.is_empty() {
+            self.session.discard_autosave();
         }
     }
 
@@ -90,67 +115,102 @@ impl App {
         }
     }
 
-    fn undo(&mut self) {
-        if self.game.undo() {
+    /// Perform an action that may lose unsaved changes.
+    fn attempt(&mut self, then: After, event_loop: &ActiveEventLoop) {
+        if self.session.changed() {
+            self.session.dialog = Some(Dialog::Unsaved { then });
+            self.request_redraw();
+            return;
+        }
+        self.perform(then, event_loop);
+    }
+
+    /// Perform an action, whatever the state of the game.
+    fn perform(&mut self, then: After, event_loop: &ActiveEventLoop) {
+        match then {
+            After::NewGame => {
+                self.session.new_game();
+                self.request_redraw();
+            }
+            After::Open => self.ask_to_open(),
+            After::Quit => {
+                self.closing = true;
+                event_loop.exit();
+            }
+        }
+    }
+
+    /// Ask for a file and open it.
+    fn ask_to_open(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Gomoku game", &["json"])
+            .set_title("Open a game");
+        if let Some(directory) = &self.session.last_directory {
+            dialog = dialog.set_directory(directory);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.session.open(&path);
             self.request_redraw();
         }
     }
 
-    fn fit(&mut self) {
-        self.camera.reset(self.size());
+    /// Ask for a file and save to it.
+    fn ask_to_save(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Gomoku game", &["json"])
+            .set_title("Save the game")
+            .set_file_name("gomoku.json");
+        if let Some(directory) = &self.session.last_directory {
+            dialog = dialog.set_directory(directory);
+        }
+        if let Some(path) = dialog.save_file() {
+            self.session.save_to(&path);
+            self.request_redraw();
+        }
+    }
+
+    /// Save, asking for a file when the game has no name yet.
+    fn save(&mut self, event_loop: &ActiveEventLoop) {
+        if self.session.save() {
+            self.ask_to_save();
+            return;
+        }
+        if let Some(after) = self.session.after_save.take() {
+            self.perform(after, event_loop);
+        }
         self.request_redraw();
     }
 
-    fn flip(&mut self) {
-        self.camera.flipped = !self.camera.flipped;
-        self.request_redraw();
-    }
-
-    /// Place a stone, and knock when it lands.
-    fn place(&mut self, intersection: [u8; 2]) {
-        let Some(point) = gomoku_core::point(intersection[1], intersection[0]) else {
-            return;
-        };
-        if self.game.stone_at(point).is_some() {
+    /// Act on what the interface asked for.
+    fn run_requests(&mut self, requests: Requests, event_loop: &ActiveEventLoop) {
+        if let Some(after) = self.session.perform.take() {
+            self.perform(after, event_loop);
             return;
         }
-        if self.game.play(point).is_err() {
-            return;
+        if requests.quit {
+            self.attempt(After::Quit, event_loop);
+        } else if requests.new_game {
+            self.attempt(After::NewGame, event_loop);
+        } else if requests.open {
+            self.attempt(After::Open, event_loop);
+        } else if requests.save {
+            self.save(event_loop);
+        } else if requests.save_as {
+            self.ask_to_save();
         }
-        if let Some(audio) = &mut self.audio {
-            audio.knock(neighbours(&self.game, intersection));
-        }
-        self.request_redraw();
     }
 
-    fn title(&self) -> String {
-        let status = match self.game.outcome() {
-            gomoku_core::Outcome::Ongoing => match self.game.to_move() {
-                gomoku_core::Color::Black => "Black to move".to_string(),
-                gomoku_core::Color::White => "White to move".to_string(),
-            },
-            gomoku_core::Outcome::Won { winner, .. } => match winner {
-                gomoku_core::Color::Black => "Black wins".to_string(),
-                gomoku_core::Color::White => "White wins".to_string(),
-            },
-            gomoku_core::Outcome::Draw => "A draw".to_string(),
-        };
-        format!("Gomoku — {status} — {} stones", self.game.len())
-    }
-
-    /// Draw one frame. Returns true when the frame limit is reached.
-    fn draw(&mut self) -> bool {
+    fn draw(&mut self, event_loop: &ActiveEventLoop) -> bool {
         if self.closing {
             return true;
         }
         let Some(state) = &mut self.state else {
             return true;
         };
+
         let frame = match state.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                // The surface no longer matches the window. Reconfigure, and use
-                // the frame that was returned.
                 state.surface.configure(&state.device, &state.config);
                 frame
             }
@@ -162,13 +222,10 @@ impl App {
                 log::warn!("the surface reported a validation error; skipping the frame");
                 return false;
             }
-            // A timeout or an occluded window: try again when there is something
-            // to draw.
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return false;
             }
         };
-
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -176,18 +233,41 @@ impl App {
             .multisampled
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let size = [state.config.width, state.config.height];
-        let mut globals = Renderer::default_globals(size[0], size[1]);
-        globals.view = [
-            self.camera.centre[0],
-            self.camera.centre[1],
-            self.camera.pixels_per_cell,
-            if self.camera.flipped { 1.0 } else { 0.0 },
-        ];
-        state.renderer.set_globals(&state.queue, &globals);
+        // The interface runs first, because it is what works out where the board
+        // may be drawn: the panels take their space from the window.
+        let raw_input = state.egui_state.take_egui_input(&state.window);
+        let mut requests = Requests::default();
+        let full_output = state.egui.run_ui(raw_input, |ui| {
+            requests = ui::draw(ui, &mut self.session);
+        });
+        let egui::FullOutput {
+            platform_output,
+            textures_delta,
+            shapes,
+            pixels_per_point,
+            ..
+        } = full_output;
+        state
+            .egui_state
+            .handle_platform_output(&state.window, platform_output);
+        crate::render::apply_textures(
+            &mut state.egui_renderer,
+            &state.device,
+            &state.queue,
+            &textures_delta,
+        );
+        let jobs = state.egui.tessellate(shapes, pixels_per_point);
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [state.config.width, state.config.height],
+            pixels_per_point: state.egui.pixels_per_point(),
+        };
+        // The board, with the viewport the interface just reported.
         state
             .renderer
-            .set_stones(&state.queue, &stone_instances(&self.game));
+            .set_globals(&state.queue, &globals_for(&self.session));
+        state
+            .renderer
+            .set_stones(&state.queue, &stone_instances(&self.session.game));
 
         let mut encoder = state
             .device
@@ -205,10 +285,55 @@ impl App {
                 a: 1.0,
             },
         );
-        state.queue.submit([encoder.finish()]);
-        // Presentation belongs to the queue, and a dropped surface texture is
-        // discarded rather than shown.
+        let uploads = state.egui_renderer.update_buffers(
+            &state.device,
+            &state.queue,
+            &mut encoder,
+            &jobs,
+            &screen,
+        );
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("interface"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let mut pass = pass.forget_lifetime();
+            state.egui_renderer.render(&mut pass, &jobs, &screen);
+        }
+        let mut textures_delta = textures_delta;
+        textures_delta.clear();
+
+        state
+            .queue
+            .submit(uploads.into_iter().chain([encoder.finish()]));
         state.queue.present(frame);
+
+        if let Some(touching) = self.session.knock.take() {
+            if let Some(audio) = &mut self.audio {
+                if self.session.sound {
+                    audio.set_volume(self.session.volume);
+                    audio.knock(touching);
+                }
+            }
+        }
+        if self.session.title_stale {
+            state.window.set_title(&self.session.title());
+            self.session.title_stale = false;
+        }
+
+        self.run_requests(requests, event_loop);
 
         self.dirty = false;
         self.frames += 1;
@@ -222,7 +347,7 @@ impl App {
         }
     }
 
-    fn configure(&mut self, event_loop: &ActiveEventLoop, window: Arc<Window>) -> Result<State> {
+    fn configure(&mut self, window: Arc<Window>) -> Result<State> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::GL,
@@ -238,8 +363,6 @@ impl App {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
-            // Limit bucketing hides the real adapter limits. It matters only for
-            // browsers that expose the GPU to untrusted content.
             apply_limit_buckets: false,
         }))
         .context("no graphics adapter is available")?;
@@ -254,11 +377,13 @@ impl App {
         .context("the graphics adapter refused a device")?;
 
         let capabilities = surface.get_capabilities(&adapter);
+        // A format without the sRGB encoding: the board encodes its own output
+        // and egui writes its own, so the hardware must not encode again.
         let format = capabilities
             .formats
             .iter()
             .copied()
-            .find(wgpu::TextureFormat::is_srgb)
+            .find(|format| !format.is_srgb())
             .unwrap_or(capabilities.formats[0]);
         let alpha_mode = capabilities
             .alpha_modes
@@ -279,17 +404,33 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let wood = match crate::render::WoodTexture::load() {
-            Ok(wood) => wood,
-            Err(error) => {
-                log::error!("the wood photograph could not be loaded: {error:#}");
-                event_loop.exit();
-                return Err(error);
-            }
-        };
+        let wood = WoodTexture::load()?;
         let renderer = Renderer::new(&device, &queue, format, SAMPLES, &wood);
         let multisampled = create_multisampled(&device, &config);
-        let _ = event_loop;
+
+        let egui = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(8192),
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(
+            &device,
+            format,
+            egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                ..Default::default()
+            },
+        );
+
+        self.session.viewport = Viewport::window(config.width, config.height);
+        self.session.pixels_per_point = egui.pixels_per_point();
+        self.session
+            .apply_view(&self.settings, [config.width, config.height]);
+
         Ok(State {
             window,
             surface,
@@ -298,6 +439,9 @@ impl App {
             queue,
             renderer,
             multisampled,
+            egui,
+            egui_state,
+            egui_renderer,
         })
     }
 }
@@ -322,26 +466,24 @@ fn create_multisampled(
     })
 }
 
-/// How many of the four orthogonal neighbours of an intersection hold a stone.
-fn neighbours(game: &Game, intersection: [u8; 2]) -> usize {
-    let mut count = 0;
-    for (dx, dy) in [(-1_i8, 0_i8), (1, 0), (0, -1), (0, 1)] {
-        let column = intersection[0] as i8 + dx;
-        let row = intersection[1] as i8 + dy;
-        if !(0..15).contains(&column) || !(0..15).contains(&row) {
-            continue;
-        }
-        if let Some(point) = gomoku_core::point(row as u8, column as u8) {
-            if game.stone_at(point).is_some() {
-                count += 1;
-            }
-        }
-    }
-    count
+/// The uniform block for a session: the view, the viewport, and the materials.
+fn globals_for(session: &Session) -> Globals {
+    let look = crate::render::WoodLook {
+        gain: session.gain,
+        ..crate::render::WOOD
+    };
+    let mut globals = Renderer::globals_with_wood(session.viewport, look);
+    globals.view = [
+        session.camera.centre[0],
+        session.camera.centre[1],
+        session.camera.pixels_per_cell,
+        if session.camera.flipped { 1.0 } else { 0.0 },
+    ];
+    globals
 }
 
 /// The stones to draw, in play order.
-pub fn stone_instances(game: &Game) -> Vec<StoneInstance> {
+pub fn stone_instances(game: &gomoku_core::Game) -> Vec<StoneInstance> {
     game.stones()
         .enumerate()
         .map(|(index, (point, colour))| {
@@ -371,8 +513,11 @@ impl ApplicationHandler for App {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title(self.title())
-            .with_inner_size(winit::dpi::LogicalSize::new(1180.0_f64, 950.0_f64));
+            .with_title(self.session.title())
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                self.geometry.width as f64,
+                self.geometry.height as f64,
+            ));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -381,10 +526,10 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match self.configure(event_loop, Arc::clone(&window)) {
+        match self.configure(Arc::clone(&window)) {
             Ok(state) => {
-                state.window.set_title(&self.title());
-                self.camera = Camera::fit([state.config.width, state.config.height]);
+                state.window.set_title(&self.session.title());
+                self.session.title_stale = false;
                 self.state = Some(state);
                 self.request_redraw();
             }
@@ -401,8 +546,38 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // The interface sees every event first.
+        if let Some(state) = &mut self.state {
+            let response = state.egui_state.on_window_event(&state.window, &event);
+            if response.repaint {
+                self.dirty = true;
+            }
+        }
+        // The interface claims the pointer only while it is dragging something,
+        // such as the divider of the side panel. Everywhere else the board is
+        // drawn outside egui, so the application decides who a click belongs to.
+        let wants_pointer = self
+            .state
+            .as_ref()
+            .map(|state| state.egui.egui_wants_pointer_input())
+            .unwrap_or(false)
+            || !self.session.on_board();
+        let wants_keyboard = self
+            .state
+            .as_ref()
+            .map(|state| state.egui.egui_wants_keyboard_input())
+            .unwrap_or(false);
+        let modal = self.session.dialog.is_some();
+
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                if self.session.changed() {
+                    self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });
+                    self.request_redraw();
+                } else {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(state) = &mut self.state {
                     if size.width > 0 && size.height > 0 {
@@ -410,68 +585,161 @@ impl ApplicationHandler for App {
                         state.config.height = size.height;
                         state.surface.configure(&state.device, &state.config);
                         state.multisampled = create_multisampled(&state.device, &state.config);
+                        self.session.viewport = Viewport::window(size.width, size.height);
                     }
                 }
-                self.camera.clamp(self.size());
+                self.session.camera.clamp(self.session.viewport);
                 self.request_redraw();
             }
+            WindowEvent::Moved(position) => {
+                self.geometry.x = Some(position.x as f32);
+                self.geometry.y = Some(position.y as f32);
+            }
             WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(state) = &self.state {
+                    self.session.pixels_per_point = state.egui.pixels_per_point();
+                }
                 self.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = [position.x as f32, position.y as f32];
+                self.session.pointer = [position.x as f32, position.y as f32];
+                self.session.update_hover();
+                self.dirty = true;
                 if let Some(press) = self.press {
-                    let delta = [self.pointer[0] - press[0], self.pointer[1] - press[1]];
+                    let delta = [
+                        self.session.pointer[0] - press[0],
+                        self.session.pointer[1] - press[1],
+                    ];
                     if delta[0].abs() > CLICK_SLOP || delta[1].abs() > CLICK_SLOP {
                         self.press = None;
-                        self.camera.pan(self.size(), delta);
-                        self.request_redraw();
+                        self.session.camera.pan(self.session.viewport, delta);
+                        self.session.update_hover();
                     }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button != MouseButton::Left {
+                if button != MouseButton::Left || wants_pointer || modal {
                     return;
                 }
                 match state {
-                    ElementState::Pressed => self.press = Some(self.pointer),
+                    ElementState::Pressed => self.press = Some(self.session.pointer),
                     ElementState::Released => {
                         if let Some(press) = self.press.take() {
-                            let moved = (self.pointer[0] - press[0]).abs() > CLICK_SLOP
-                                || (self.pointer[1] - press[1]).abs() > CLICK_SLOP;
+                            let moved = (self.session.pointer[0] - press[0]).abs() > CLICK_SLOP
+                                || (self.session.pointer[1] - press[1]).abs() > CLICK_SLOP;
                             if !moved {
-                                if let Some(intersection) =
-                                    self.camera.intersection(self.size(), self.pointer)
+                                if let Some(intersection) = self
+                                    .session
+                                    .camera
+                                    .intersection(self.session.viewport, self.session.pointer)
                                 {
-                                    self.place(intersection);
+                                    if let Some(point) =
+                                        gomoku_core::point(intersection[1], intersection[0])
+                                    {
+                                        self.session.place(point);
+                                        self.session.update_hover();
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                self.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if wants_pointer {
+                    return;
+                }
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, lines) => lines * 0.15,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32 * 0.0015,
                 };
-                self.camera
-                    .zoom_about(self.size(), self.pointer, amount.exp());
+                self.session.camera.zoom_about(
+                    self.session.viewport,
+                    self.session.pointer,
+                    amount.exp(),
+                );
+                self.session.update_hover();
                 self.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != ElementState::Pressed {
+                if event.state != ElementState::Pressed || wants_keyboard {
                     return;
                 }
                 match &event.logical_key {
-                    Key::Named(NamedKey::Escape) => event_loop.exit(),
-                    Key::Named(NamedKey::Space) | Key::Named(NamedKey::Backspace) => self.undo(),
-                    Key::Character(text) => match text.as_str() {
-                        "f" | "0" => self.fit(),
-                        "u" => self.undo(),
-                        "v" => self.flip(),
-                        _ => {}
-                    },
+                    Key::Named(NamedKey::Escape) => {
+                        if self.session.dialog.is_some() {
+                            self.session.dialog = None;
+                            self.request_redraw();
+                        } else if self.session.changed() {
+                            self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });
+                            self.request_redraw();
+                        } else {
+                            event_loop.exit();
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.session.rewind();
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.session.forward();
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::Home) => {
+                        self.session.seek(0);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::End) => {
+                        self.session.seek(usize::MAX);
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Space) | Key::Named(NamedKey::Backspace) => {
+                        self.session.undo();
+                        self.request_redraw();
+                    }
+                    Key::Character(text) => {
+                        for command in text.chars() {
+                            match command {
+                                'u' => self.session.undo(),
+                                'f' | '0' => self.session.fit(),
+                                'v' => self.session.flip(),
+                                'c' => {
+                                    self.session.toggles.coordinates =
+                                        !self.session.toggles.coordinates
+                                }
+                                'm' => {
+                                    self.session.toggles.move_numbers =
+                                        !self.session.toggles.move_numbers
+                                }
+                                'l' => {
+                                    self.session.toggles.last_move = !self.session.toggles.last_move
+                                }
+                                'w' => {
+                                    self.session.toggles.win_line = !self.session.toggles.win_line
+                                }
+                                '+' | '=' => self.session.camera.zoom_about(
+                                    self.session.viewport,
+                                    [
+                                        self.session.viewport.width * 0.5,
+                                        self.session.viewport.height * 0.5,
+                                    ],
+                                    1.15,
+                                ),
+                                '-' => self.session.camera.zoom_about(
+                                    self.session.viewport,
+                                    [
+                                        self.session.viewport.width * 0.5,
+                                        self.session.viewport.height * 0.5,
+                                    ],
+                                    1.0 / 1.15,
+                                ),
+                                _ => {}
+                            }
+                        }
+                        self.session.update_hover();
+                        self.request_redraw();
+                    }
                     _ => {}
                 }
             }
@@ -480,42 +748,25 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                if self.draw() {
+                // The interface runs inside the draw, so its requests are known
+                // only afterwards.
+                if self.draw(event_loop) {
                     event_loop.exit();
-                    return;
-                }
-                if let Some(state) = &self.state {
-                    state.window.set_title(&self.title());
                 }
             }
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // A frame is drawn when something changed, and while a frame limit is
-        // being counted down.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if !self.closing && (self.dirty || self.frame_limit.is_some()) {
             if let Some(state) = &self.state {
                 state.window.request_redraw();
             }
         }
-        let _ = event_loop;
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         log::info!("closing after {} frames", self.frames);
     }
-}
-
-/// The same, with a chosen board material.
-pub fn globals_for_wood(camera: &Camera, size: [u32; 2], look: crate::render::WoodLook) -> Globals {
-    let mut globals = Renderer::globals_with_wood(size[0], size[1], look);
-    globals.view = [
-        camera.centre[0],
-        camera.centre[1],
-        camera.pixels_per_cell,
-        if camera.flipped { 1.0 } else { 0.0 },
-    ];
-    globals
 }

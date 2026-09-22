@@ -172,5 +172,5 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
         colour *= 1.0 - edge * 0.06;
     }
 
-    return vec4<f32>(tone_map(colour), 1.0);
+    return vec4<f32>(encode(tone_map(colour)), 1.0);
 }
