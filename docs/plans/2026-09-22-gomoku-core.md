@@ -1113,10 +1113,14 @@ proptest! {
         for step in steps {
             apply(&mut game, step);
         }
-        let before = game.clone();
+        // Forward stops at the latest move, so the cycle restores the live
+        // position. The walk can leave a rewound view, so compare against the
+        // live state.
+        let mut live_before = game.clone();
+        live_before.live();
         while game.rewind() {}
         while game.forward() {}
-        prop_assert_eq!(game, before);
+        prop_assert_eq!(game, live_before);
     }
 
     #[test]
