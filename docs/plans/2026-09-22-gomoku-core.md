@@ -1860,21 +1860,24 @@ fn temporary_path(path: &Path) -> PathBuf {
 
 - [ ] **Step 4: Create the golden file and verify it**
 
-Create `crates/core/tests/golden/hotseat-v1.json` by hand from the schema in
-`docs/architecture/03_PERSISTENCE.md`: the format marker, version 1, size 15,
-the rule set, both player names, the start time of `golden_game`, a result of
-`{"kind": "ongoing"}`, and four moves as `[column, row]` pairs, namely
+Create `crates/core/tests/golden/hotseat-v1.json` **from the encoder, not by hand**.
+The encoder is `serde_json::to_string_pretty`, and it writes every array element
+on its own line, so `moves` appears as `[`, `7`, `,`, `7`, `]` across five lines.
+A file typed by hand from the schema example will not match.
+
+The reliable way to produce it:
+
+1. Add a temporary test that prints `Record::from_game(&golden_game()).to_json()`.
+2. Run it with `--nocapture` and copy the JSON between the harness lines into the
+golden file.
+3. Delete the temporary test.
+4. Run `cargo test -p gomoku-core --test record_format` and confirm every test
+   passes, including `the_encoder_still_writes_the_golden_file`.
+
+Check the file by hand against the schema afterwards: the format marker, version
+1, size 15, the rule set, both player names, the start time as
+`2026-09-22T18:04:11Z`, a result of `{"kind": "ongoing"}`, and four moves as
 `[7, 7]`, `[8, 7]`, `[8, 8]`, and `[6, 6]`.
-
-Run: `cargo test -p gomoku-core --test record_format the_encoder_still_writes_the_golden_file`
-
-If the test fails, `assert_eq!` prints both texts. The four-space indent of
-`to_string_pretty` matters, and so does the exact rendering of the timestamp.
-Copy the actual text from the failure output into the golden file, then run
-the test again.
-
-Expected: the test passes. The file is now the frozen bytes of the schema,
-and every later change to the encoder fails this test on purpose.
 
 Write the full content of the golden file into your report file. The reviewer
 checks it against the schema, because a golden file that the code generated
@@ -2520,6 +2523,7 @@ git commit -m "docs: align the design documents with the core implementation"
 
 **Files:**
 - Modify: `crates/core/src/game.rs`
+- Modify: `crates/core/src/record.rs`
 - Modify: `crates/core/tests/invariants.rs`
 
 **Interfaces:**
@@ -2657,7 +2661,54 @@ file, and change the import line to `use engine::{Board, Color, Move, Status};`:
     }
 ```
 
-- [ ] **Step 6: Prove that the strengthened assertion can fail**
+- [ ] **Step 6: Match the win method explicitly in the record conversion**
+
+`record.rs` converts `Outcome` to `StoredOutcome` with `Outcome::Won { winner, .. }`
+and hardcodes `StoredMethod::Five`. When a second way to win is added, that arm
+compiles and silently writes `five`. Match the method explicitly so the compiler
+reports it instead:
+
+Replace:
+
+```rust
+            Outcome::Won { winner, .. } => StoredOutcome::Won {
+                winner: winner.into(),
+                method: StoredMethod::Five,
+            },
+```
+
+with:
+
+```rust
+            Outcome::Won { winner, method } => StoredOutcome::Won {
+                winner: winner.into(),
+                method: match method {
+                    WinMethod::Five => StoredMethod::Five,
+                },
+            },
+```
+
+Do the same in the other direction, replacing:
+
+```rust
+            StoredOutcome::Won { winner, .. } => Outcome::Won {
+                winner: winner.into(),
+                method: WinMethod::Five,
+            },
+```
+
+with:
+
+```rust
+            StoredOutcome::Won { winner, method } => Outcome::Won {
+                winner: winner.into(),
+                method: match method {
+                    StoredMethod::Five => WinMethod::Five,
+                },
+            },
+```
+
+- [ ] **Step 7: Prove that the strengthened assertion can fail**
 
 A strengthened test that cannot fail is worthless. Prove that the new `Err(_)`
 arm in Step 4 works:
@@ -2670,7 +2721,7 @@ arm in Step 4 works:
 3. Restore `play` exactly.
 4. Run the same command again and confirm it passes.
 
-- [ ] **Step 7: Run the gates and the strengthened run**
+- [ ] **Step 8: Run the gates and the strengthened run**
 
 Run: `cargo test`
 Expected: 21 unit tests and 4 property tests pass.
@@ -2682,7 +2733,7 @@ Expected: 4 property tests pass. Save the output to
 Run: `cargo clippy --all-targets -- -D warnings && cargo fmt --all`
 Expected: no warnings, no diff.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add crates/core

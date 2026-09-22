@@ -24,13 +24,28 @@ Extension: `.json`. One JSON object, pretty-printed, with a trailing newline.
     "method": "five"
   },
   "moves": [
-    [7, 7],
-    [7, 8],
-    [8, 8],
-    [6, 6]
+    [
+      7,
+      7
+    ],
+    [
+      8,
+      7
+    ]
   ]
 }
 ```
+
+The example above is the real output of the encoder for two moves.
+`serde_json::to_string_pretty` writes every array element on its own line, so each
+move occupies five lines. The file is longer than a hand-written sample, and every
+new move changes only its own lines, which keeps a version control diff clean. Do
+not transcribe this example by hand: generate any fixture from the encoder.
+
+The timestamp uses `time::serde::rfc3339`. The `time` crate does not write RFC 3339
+by default, not even with its human-readable serde support, so the field carries the
+`#[serde(with = "time::serde::rfc3339")]` attribute and a test pins the exact
+wire text.
 
 | Field | Type | Rule |
 |---|---|---|
@@ -40,7 +55,7 @@ Extension: `.json`. One JSON object, pretty-printed, with a trailing newline.
 | `ruleset` | string | `freestyle`. |
 | `players.black` | string or absent | Free text, may be empty. |
 | `players.white` | string or absent | Free text, may be empty. |
-| `created` | string | ISO-8601 in UTC, for example `2026-09-22T18:04:11Z`. |
+| `created` | string | RFC 3339 in UTC, for example `2026-09-22T18:04:11Z`. |
 | `result` | object | See below. |
 | `moves` | array of `[column, row]` | Column 0 is left. Row 0 is the top. Both in `0..=14`. Black moves first. |
 
