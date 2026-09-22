@@ -6,7 +6,9 @@
 #![deny(missing_docs)]
 
 mod error;
+mod game;
 mod notation;
 
 pub use error::{ConfigError, GameError, RecordError};
+pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;

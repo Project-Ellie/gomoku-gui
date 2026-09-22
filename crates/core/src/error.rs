@@ -24,7 +24,9 @@ impl From<PlayError> for GameError {
         match err {
             PlayError::Occupied => GameError::Occupied,
             PlayError::GameOver => GameError::GameOver,
-            other => GameError::Rejected(other),
+            // Explicit, so that a new engine variant fails to compile here
+            // instead of being silently reclassified.
+            PlayError::BadOpeningCounts => GameError::Rejected(PlayError::BadOpeningCounts),
         }
     }
 }

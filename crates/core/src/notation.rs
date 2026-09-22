@@ -7,6 +7,7 @@ const COLUMN_LETTERS: [u8; 15] = *b"ABCDEFGHIJKLMNO";
 /// The display label of a point: columns A to O, rows 1 to 15 counted from
 /// the bottom, so the centre of the board is `H8`.
 pub fn label(point: Move) -> String {
+    // Move::col() is at most 14, so the index is always inside the array.
     let letter = COLUMN_LETTERS[point.col() as usize] as char;
     let number = 15 - point.row();
     format!("{letter}{number}")
