@@ -181,9 +181,13 @@ impl HeadlessGpu {
         &self,
         path: &Path,
         size: u32,
+        scale: f32,
         renderer: &mut crate::render::Renderer,
         session: &mut crate::session::Session,
     ) -> Result<()> {
+        // `size` is in interface points and the image is in physical pixels, which
+        // is how a window on a display with a scale factor is laid out.
+        let pixels = (size as f32 * scale).round() as u32;
         let context = egui::Context::default();
         let mut egui_renderer = egui_wgpu::Renderer::new(
             &self.device,
@@ -198,6 +202,17 @@ impl HeadlessGpu {
                 egui::Pos2::ZERO,
                 egui::vec2(size as f32, size as f32),
             )),
+            viewports: {
+                let mut map = egui::ViewportIdMap::default();
+                map.insert(
+                    egui::ViewportId::ROOT,
+                    egui::ViewportInfo {
+                        native_pixels_per_point: Some(scale),
+                        ..Default::default()
+                    },
+                );
+                map
+            },
             ..Default::default()
         };
         let mut requests = crate::ui::Requests::default();
@@ -219,16 +234,16 @@ impl HeadlessGpu {
         );
         let jobs = context.tessellate(shapes, pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [size, size],
+            size_in_pixels: [pixels, pixels],
             pixels_per_point,
         };
         let mut textures_delta = textures_delta;
         textures_delta.clear();
         // The same path as the window: the interface has reported the area, so the
         // camera and the renderer can be pointed at it.
-        crate::app::prepare_frame(session, renderer, &self.queue, [size, size]);
+        crate::app::prepare_frame(session, renderer, &self.queue, [pixels, pixels]);
 
-        self.write_frame_with(path, size, size, renderer, |encoder, target| {
+        self.write_frame_with(path, pixels, pixels, renderer, |encoder, target| {
             let uploads =
                 egui_renderer.update_buffers(&self.device, &self.queue, encoder, &jobs, &screen);
             self.queue.submit(uploads);

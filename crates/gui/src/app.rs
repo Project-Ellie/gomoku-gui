@@ -55,7 +55,12 @@ struct State {
 
 impl App {
     /// A new application. `frame_limit` quits after that many frames.
-    pub fn new(settings: Settings, audio: Option<Audio>, frame_limit: Option<u32>) -> App {
+    pub fn new(
+        settings: Settings,
+        game: gomoku_core::Game,
+        audio: Option<Audio>,
+        frame_limit: Option<u32>,
+    ) -> App {
         let geometry = WindowGeometry {
             width: settings.window.width,
             height: settings.window.height,
@@ -63,8 +68,11 @@ impl App {
             y: settings.window.y,
             maximized: settings.window.maximized,
         };
+        let mut session = Session::new(&settings);
+        // A game can be handed in, which is how `--demo` puts stones on the board.
+        session.game = game;
         App {
-            session: Session::new(&settings),
+            session,
             audio,
             state: None,
             press: None,

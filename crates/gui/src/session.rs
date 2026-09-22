@@ -182,15 +182,22 @@ impl Session {
         self.title_stale = true;
     }
 
-    /// True when a point in interface points lies over the board.
+    /// True when the pointer lies over the board.
     ///
     /// The interface does not claim the pointer over the board, because the board
     /// is drawn outside egui. So the application needs its own test, to know when
     /// a click belongs to the game and when it belongs to a panel.
+    ///
+    /// The pointer arrives in physical pixels, the same as the viewport, so those
+    /// two are compared. Comparing the pointer with the area in interface points
+    /// instead throws away every click past the half of the board on a display
+    /// with a scale factor of two.
     pub fn on_board(&self) -> bool {
-        let [x, y, width, height] = self.viewport_points;
-        let [px, py] = self.pointer;
-        px >= x && py >= y && px < x + width && py < y + height
+        let pointer = self.pointer;
+        pointer[0] >= self.viewport.x
+            && pointer[1] >= self.viewport.y
+            && pointer[0] < self.viewport.x + self.viewport.width
+            && pointer[1] < self.viewport.y + self.viewport.height
     }
 
     /// Work out which intersection the pointer is over.
@@ -827,7 +834,13 @@ mod tests {
     fn the_board_area_is_known() {
         let settings = Settings::default();
         let mut session = Session::new(&settings);
-        session.viewport_points = [0.0, 28.0, 900.0, 872.0];
+        session.viewport = crate::camera::Viewport {
+            frame: [1200.0, 900.0],
+            x: 0.0,
+            y: 28.0,
+            width: 900.0,
+            height: 872.0,
+        };
         session.pointer = [450.0, 400.0];
         assert!(session.on_board(), "the middle of the board area");
         session.pointer = [950.0, 400.0];
@@ -841,6 +854,37 @@ mod tests {
         );
         session.pointer = [900.0, 400.0];
         assert!(!session.on_board(), "the far edge belongs to the panel");
+    }
+
+    #[test]
+    fn the_board_area_is_known_on_a_scaled_display() {
+        // On a display with a scale factor of two the area for the board is 940
+        // by 872 interface points, which is 1880 by 1744 physical pixels, and the
+        // pointer arrives in physical pixels. Comparing those two throws away
+        // every click in the lower half of the board.
+        let settings = Settings::default();
+        let mut session = Session::new(&settings);
+        session.pixels_per_point = 2.0;
+        session.viewport_points = [0.0, 28.0, 940.0, 872.0];
+        session.viewport = crate::camera::Viewport {
+            frame: [2360.0, 1800.0],
+            x: 0.0,
+            y: 56.0,
+            width: 1880.0,
+            height: 1744.0,
+        };
+        session.pointer = [940.0, 872.0];
+        assert!(
+            session.on_board(),
+            "the middle of the board, in physical pixels"
+        );
+        session.pointer = [940.0, 1700.0];
+        assert!(
+            session.on_board(),
+            "past the height of the area in points, but still on the board"
+        );
+        session.pointer = [2200.0, 900.0];
+        assert!(!session.on_board(), "the side panel, in physical pixels");
     }
 
     #[test]

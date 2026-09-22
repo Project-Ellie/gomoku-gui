@@ -289,12 +289,12 @@ fn recents(ui: &mut egui::Ui, session: &mut Session) {
 }
 
 /// The coordinates, the markers, and the winning line, drawn on the board.
-fn overlays(painter: &egui::Painter, session: &Session, points_per_pixel: f32) {
+fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     let ppc = session.camera.pixels_per_cell;
-    let font = FontId::monospace((ppc * 0.40 / points_per_pixel).clamp(9.0, 28.0));
+    let font = FontId::monospace((ppc * 0.40 / pixels_per_point).clamp(9.0, 28.0));
     let to_screen = |board: [f32; 2]| -> egui::Pos2 {
         let pixel = session.camera.to_screen(session.viewport, board);
-        egui::Pos2::new(pixel[0] / points_per_pixel, pixel[1] / points_per_pixel)
+        egui::Pos2::new(pixel[0] / pixels_per_point, pixel[1] / pixels_per_point)
     };
 
     if session.toggles.coordinates {
@@ -342,7 +342,7 @@ fn overlays(painter: &egui::Painter, session: &Session, points_per_pixel: f32) {
         if let Some([from, to]) = winning_line(&session.game) {
             let start = to_screen([from.col() as f32, from.row() as f32]);
             let end = to_screen([to.col() as f32, to.row() as f32]);
-            let width = (ppc * 0.10 / points_per_pixel).max(2.0);
+            let width = (ppc * 0.10 / pixels_per_point).max(2.0);
             painter.line_segment(
                 [start, end],
                 Stroke::new(width, Color32::from_rgba_unmultiplied(240, 90, 70, 170)),
@@ -351,7 +351,7 @@ fn overlays(painter: &egui::Painter, session: &Session, points_per_pixel: f32) {
                 let centre = to_screen([point.col() as f32, point.row() as f32]);
                 painter.circle_stroke(
                     centre,
-                    ppc * 0.44 / points_per_pixel,
+                    ppc * 0.44 / pixels_per_point,
                     Stroke::new(
                         width * 0.6,
                         Color32::from_rgba_unmultiplied(240, 90, 70, 200),
@@ -381,10 +381,10 @@ fn overlays(painter: &egui::Painter, session: &Session, points_per_pixel: f32) {
     if session.toggles.last_move {
         if let Some(point) = session.game.last_move() {
             let centre = to_screen([point.col() as f32, point.row() as f32]);
-            let width = (ppc * 0.045 / points_per_pixel).max(1.0);
+            let width = (ppc * 0.045 / pixels_per_point).max(1.0);
             painter.circle_stroke(
                 centre,
-                ppc * 0.34 / points_per_pixel,
+                ppc * 0.34 / pixels_per_point,
                 Stroke::new(width, ACCENT),
             );
         }
@@ -393,10 +393,10 @@ fn overlays(painter: &egui::Painter, session: &Session, points_per_pixel: f32) {
     // The intersection under the pointer, when a placement there is legal.
     if let Some(point) = session.hover {
         let centre = to_screen([point.col() as f32, point.row() as f32]);
-        let width = (ppc * 0.035 / points_per_pixel).max(1.0);
+        let width = (ppc * 0.035 / pixels_per_point).max(1.0);
         painter.circle_stroke(
             centre,
-            ppc * 0.44 / points_per_pixel,
+            ppc * 0.44 / pixels_per_point,
             Stroke::new(width, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
         );
     }
