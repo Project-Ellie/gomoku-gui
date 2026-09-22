@@ -393,9 +393,11 @@ impl Renderer {
                 dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
                 operation: wgpu::BlendOperation::Add,
             },
+            // Leave the alpha channel alone: the colour channel darkens the
+            // board, and the alpha stays as the board wrote it.
             alpha: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::Zero,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             },
         });

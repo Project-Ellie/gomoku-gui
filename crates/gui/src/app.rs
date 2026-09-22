@@ -206,8 +206,9 @@ impl App {
             },
         );
         state.queue.submit([encoder.finish()]);
-        // The frame is presented when the surface texture is dropped.
-        drop(frame);
+        // Presentation belongs to the queue, and a dropped surface texture is
+        // discarded rather than shown.
+        state.queue.present(frame);
 
         self.dirty = false;
         self.frames += 1;
