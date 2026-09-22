@@ -715,7 +715,6 @@ impl Renderer {
 
     /// Upload the view and the materials.
     pub fn set_globals(&mut self, queue: &wgpu::Queue, globals: &Globals) {
-        let _ = &self.globals;
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(globals));
     }
 

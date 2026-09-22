@@ -219,7 +219,7 @@ fn write_preview(
         session.gain = look.gain;
         session.viewport = viewport;
         session.pixels_per_point = 1.0;
-        gpu.write_ui_frame(path, size, &renderer, &mut session)?;
+        gpu.write_ui_frame(path, size, &mut renderer, &mut session)?;
     } else {
         gpu.write_frame(path, size, size, &renderer)?;
     }

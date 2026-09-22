@@ -28,7 +28,6 @@ const SAMPLES: u32 = 4;
 /// The application.
 pub struct App {
     session: Session,
-    settings: Settings,
     audio: Option<Audio>,
     state: Option<State>,
     /// Where the left button went down, if it is down.
@@ -66,7 +65,6 @@ impl App {
         };
         App {
             session: Session::new(&settings),
-            settings,
             audio,
             state: None,
             press: None,
@@ -261,13 +259,8 @@ impl App {
             size_in_pixels: [state.config.width, state.config.height],
             pixels_per_point: state.egui.pixels_per_point(),
         };
-        // The board, with the viewport the interface just reported.
-        state
-            .renderer
-            .set_globals(&state.queue, &globals_for(&self.session));
-        state
-            .renderer
-            .set_stones(&state.queue, &stone_instances(&self.session.game));
+        // The board, in the area that the interface left for it.
+        prepare_frame(&mut self.session, &mut state.renderer, &state.queue);
 
         let mut encoder = state
             .device
@@ -426,10 +419,11 @@ impl App {
             },
         );
 
+        // Until the interface reports the area that it leaves for the board, the
+        // viewport is the whole window, which is the best that is known.
         self.session.viewport = Viewport::window(config.width, config.height);
         self.session.pixels_per_point = egui.pixels_per_point();
-        self.session
-            .apply_view(&self.settings, [config.width, config.height]);
+        self.session.fitted = false;
 
         Ok(State {
             window,
@@ -464,6 +458,17 @@ fn create_multisampled(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     })
+}
+
+/// Point the camera and the renderer at the area that the interface left, and
+/// hand the board to the renderer. The window and the preview both use this, so
+/// that a preview shows what the window shows.
+pub fn prepare_frame(session: &mut Session, renderer: &mut Renderer, queue: &wgpu::Queue) {
+    // A resize can leave the view outside the area, and the interface has already
+    // placed the view for its first frame.
+    session.camera.clamp(session.viewport);
+    renderer.set_globals(queue, &globals_for(session));
+    renderer.set_stones(queue, &stone_instances(&session.game));
 }
 
 /// The uniform block for a session: the view, the viewport, and the materials.
@@ -586,10 +591,11 @@ impl ApplicationHandler for App {
                         state.config.height = size.height;
                         state.surface.configure(&state.device, &state.config);
                         state.multisampled = create_multisampled(&state.device, &state.config);
-                        self.session.viewport = Viewport::window(size.width, size.height);
+                        // The area for the board is not known here: the interface
+                        // reports it in the next frame. `prepare_frame` keeps the
+                        // view inside whatever area that is.
                     }
                 }
-                self.session.camera.clamp(self.session.viewport);
                 self.request_redraw();
             }
             WindowEvent::Moved(position) => {

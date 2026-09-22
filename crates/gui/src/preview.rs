@@ -181,7 +181,7 @@ impl HeadlessGpu {
         &self,
         path: &Path,
         size: u32,
-        renderer: &crate::render::Renderer,
+        renderer: &mut crate::render::Renderer,
         session: &mut crate::session::Session,
     ) -> Result<()> {
         let context = egui::Context::default();
@@ -224,6 +224,9 @@ impl HeadlessGpu {
         };
         let mut textures_delta = textures_delta;
         textures_delta.clear();
+        // The same path as the window: the interface has reported the area, so the
+        // camera and the renderer can be pointed at it.
+        crate::app::prepare_frame(session, renderer, &self.queue);
 
         self.write_frame_with(path, size, size, renderer, |encoder, target| {
             let uploads =

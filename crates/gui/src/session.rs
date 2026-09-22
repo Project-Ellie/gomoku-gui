@@ -111,6 +111,10 @@ pub struct Session {
     pub viewport: crate::camera::Viewport,
     /// The same rectangle in interface points, as the interface reports it.
     pub viewport_points: [f32; 4],
+    /// The view from the settings, until a viewport is known.
+    remembered: Option<gomoku_core::ViewSettings>,
+    /// True once the view has been set with a known viewport.
+    pub fitted: bool,
     /// The width of the side panel, in points.
     pub panel_width: f32,
     /// True when the side panel is folded away.
@@ -154,6 +158,8 @@ impl Session {
             title_stale: true,
             viewport: crate::camera::Viewport::window(1180, 950),
             viewport_points: [0.0, 28.0, 930.0, 922.0],
+            remembered: Some(settings.view.clone()),
+            fitted: false,
             panel_width: settings.panel.width,
             panel_collapsed: settings.panel.collapsed,
             pointer: [-1.0, -1.0],
@@ -483,15 +489,22 @@ impl Session {
         }
     }
 
-    /// Apply the remembered view, once the window has a size.
-    pub fn apply_view(&mut self, settings: &Settings, size: [u32; 2]) {
-        let viewport = crate::camera::Viewport::window(size[0], size[1]);
-        self.camera = Camera::fit(viewport);
-        if settings.view.pixels_per_cell > 0.0 {
-            self.camera.centre = settings.view.center;
-            self.camera.pixels_per_cell = settings.view.pixels_per_cell;
-            self.camera.flipped = settings.view.flipped;
-            self.camera.clamp(viewport);
+    /// Set the view, now that the area for the board is known.
+    ///
+    /// The area is not the window: the menu bar and the side panel take their
+    /// space first, and the board must fit in what is left. So the first frame
+    /// of the interface is what places the view.
+    pub fn place_view(&mut self, viewport: crate::camera::Viewport) {
+        self.fitted = true;
+        match self.remembered.take() {
+            Some(view) if view.pixels_per_cell > 0.0 => {
+                self.camera.centre = view.center;
+                self.camera.pixels_per_cell = view.pixels_per_cell;
+                self.camera.flipped = view.flipped;
+                self.camera.clamp(viewport);
+            }
+            // No view was remembered, so show the whole board.
+            _ => self.camera.reset(viewport),
         }
     }
 }

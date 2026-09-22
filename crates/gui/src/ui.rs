@@ -26,6 +26,13 @@ pub struct Requests {
     pub quit: bool,
 }
 
+/// How far outside the grid the coordinates are drawn, in cells.
+///
+/// The wood of the board reaches 0.85 of a cell beyond the last line, so a label
+/// closer than this would sit on the dark edge of the board and could not be
+/// read.
+const OUTSIDE: f32 = 1.15;
+
 /// The colours of the interface.
 const INK: Color32 = Color32::from_rgb(226, 226, 230);
 const MUTED: Color32 = Color32::from_rgb(150, 150, 158);
@@ -153,6 +160,11 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                 height: rect.height() * scale,
             };
             session.pixels_per_point = scale;
+            if !session.fitted {
+                // The first frame that knows the area is the one that places the
+                // view, so that the overlays below already use it.
+                session.place_view(session.viewport);
+            }
             let painter = ui.painter().clone();
             overlays(&painter, session, scale);
             // Nothing here senses the pointer: a click on the board is the game's,
@@ -295,14 +307,14 @@ fn overlays(painter: &egui::Painter, session: &Session, points_per_pixel: f32) {
             let number = 15 - index;
             // Above and below the board.
             painter.text(
-                to_screen([along, -0.62]),
+                to_screen([along, -OUTSIDE]),
                 Align2::CENTER_CENTER,
                 format!("{letter}"),
                 font.clone(),
                 MUTED,
             );
             painter.text(
-                to_screen([along, 14.62]),
+                to_screen([along, 14.0 + OUTSIDE]),
                 Align2::CENTER_CENTER,
                 format!("{letter}"),
                 font.clone(),
@@ -310,14 +322,14 @@ fn overlays(painter: &egui::Painter, session: &Session, points_per_pixel: f32) {
             );
             // Left and right of the board.
             painter.text(
-                to_screen([-0.62, along]),
+                to_screen([-OUTSIDE, along]),
                 Align2::CENTER_CENTER,
                 format!("{number}"),
                 font.clone(),
                 MUTED,
             );
             painter.text(
-                to_screen([14.62, along]),
+                to_screen([14.0 + OUTSIDE, along]),
                 Align2::CENTER_CENTER,
                 format!("{number}"),
                 font.clone(),
