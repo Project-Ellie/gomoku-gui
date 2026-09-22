@@ -45,8 +45,7 @@ in step. Delegating needs none.
      discard moves[cursor..]              (the caller confirmed first)
 4. self.board.play(point)?                (engine validates again)
 5. self.moves.push(point); self.cursor += 1
-6. If status() is a win or a draw, write it into meta.outcome.
-7. Store the outcome from `Board::status()` in the metadata. The caller reads it
+6. Store `Board::status()` in the metadata as the outcome. The caller reads it
      with `outcome()`.
 ```
 
