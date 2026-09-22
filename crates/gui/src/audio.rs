@@ -110,64 +110,37 @@ pub struct Voicing {
     pub length: f32,
 }
 
-/// The sound of the game at present.
-///
-/// Four ringing modes with long decays. It is pitched and hollow, which is what
-/// the owner heard as an empty tin bucket. It is kept so that the sound can be
-/// compared against the candidates before it is replaced.
-pub const CURRENT: Voicing = Voicing {
-    contact: 0.35,
-    contact_centre: 3000.0,
-    contact_decay: 0.0006,
-    contact_rise: 0.0,
-    attack: 0.0,
-    body: Modes::new(&[]),
-    stone: Modes::new(&[
-        (420.0, 0.055, 1.00),
-        (1150.0, 0.032, 0.60),
-        (2600.0, 0.018, 0.32),
-        (5400.0, 0.009, 0.18),
-    ]),
-    tone: 20000.0,
-    roughness: 0.0,
-    glide: 0.0,
-    spread: 0.0,
-    whisper: 0.0,
-    length: 0.180,
-};
-
-/// What the game plays: one voicing, or two sounds mixed.
+/// A sound to play: one voicing, or several mixed, each with its level.
 pub type Parts = Vec<(f32, Voicing)>;
 
-/// A voicing that was listened to, and the reason it exists.
-#[derive(Debug, Clone)]
-pub struct Candidate {
-    /// The name of the file that `--knock` writes.
-    pub name: String,
-    /// What the sound is for, in the words of the ear, and in numbers.
-    pub intent: String,
-    /// The sound itself: one voicing, or a mix of several with their levels.
-    pub parts: Parts,
-}
+/// The sound of a stone set down on a thick board.
+///
+/// This came out of a long listening round. It was chosen as the character, and
+/// then softened until its arrival stopped suggesting a hard hit: the contact is
+/// quiet, low, slow, and takes a millisecond to reach its own strength, and the
+/// whole knock arrives over two milliseconds and falls in pitch by two percent
+/// with its partials spread, so that it sounds like a material rather than a bell.
+pub const SET_DOWN: Voicing = Voicing {
+    contact: 0.4292,
+    contact_centre: 1258.125,
+    contact_decay: 0.002808,
+    contact_rise: 0.00105,
+    attack: 0.002011,
+    body: Modes::new(&[(136.64, 0.039725, 0.70), (302.56, 0.0227, 0.35)]),
+    stone: Modes::new(&[(2000.0, 0.014, 0.15)]),
+    tone: 3200.0,
+    roughness: 0.34,
+    glide: 0.018,
+    spread: 0.03,
+    whisper: 0.09,
+    length: 0.15609,
+};
 
-impl Candidate {
-    /// One voicing, which is the usual case.
-    pub fn single(name: String, intent: String, voicing: Voicing) -> Candidate {
-        Candidate {
-            name,
-            intent,
-            parts: vec![(1.0, voicing)],
-        }
-    }
-}
-
-/// The sound the game plays, as parts. One part is a plain knock; more than one
-/// is a mix, which is how the owner compared the two halves of a sound.
-pub fn in_use() -> Parts {
-    vec![(1.0, *IN_USE)]
-}
-
-/// The sound of a stone that rings, from the first round. The mixes use it.
+/// The ringing stone that the game did not use on its own.
+///
+/// It is the bright half of the sound: it holds its pitch, the stone rings for
+/// thirty milliseconds, and its tone is open. A fifth of it is mixed into the
+/// sound that is played, which is what gives the quiet knock a trace of the stone.
 pub const STONE_RING: Voicing = Voicing {
     contact: 0.9,
     contact_centre: 2000.0,
@@ -184,321 +157,24 @@ pub const STONE_RING: Voicing = Voicing {
     length: 0.110,
 };
 
-/// The deep board that the owner picked out of the first round.
+/// The share of the quiet sound in what is played.
+pub const SET_DOWN_SHARE: f32 = 0.8;
+
+/// The share of the ringing stone in what is played.
+pub const STONE_RING_SHARE: f32 = 0.2;
+
+/// The sound the game plays: four fifths of a stone set down, and one fifth of a
+/// stone that rings.
 ///
-/// A thick board: the contact is low and round, the body is a low pair of modes,
-/// and the whole knock is dark.
-pub const DEEP_BOARD: Voicing = Voicing {
-    contact: 0.8,
-    contact_centre: 1600.0,
-    contact_decay: 0.0015,
-    contact_rise: 0.0,
-    attack: 0.0,
-    body: Modes::new(&[(140.0, 0.035, 0.70), (310.0, 0.020, 0.35)]),
-    stone: Modes::new(&[(2000.0, 0.014, 0.15)]),
-    tone: 3500.0,
-    roughness: 0.25,
-    glide: 0.0,
-    spread: 0.0,
-    whisper: 0.0,
-    length: 0.120,
-};
-
-/// The voicings of the first round, which the owner listened to.
-pub fn candidates() -> Vec<Candidate> {
-    let mut made = Vec::new();
-    let mut add = |name: &str, intent: &str, voicing: Voicing| {
-        made.push(Candidate::single(
-            name.to_string(),
-            intent.to_string(),
-            voicing,
-        ));
-    };
-    add(
-        "1-dry-clack",
-        "The contact on its own: dry, short, almost no tone.",
-        Voicing {
-            contact: 1.0,
-            contact_centre: 2200.0,
-            contact_decay: 0.0012,
-            contact_rise: 0.0,
-            attack: 0.0,
-            body: Modes::new(&[(260.0, 0.012, 0.25)]),
-            stone: Modes::new(&[(3000.0, 0.008, 0.15)]),
-            tone: 6000.0,
-            roughness: 0.3,
-            glide: 0.0,
-            spread: 0.0,
-            whisper: 0.0,
-            length: 0.060,
-        },
-    );
-    add(
-        "2-wooden-tok",
-        "The board answers: a wooden tok with a low body.",
-        Voicing {
-            contact: 0.9,
-            contact_centre: 1800.0,
-            contact_decay: 0.0015,
-            contact_rise: 0.0,
-            attack: 0.0,
-            body: Modes::new(&[(190.0, 0.022, 0.55), (430.0, 0.014, 0.30)]),
-            stone: Modes::new(&[(2400.0, 0.012, 0.20)]),
-            tone: 4500.0,
-            roughness: 0.25,
-            glide: 0.0,
-            spread: 0.0,
-            whisper: 0.0,
-            length: 0.090,
-        },
-    );
-    add(
-        "3-deep-board",
-        "A thick board: lower, and a little longer.",
-        DEEP_BOARD,
-    );
-    add(
-        "4-stone-ring",
-        "The stone rings a little, as slate does.",
-        STONE_RING,
-    );
-    add(
-        "5-muted",
-        "Laid down rather than dropped: dark, soft, and short.",
-        Voicing {
-            contact: 0.6,
-            contact_centre: 1400.0,
-            contact_decay: 0.0010,
-            contact_rise: 0.0,
-            attack: 0.0,
-            body: Modes::new(&[(230.0, 0.016, 0.50)]),
-            stone: Modes::new(&[(1800.0, 0.010, 0.12)]),
-            tone: 2600.0,
-            roughness: 0.2,
-            glide: 0.0,
-            spread: 0.0,
-            whisper: 0.0,
-            length: 0.070,
-        },
-    );
-    add(
-        "6-warm-low",
-        "The darkest of the set: a low body and a short tail.",
-        Voicing {
-            contact: 0.85,
-            contact_centre: 1500.0,
-            contact_decay: 0.0014,
-            contact_rise: 0.0,
-            attack: 0.0,
-            body: Modes::new(&[(170.0, 0.028, 0.65), (600.0, 0.012, 0.20)]),
-            stone: Modes::new(&[(2200.0, 0.010, 0.10)]),
-            tone: 3000.0,
-            roughness: 0.22,
-            glide: 0.0,
-            spread: 0.0,
-            whisper: 0.0,
-            length: 0.100,
-        },
-    );
-    made
-}
-
-/// The voicing that the owner picked: the wood run of the variations, at its
-/// third step.
-pub fn chosen() -> Voicing {
-    variations()
-        .into_iter()
-        .find(|candidate| candidate.name == "13-wood")
-        .map(|candidate| match candidate.parts.as_slice() {
-            [(_, voicing)] => *voicing,
-            _ => DEEP_BOARD,
-        })
-        .unwrap_or(DEEP_BOARD)
-}
-
-/// The number of quieter variations that were made around the chosen sound.
-pub const QUIETER: usize = 10;
-
-/// The chosen sound with a softer landing, in ten steps.
+/// The two halves are opposed, one dark and one bright, and the levels are the
+/// shares of the sound rather than the strength of their numbers, because a part is
+/// normalised before it is mixed.
 ///
-/// The only thing that changes is the contact, which is what the ear hears as the
-/// hardness of the hit: it gets quieter, it takes longer to reach full strength,
-/// it lasts longer, and it loses its top end. Everything that gave the chosen
-/// sound its character, which is the pitch fall, the spreading partials, the noise
-/// and the dark tone, stays exactly as it was.
-///
-/// Because every knock is normalised to the same peak before it is played, a
-/// quieter contact lifts the body of the board up with it. The result is a knock
-/// with less contrast: a stone set down rather than struck.
-pub fn quieter() -> Vec<Candidate> {
-    let chosen = chosen();
-    let mut made = Vec::with_capacity(QUIETER);
-    for step in 0..QUIETER {
-        let share = (step + 1) as f32 / QUIETER as f32;
-        let quieter = Voicing {
-            contact: chosen.contact * (1.0 - 0.6 * share),
-            contact_centre: chosen.contact_centre * (1.0 - 0.25 * share),
-            contact_decay: chosen.contact_decay * (1.0 + 0.8 * share),
-            contact_rise: 0.0015 * share,
-            // The landing, from a tenth of a millisecond to four milliseconds,
-            // which is the difference between a blow and a stone set down. The
-            // steps are closer together at the start, so that the first few can be
-            // compared against the chosen sound without jumping past it.
-            attack: 0.0001 + 0.0039 * share * share,
-            length: chosen.length * (1.0 + 0.3 * share),
-            ..chosen
-        };
-        made.push(Candidate::single(
-            format!("{:02}-quieter", step + 21),
-            intent_of(&quieter),
-            quieter,
-        ));
-    }
-    made
+/// The shares are written out rather than worked out from one another, so that
+/// what the game plays is exactly the file that was listened to.
+pub fn in_use() -> Parts {
+    vec![(SET_DOWN_SHARE, SET_DOWN), (STONE_RING_SHARE, STONE_RING)]
 }
-
-/// The shares of the quiet sound in the mixes, from a fifth to four fifths.
-pub const MIX_SHARES: [f32; 7] = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
-
-/// Number 27 mixed with the ringing stone of the first round, in seven ratios.
-///
-/// The two halves are opposed: 27 is the dark, set down sound, and the ringing
-/// stone is the bright one that holds its pitch. A mix says how much of each, and
-/// the levels are the shares of the sound because each part is normalised before
-/// it is mixed.
-pub fn mixes() -> Vec<Candidate> {
-    let quiet = quieter()
-        .into_iter()
-        .find(|candidate| candidate.name == "27-quieter")
-        .and_then(|candidate| match candidate.parts.as_slice() {
-            [(_, voicing)] => Some(*voicing),
-            _ => None,
-        })
-        .unwrap_or(DEEP_BOARD);
-    MIX_SHARES
-        .iter()
-        .enumerate()
-        .map(|(index, share)| Candidate {
-            name: format!("{:02}-mix-{:02.0}", index + 31, share * 100.0),
-            intent: format!(
-                "{:.0}% of the quiet sound of 27, mixed with {:.0}% of 4-stone-ring",
-                share * 100.0,
-                (1.0 - share) * 100.0
-            ),
-            parts: vec![(*share, quiet), (1.0 - share, STONE_RING)],
-        })
-        .collect()
-}
-
-/// How many variations of the deep board were made.
-pub const VARIATIONS: usize = 20;
-
-/// The variations of the deep board, twenty of them, in two runs of ten.
-///
-/// Every one of them is a little less aggressive than the deep board, and none of
-/// them holds its pitch the way a pair of pure modes does. The first run makes the
-/// contact softer and the tone darker and does nothing else, so that the effect of
-/// softness can be heard on its own. The second run moves the wood: the modes
-/// fall in pitch, the partials spread and beat, noise joins the body, and the tone
-/// darkens with it.
-///
-/// The two runs are written as formulas rather than as twenty separate tables, so
-/// the numbers below are the whole story. The page states the numbers that each
-/// one came out with.
-pub fn variations() -> Vec<Candidate> {
-    let mut made = Vec::with_capacity(VARIATIONS);
-
-    // The first run: softer and darker, and nothing else, so that softness can be
-    // heard on its own.
-    for step in 0..10 {
-        // The run starts past the deep board rather than at it, so that every
-        // variation is a change from the sound he picked.
-        let share = (step + 1) as f32 / 10.0;
-        let soft = Voicing {
-            // The contact gets quieter, lower, and slower, which rounds off the
-            // attack, and the tone closes down over it.
-            contact: 0.80 - 0.35 * share,
-            contact_centre: 1600.0 - 750.0 * share,
-            contact_decay: 0.0015 + 0.0022 * share,
-            tone: 3500.0 - 1600.0 * share,
-            length: 0.120 + 0.020 * share,
-            ..DEEP_BOARD
-        };
-        made.push(Candidate::single(
-            format!("{:02}-soft", step + 1),
-            intent_of(&soft),
-            soft,
-        ));
-    }
-
-    // The second run: the same contact, softened a little, and then the wood. The
-    // modes fall in pitch as the contact settles, each mode is a cluster that
-    // beats with itself, and the body radiates a breath of noise.
-    for step in 0..10 {
-        let share = (step + 1) as f32 / 10.0;
-        let woody = Voicing {
-            contact: 0.80 - 0.20 * share,
-            contact_centre: 1600.0 - 250.0 * share,
-            contact_decay: 0.0015 + 0.0010 * share,
-            body: scaled(DEEP_BOARD.body, 1.0 - 0.08 * share, 1.0 + 0.45 * share, 1.0),
-            roughness: 0.25 + 0.30 * share,
-            glide: 0.060 * share,
-            spread: 0.10 * share,
-            whisper: 0.30 * share,
-            tone: 3500.0 - 1000.0 * share,
-            length: 0.120 + 0.030 * share,
-            ..DEEP_BOARD
-        };
-        made.push(Candidate::single(
-            format!("{:02}-wood", step + 11),
-            intent_of(&woody),
-            woody,
-        ));
-    }
-
-    made
-}
-
-/// A mode list with the frequencies multiplied, the decay times multiplied, and
-/// the levels multiplied.
-fn scaled(modes: Modes, frequency: f32, decay: f32, level: f32) -> Modes {
-    let mut list = [SILENT; MAX_MODES];
-    let used = modes.used();
-    for (index, &(f, d, l)) in used.iter().enumerate() {
-        list[index] = (f * frequency, d * decay, l * level);
-    }
-    // Only the modes that were in the list: an entry that stays silent must not
-    // be counted, because a mode of zero decay has no meaning in the renderer.
-    Modes::new(&list[..used.len()])
-}
-
-/// What a variation changed, in the numbers.
-pub fn intent_of(voicing: &Voicing) -> String {
-    let body: Vec<String> = voicing
-        .body
-        .used()
-        .iter()
-        .map(|(frequency, decay, _)| format!("{frequency:.0} Hz/{:.0} ms", decay * 1000.0))
-        .collect();
-    format!(
-        "contact {:.2} at {:.0} Hz, rising over {:.2} ms and lasting {:.1} ms, \
-         body {}, tone {:.0} Hz, glides {:.0}%, partials spread {:.0}%, \
-         roughness {:.2}, noise {:.2}",
-        voicing.contact,
-        voicing.contact_centre,
-        voicing.contact_rise * 1000.0,
-        voicing.contact_decay * 1000.0,
-        body.join(" and "),
-        voicing.tone,
-        voicing.glide * 100.0,
-        voicing.spread * 100.0,
-        voicing.roughness,
-        voicing.whisper,
-    )
-}
-
-/// The voicing the game plays.
-pub const IN_USE: &Voicing = &CURRENT;
 
 /// The number of rendered variants.
 const VARIANTS: usize = 6;
@@ -918,13 +594,13 @@ mod tests {
 
     #[test]
     fn a_knock_has_the_expected_length() {
-        let samples = render_click(48_000, 7, false, &CURRENT);
-        assert_eq!(samples.len(), (48_000.0 * CURRENT.length) as usize);
+        let samples = render_click(48_000, 7, false, &SET_DOWN);
+        assert_eq!(samples.len(), (48_000.0 * SET_DOWN.length) as usize);
     }
 
     #[test]
     fn a_knock_is_inside_the_range_and_quiet_at_its_edges() {
-        let samples = render_click(48_000, 7, false, &CURRENT);
+        let samples = render_click(48_000, 7, false, &SET_DOWN);
         assert!(samples.iter().all(|s| s.abs() <= 1.0));
         assert!(samples[0].abs() < 1e-4, "the first sample must be silent");
         assert!(
@@ -935,7 +611,7 @@ mod tests {
 
     #[test]
     fn a_knock_attacks_early_and_decays() {
-        let samples = render_click(48_000, 7, false, &CURRENT);
+        let samples = render_click(48_000, 7, false, &SET_DOWN);
         let peak_index = samples
             .iter()
             .enumerate()
@@ -963,73 +639,26 @@ mod tests {
     #[test]
     fn a_knock_is_reproducible_from_its_seed() {
         assert_eq!(
-            render_click(48_000, 11, false, &CURRENT),
-            render_click(48_000, 11, false, &CURRENT)
+            render_click(48_000, 11, false, &SET_DOWN),
+            render_click(48_000, 11, false, &SET_DOWN)
         );
         assert_ne!(
-            render_click(48_000, 11, false, &CURRENT),
-            render_click(48_000, 12, false, &CURRENT)
+            render_click(48_000, 11, false, &SET_DOWN),
+            render_click(48_000, 12, false, &SET_DOWN)
         );
-    }
-
-    #[test]
-    fn every_sound_is_a_sound_of_its_own() {
-        // The point of the set is that the owner can tell the sounds apart, so no
-        // two of them may come out the same.
-        let mut all = candidates();
-        all.extend(variations());
-        all.extend(quieter());
-        all.extend(mixes());
-        assert_eq!(all.len(), 6 + VARIATIONS + QUIETER + MIX_SHARES.len());
-        for (index, candidate) in all.iter().enumerate() {
-            let samples = render_mix(48_000, 3, false, &candidate.parts);
-            assert!(
-                samples.iter().any(|s| s.abs() > 0.1),
-                "{} is silent",
-                candidate.name
-            );
-            for other in all.iter().skip(index + 1) {
-                let other_samples = render_mix(48_000, 3, false, &other.parts);
-                assert_ne!(
-                    samples, other_samples,
-                    "{} is the same as {}",
-                    candidate.name, other.name
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn every_variation_changes_the_deep_board() {
-        // Each variation must be its own sound, and none of them may hold its
-        // pitch the way the deep board does: that is what the owner asked for.
-        let base = render_click(48_000, 3, false, &DEEP_BOARD);
-        let mut moved = 0;
-        for candidate in variations() {
-            let samples = render_mix(48_000, 3, false, &candidate.parts);
-            assert_ne!(samples, base, "{} is the deep board itself", candidate.name);
-            let glides = candidate
-                .parts
-                .iter()
-                .any(|(_, voicing)| voicing.glide > 0.0);
-            if glides {
-                moved += 1;
-            }
-        }
-        assert_eq!(moved, 10, "ten of the variations must move the pitch");
     }
 
     #[test]
     fn a_mix_is_made_of_its_parts() {
-        let alone = render_mix(48_000, 7, false, &[(1.0, DEEP_BOARD)]);
+        let alone = render_mix(48_000, 7, false, &[(1.0, SET_DOWN)]);
         assert_eq!(
             alone,
-            render_click(48_000, 7, false, &DEEP_BOARD),
+            render_click(48_000, 7, false, &SET_DOWN),
             "one part at full level is that part on its own"
         );
 
         let ring = render_click(48_000, 7, false, &STONE_RING);
-        let mixed = render_mix(48_000, 7, false, &[(0.5, DEEP_BOARD), (0.5, STONE_RING)]);
+        let mixed = render_mix(48_000, 7, false, &[(0.5, SET_DOWN), (0.5, STONE_RING)]);
         assert_eq!(
             mixed.len(),
             alone.len().max(ring.len()),
@@ -1044,8 +673,8 @@ mod tests {
 
         // The shares must matter: four fifths of the quiet sound is darker than
         // one fifth of it.
-        let mostly_quiet = render_mix(48_000, 7, false, &[(0.8, DEEP_BOARD), (0.2, STONE_RING)]);
-        let mostly_ring = render_mix(48_000, 7, false, &[(0.2, DEEP_BOARD), (0.8, STONE_RING)]);
+        let mostly_quiet = render_mix(48_000, 7, false, &[(0.8, SET_DOWN), (0.2, STONE_RING)]);
+        let mostly_ring = render_mix(48_000, 7, false, &[(0.2, SET_DOWN), (0.8, STONE_RING)]);
         assert_ne!(mostly_quiet, mostly_ring);
     }
 
@@ -1063,11 +692,11 @@ mod tests {
         };
         let hard = Voicing {
             attack: 0.0,
-            ..DEEP_BOARD
+            ..SET_DOWN
         };
         let soft = Voicing {
             attack: 0.004,
-            ..DEEP_BOARD
+            ..SET_DOWN
         };
         assert!(
             opening(&soft) < opening(&hard) * 0.5,
@@ -1088,7 +717,7 @@ mod tests {
             roughness: 0.0,
             tone: 20000.0,
             glide: 0.10,
-            ..DEEP_BOARD
+            ..SET_DOWN
         };
         let plain = Voicing {
             glide: 0.0,
@@ -1109,11 +738,26 @@ mod tests {
     }
 
     #[test]
+    fn the_sound_in_use_is_the_mix_that_was_chosen() {
+        // Four fifths of the quiet sound and one fifth of the ringing stone, which
+        // is what the owner picked out of the listening rounds. If this changes,
+        // the game's sound changes with it.
+        let parts = in_use();
+        assert_eq!(parts.len(), 2, "the sound is a mix of two");
+        assert_eq!(parts[0].0, 0.8, "four fifths of the first");
+        assert_eq!(parts[1].0, 0.2, "one fifth of the second");
+        assert_eq!(parts[0].1.length, SET_DOWN.length);
+        assert_eq!(parts[1].1.length, STONE_RING.length);
+        // The shares add up, so the whole sound is accounted for.
+        assert!((parts[0].0 + parts[1].0 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn a_damped_knock_carries_less_energy() {
         // Every knock is normalised to the same peak before it is played, so a
         // damped one is quieter in energy rather than in peak.
-        let plain = render_click(48_000, 5, false, &CURRENT);
-        let damped = render_click(48_000, 5, true, &CURRENT);
+        let plain = render_click(48_000, 5, false, &SET_DOWN);
+        let damped = render_click(48_000, 5, true, &SET_DOWN);
         let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
         assert!(energy(&damped) < energy(&plain));
     }

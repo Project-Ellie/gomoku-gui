@@ -18,29 +18,67 @@ a sample later touches one module.
 
 ## The model
 
-A stone striking a board is an impulse that excites the resonant modes of the
-board and the stone. The model is a noise burst through four damped resonators.
+A stone landing on wood is a short contact. It excites the board under it, and
+the board answers with modes of its own. The model has three parts:
 
+| Part | What it is | What it sounds like |
+|---|---|---|
+| Contact | A burst of noise, band passed around a centre frequency, with a rise and a decay | The click of the stone |
+| Body | Two or three low modes, quickly damped | The board answering |
+| Stone | One or two short modes above the body | The stone itself |
+
+A `Voicing` says how much of each part there is, and three further things:
+
+- **Glide.** Every mode can fall in pitch over its life, by a fraction of its
+  frequency. A real contact spreads and settles as it lands, so the pitch drops.
+  A mode that holds its pitch sounds synthetic, which is what the owner heard in
+  the first version.
+- **Spread.** Each mode is three partials a little apart, which beat against one
+  another. One partial on its own rings like a tuning fork; a cluster sounds like
+  a material.
+- **Whisper.** A breath of noise that the wood radiates along with its modes.
+
+Two more numbers shape the whole knock. The **tone** is a low pass over
+everything, which is what "warm" and "dark" mean here, because wood eats the top
+end. The **attack** is how long the knock takes to reach full strength: at zero
+the knock is at its full level in its first sample, which is what a blow sounds
+like, and a stone set down arrives over a few milliseconds.
+
+A knock is normalised to about minus 3 dBFS, and both ends are faded. The fade at
+the start is a tenth of a millisecond on purpose: the contact is the loudest part
+of a knock and it is over in a millisecond or two, so a longer fade would ramp
+away the very thing that makes it a knock.
+
+### A sound can be a mix
+
+A sound is one voicing, or several mixed, each at its own level. A part is
+normalised before it is mixed, so a level is the share of the sound rather than
+the strength of its numbers, and the mix is normalised again afterwards.
+
+The sound the game plays is a mix of two, which are opposed:
+
+| Part | Share | Character |
+|---|---|---|
+| Set down | 80% | Quiet, low, dark, arrives over two milliseconds |
+| Ringing stone | 20% | Bright, holds its pitch, rings for thirty milliseconds |
+
+The shares are written out rather than worked out from one another, so that what
+the game plays is exactly the file that was listened to.
+
+### Choosing the sound
+
+The sound was chosen by ear, over several rounds, and the code that made it is
+still there:
+
+```sh
+cargo run -p gomoku-gui -- --knock /tmp/knock   # writes the sounds and a page that plays them
 ```
-excite(t) = noise(t) * exp(-t / 0.0015)          // 1.5 ms attack
-mode_k(t) = a_k * sin(2*pi*f_k*t + phase_k) * exp(-t / tau_k)
-click(t)  = soft_clip(sum_k mode_k(t) * excite(t))
-```
 
-| Mode | Frequency | Decay `tau` | Amplitude |
-|---|---|---|---|
-| 1 | 420 Hz | 0.055 s | 1.00 |
-| 2 | 1150 Hz | 0.032 s | 0.60 |
-| 3 | 2600 Hz | 0.018 s | 0.32 |
-| 4 | 5400 Hz | 0.009 s | 0.18 |
-
-The first mode gives the body of the knock, the higher modes give the sharp
-attack. Total duration is 180 ms, with a 3 ms fade-in to avoid a DC step and a
-5 ms fade-out so the tail never clicks.
-
-This is a starting point, not a truth. The tuning panel exposes the four
-frequencies, the four decays, the noise length, and the soft-clip amount, so
-the sound is adjusted by ear on the real machine.
+`--knock` writes the sound in use and the two parts it is made from, together
+with a table of measurements: how loud the contact is against the peak, when the
+knock reaches its peak, where the energy sits, and how long it takes to fall 20
+decibels. Those numbers are how a sound is compared without ears, and they are
+how the difference between two candidates was checked before either was played.
 
 ## Variation
 
@@ -60,10 +98,10 @@ Rules for a variant:
 - The noise phase is random.
 
 A damped board makes a different sound, which is a real effect a player hears:
-when one or more of the four orthogonal neighbours is occupied, the response
-uses `tau * 0.86`, loses 8 percent of its level, and drops the first mode by a
-little more. Variant selection walks the variants in a shuffled order, so two
-identical placements in a row do not sound identical.
+when one or more of the four orthogonal neighbours is occupied, the response uses
+`tau * 0.86` and loses 8 percent of its level. Variant selection walks the
+variants in a shuffled order, so two identical placements in a row do not sound
+identical.
 
 Per-move variation uses a small deterministic PRNG seeded at start-up. The
 audio thread never calls `rand`.

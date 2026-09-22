@@ -222,69 +222,46 @@ struct Sound {
     analysis: Analysis,
 }
 
-/// Render the sounds that are being decided on into `directory`, with a page.
+/// Render the sound the game plays, and the two parts it is made of, into
+/// `directory`, with a page that plays them.
 pub fn audition(directory: &Path) -> Result<()> {
     std::fs::create_dir_all(directory)
         .with_context(|| format!("cannot create {}", directory.display()))?;
 
-    // Every sound to render, with the group it belongs to. The mixes of the sound
-    // that was chosen come first, because that is what is being decided.
-    let mut wanted: Vec<(&str, audio::Candidate)> = vec![
+    let wanted: Vec<(&str, &str, String, audio::Parts)> = vec![
         (
-            "The sound the game makes now",
-            audio::Candidate::single(
-                "0-the-sound-now".to_string(),
-                "Four ringing modes, which sound hollow.".to_string(),
-                *audio::IN_USE,
-            ),
+            "The sound the game plays",
+            "0-the-sound",
+            "Four fifths of a stone set down, and one fifth of a stone that rings.".to_string(),
+            audio::in_use(),
         ),
         (
-            "Number 13, which you picked",
-            audio::Candidate::single(
-                "13-wood".to_string(),
-                audio::intent_of(&audio::chosen()),
-                audio::chosen(),
-            ),
+            "Its quiet part",
+            "1-set-down",
+            "A stone set down on a thick board: quiet, low, and dark.".to_string(),
+            vec![(1.0, audio::SET_DOWN)],
         ),
         (
-            "Number 3, its parent",
-            audio::Candidate::single(
-                "3-deep-board".to_string(),
-                "A thick board: lower, and a little longer.".to_string(),
-                audio::DEEP_BOARD,
-            ),
+            "Its ringing part",
+            "2-stone-ring",
+            "A stone that rings, which is a fifth of the whole sound.".to_string(),
+            vec![(1.0, audio::STONE_RING)],
         ),
     ];
-    for candidate in audio::mixes() {
-        wanted.push((
-            "The quiet sound of 27, mixed with the ringing stone",
-            candidate,
-        ));
-    }
-    for candidate in audio::quieter() {
-        wanted.push(("Quieter than 13", candidate));
-    }
-    for candidate in audio::candidates() {
-        wanted.push(("Earlier rounds, for reference", candidate));
-    }
 
     let mut sounds = Vec::new();
-    for (group, candidate) in wanted {
-        // One voicing takes the simple path; the two are the same sound, which a
-        // test in the audio module holds.
-        let samples = match candidate.parts.as_slice() {
+    for (group, name, intent, parts) in wanted {
+        // One voicing takes the simple path, which is the same sound: a test in the
+        // audio module holds the two together.
+        let samples = match parts.as_slice() {
             [(_, voicing)] => audio::render_click(RATE, 7, false, voicing),
-            parts => audio::render_mix(RATE, 7, false, parts),
+            many => audio::render_mix(RATE, 7, false, many),
         };
-        write_wav(
-            &directory.join(format!("{}.wav", candidate.name)),
-            &samples,
-            RATE,
-        )?;
+        write_wav(&directory.join(format!("{name}.wav")), &samples, RATE)?;
         sounds.push(Sound {
             group: group.to_string(),
-            name: candidate.name,
-            intent: candidate.intent,
+            name: name.to_string(),
+            intent,
             analysis: analyse(&samples, RATE),
         });
     }

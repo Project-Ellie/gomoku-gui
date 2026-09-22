@@ -18,9 +18,11 @@ game has no captures, so that is the only sound.
 
 ## Decision
 
-- One sound, synthesised on the CPU at start-up: a short noise burst exciting
-  four damped resonators, rendered into six fixed buffers (one default, three
-  damped variants for occupied neighbours, two extra default variants).
+- One sound, synthesised on the CPU at start-up: a contact, the body of the
+  board, and the stone, rendered into six fixed buffers (one default, three
+  damped variants for occupied neighbours, two extra default variants). The model
+  is described in [06_AUDIO](../architecture/06_AUDIO.md) and
+  [ADR-009](ADR-009-voicing-model.md).
 - Audio output goes through `cpal` directly, not `rodio`, because we generate
   samples rather than decode files.
 - The audio callback only mixes from a pre-rendered buffer with a moving
@@ -28,8 +30,8 @@ game has no captures, so that is the only sound.
   call a transcendental function.
 - Voice hand-off from the user-interface thread uses a fixed 16-slot lock-free
   ring of atomics. A full queue drops a click instead of blocking.
-- The synthesis parameters are exposed next to the material sliders in the
-  tuning panel.
+- The sound is chosen by ear, not by a setting: `--knock` renders the candidates
+  and the measurements beside them.
 - A missing or lost audio device disables sound, logs one warning, and never
   stops the application or shows a dialog.
 
