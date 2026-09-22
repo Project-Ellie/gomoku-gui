@@ -84,7 +84,6 @@ One test per rejection path from the persistence document:
 | The same point twice | `RepeatedPoint` with the index |
 | A move onto an occupied point | `IllegalMove` with the index |
 | `result: won` with an ongoing board | `ResultMismatch` |
-| `result: won` in the middle of the list | `PrematureResult` |
 | Truncated JSON | `Parse` |
 | Unknown extra field | Loads successfully, field ignored |
 

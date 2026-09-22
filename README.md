@@ -9,8 +9,12 @@ No server. No network. One window.
 
 ## Status
 
-Design complete and approved. Implementation has not started. The approved
-design is in [docs/specs/2026-09-22-gomoku-gui-design.md](docs/specs/2026-09-22-gomoku-gui-design.md).
+The `gomoku-core` crate is implemented: game state, the undo and rewind
+history, tournament notation, the versioned record format, and the settings
+schema. The graphical crate is not started.
+
+- Approved design: [docs/specs/2026-09-22-gomoku-gui-design.md](docs/specs/2026-09-22-gomoku-gui-design.md)
+- Implementation plan for the core crate: [docs/plans/2026-09-22-gomoku-core.md](docs/plans/2026-09-22-gomoku-core.md)
 
 ## Requirements
 
@@ -70,6 +74,7 @@ after one confirmation. See
 | Path | Contents |
 |---|---|
 | [docs/specs/](docs/specs/) | The approved design, requirements, and build order |
+| [docs/plans/](docs/plans/) | Implementation plans |
 | [docs/architecture/](docs/architecture/) | System overview, domain model, core logic, persistence, rendering, interaction, audio, testing |
 | [docs/decisions/](docs/decisions/) | Architecture decision records |
 

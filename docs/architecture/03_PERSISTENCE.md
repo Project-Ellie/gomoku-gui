@@ -207,7 +207,7 @@ is ignored and overwritten.
 
 ```rust
 pub enum RecordError {
-    Io(std::io::Error),
+    Io { path: PathBuf, source: std::io::Error },
     Parse(String),
     WrongFormat { found: String },
     UnsupportedVersion(u32),
@@ -218,7 +218,6 @@ pub enum RecordError {
     RepeatedPoint { index: usize },
     IllegalMove { index: usize },
     ResultMismatch,
-    PrematureResult { index: usize },
 }
 ```
 

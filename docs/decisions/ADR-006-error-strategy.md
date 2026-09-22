@@ -16,8 +16,10 @@ user, and continue or exit.
 ## Decision
 
 - `gomoku-core` defines `GameError`, `RecordError`, and `ConfigError` with
-  `thiserror`. Each implements `Display`, `Error`, `Debug`, `PartialEq`, and
-  `Eq`, so tests compare errors directly.
+  `thiserror`. Each implements `Display`, `Error`, and `Debug`. `GameError`
+  also implements `PartialEq` and `Eq`, so tests compare it directly.
+  `RecordError` and `ConfigError` carry an `std::io::Error` source, which is
+  not comparable, so their tests match on the variant with `matches!`.
 - `gomoku-gui` uses `anyhow` with `.context()` at every propagation, and reports
   at the boundary: a log line plus a dialog for a user-visible failure, or a
   non-zero exit for a failure during start-up.

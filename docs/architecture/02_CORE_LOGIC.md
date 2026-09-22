@@ -124,10 +124,11 @@ order below, and the first failure wins.
 | 7 | each point is new | `RecordError::RepeatedPoint { index }` |
 | 8 | `Board::play` accepts each point in order | `RecordError::IllegalMove { index }` |
 | 9 | the stored `result` agrees with the board after the last move | `RecordError::ResultMismatch` |
-| 10 | a result of `Won` or `Draw` appears only on the last move of the game | `RecordError::PrematureResult` |
 
 Check 8 catches a file whose moves are already illegal at move 20, and it also
-catches a game that continues after a win. Check 4 leaves room for a future
+catches a game that continues after a win. Check 9 is not a repeat of check 8:
+a file can hold only legal moves and still store a result that the board does not
+support, which is what check 9 catches. Check 4 leaves room for a future
 ruleset field without a version bump.
 
 On any failure the caller keeps the current game and shows the message. A load
@@ -141,11 +142,13 @@ and no view state, because those are not part of the game.
 ## Time
 
 The creation time is read once, when a game starts, and stored in UTC with a
-`Z` suffix. The type is `time::OffsetDateTime` from the `time` crate with the
-`serde` feature, which serialises as RFC 3339. `time` is small, maintained,
-and has no transitive dependency surprise. The alternative was a plain
-`String`, which would push the validity question onto the record validator for
-no gain.
+`Z` suffix. The type is `time::OffsetDateTime` from the `time` crate, with the `serde` and
+`serde-human-readable` features and the per-field attribute
+`#[serde(with = "time::serde::rfc3339")]`. The attribute is required: without
+it the crate writes its own space-separated form, not RFC 3339.
+`time` is small, maintained, and has no transitive dependency surprise. The
+alternative was a plain `String`, which would push the validity question onto
+the record validator for no gain.
 
 ## Why no separate `Rules` trait
 
