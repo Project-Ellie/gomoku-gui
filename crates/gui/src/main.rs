@@ -10,6 +10,7 @@ mod camera;
 mod preview;
 mod render;
 mod session;
+mod sound;
 mod ui;
 
 use std::path::PathBuf;
@@ -51,6 +52,7 @@ fn main() -> Result<()> {
     let mut demo = false;
     let mut ui_preview = false;
     let mut scale = 1.0_f32;
+    let mut knock: Option<PathBuf> = None;
     let mut pixels_per_cell: Option<f32> = None;
     let mut gain: Option<f32> = None;
     let mut centre: Option<[f32; 2]> = None;
@@ -84,6 +86,11 @@ fn main() -> Result<()> {
                 );
             }
             "--demo" => demo = true,
+            "--knock" => {
+                knock = Some(PathBuf::from(
+                    arguments.next().context("--knock needs a directory")?,
+                ));
+            }
             "--preview-ui" => ui_preview = true,
             "--scale" => {
                 scale = arguments
@@ -123,6 +130,11 @@ fn main() -> Result<()> {
             }
             other => anyhow::bail!("unknown argument {other}. Try --help."),
         }
+    }
+
+    if let Some(directory) = knock {
+        // Render every voicing and stop: this is how the sound is chosen.
+        return sound::audition(&directory);
     }
 
     let game = if demo { demo_game() } else { Game::new() };
@@ -168,6 +180,7 @@ fn print_help() {
   --preview FILE.bmp  render one frame to a file and exit
   --preview-ui        include the interface in the preview
   --scale N           interface points per pixel, as a scaled display has
+  --knock DIR         render every stone sound into DIR and stop
   --size N            the window or preview size in pixels (default 1100)
   --pixels-per-cell N zoom for a preview (default: fit the board)
   --wood-gain F       a brightness multiplier on the wood photograph (default 1)
