@@ -1860,28 +1860,59 @@ fn temporary_path(path: &Path) -> PathBuf {
 
 - [ ] **Step 4: Create the golden file and verify it**
 
-Create `crates/core/tests/golden/hotseat-v1.json` **from the encoder, not by hand**.
-The encoder is `serde_json::to_string_pretty`, and it writes every array element
-on its own line, so `moves` appears as `[`, `7`, `,`, `7`, `]` across five lines.
-A file typed by hand from the schema example will not match.
+`crates/core/tests/record_format.rs` reads the golden file at compile time with
+`include_str!`, so the file must exist before that test can build. Generate it
+with a separate temporary file that does not depend on it.
 
-The reliable way to produce it:
+1. Create `crates/core/tests/generate_golden.rs`:
 
-1. Add a temporary test that prints `Record::from_game(&golden_game()).to_json()`.
-2. Run it with `--nocapture` and copy the JSON between the harness lines into the
-golden file.
-3. Delete the temporary test.
-4. Run `cargo test -p gomoku-core --test record_format` and confirm every test
-   passes, including `the_encoder_still_writes_the_golden_file`.
+```rust
+//! A temporary generator for the golden file. Delete this file afterwards.
 
-Check the file by hand against the schema afterwards: the format marker, version
-1, size 15, the rule set, both player names, the start time as
-`2026-09-22T18:04:11Z`, a result of `{"kind": "ongoing"}`, and four moves as
-`[7, 7]`, `[8, 7]`, `[8, 8]`, and `[6, 6]`.
+use engine::Move;
+use gomoku_core::{Game, Record};
+use time::macros::datetime;
+
+#[test]
+fn print_the_golden_file() {
+    let mut game = Game::started_at(datetime!(2026-09-22 18:04:11 UTC));
+    game.set_players(Some("Wolfie".to_string()), Some("Anna".to_string()));
+    for (row, col) in [(7, 7), (7, 8), (8, 8), (6, 6)] {
+        game.play(Move::new(row, col).expect("inside the board"))
+            .expect("the cell is empty");
+    }
+    println!(
+        "{}",
+        Record::from_game(&game).to_json().expect("the record encodes")
+    );
+}
+```
+
+2. Run it:
+
+```bash
+mkdir -p crates/core/tests/golden
+cargo test -p gomoku-core --test generate_golden -- --nocapture
+```
+
+3. Copy the JSON between the harness lines into
+   `crates/core/tests/golden/hotseat-v1.json`, including the trailing newline that
+   `to_json` adds.
+4. Delete `crates/core/tests/generate_golden.rs`. It must not remain.
+5. Check the file by hand against the schema: the format marker, version 1, size
+   15, the rule set, both player names, the start time as `2026-09-22T18:04:11Z`,
+   a result of `{"kind": "ongoing"}`, and four moves reading `7, 7`, `8, 7`,
+   `8, 8`, and `6, 6`. `to_string_pretty` puts each number on its own line.
+6. Run `cargo test -p gomoku-core --test record_format`.
+   Expected: every test in that file passes.
 
 Write the full content of the golden file into your report file. The reviewer
 checks it against the schema, because a golden file that the code generated
 proves drift and not correctness.
+
+Do not transcribe the file by hand from the example in
+`docs/architecture/03_PERSISTENCE.md`. The example is the real encoder output, but
+hand transcription invites a whitespace mismatch.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
