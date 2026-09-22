@@ -2501,6 +2501,181 @@ git commit -m "docs: align the design documents with the core implementation"
 
 ---
 
+### Task 8: Deferred findings sweep
+
+**Files:**
+- Modify: `crates/core/src/game.rs`
+- Modify: `crates/core/tests/invariants.rs`
+
+**Interfaces:**
+- Consumes: everything from Tasks 1 to 7.
+- Produces: nothing. This task changes two comments and strengthens three property
+tests. It changes no behaviour.
+
+Reason: the per-task reviews parked these Minor findings so that each one does
+not widen an unrelated task's diff. Fix them together, in one reviewed commit,
+after the functional work is complete.
+
+- [ ] **Step 1: Correct the `play` doc comment**
+
+The comment still describes the order before the Task 3 amendment. Replace:
+
+```rust
+    /// When the view is rewound, every move after the cursor is deleted
+    /// first. Read `pending_truncation` before you call this, and confirm
+    /// with the user when it is not zero.
+```
+
+with:
+
+```rust
+    /// When the view is rewound, the moves after the cursor are deleted as
+    /// part of the placement, so a rejected placement changes nothing. Read
+    /// `pending_truncation` before you call this, and confirm with the user
+    /// when it is not zero.
+```
+
+- [ ] **Step 2: Correct the invariant header**
+
+In `crates/core/tests/invariants.rs`, replace the six-line invariant list at the
+very top of the file with:
+
+```rust
+//! I1 cursor <= len
+//! I2 the board equals a replay of moves[..cursor]
+//! I3 the move list has no repeated point. A point outside the board is
+//!    unrepresentable, because `Move::new` rejects it.
+//! I4 the board holds exactly `cursor` moves
+//! I5 the side to move follows the cursor parity
+//! I6 the outcome follows the board at the latest position
+```
+
+- [ ] **Step 3: Strengthen the rewind and forward property**
+
+Replace the body of `rewind_then_forward_restores_the_same_position` with:
+
+```rust
+        let mut game = Game::new();
+        for step in steps {
+            apply(&mut game, step);
+        }
+        // `forward` stops at the latest move, so the cycle restores the live
+        // position. The walk can leave a rewound view, so check the live state
+        // and then step back to the view the walk left.
+        let mut live_before = game.clone();
+        live_before.live();
+        let view_before = game.clone();
+        let cursor = game.cursor();
+        while game.rewind() {}
+        while game.forward() {}
+        prop_assert_eq!(&game, &live_before);
+
+        let moved = game.seek(cursor);
+        prop_assert_eq!(moved, cursor != live_before.len());
+        prop_assert_eq!(&game, &view_before);
+```
+
+- [ ] **Step 4: Close the silent skip in the truncation property**
+
+Replace the body of `play_while_rewound_truncates_the_tail` with:
+
+```rust
+        let mut game = Game::new();
+        for step in steps {
+            apply(&mut game, step);
+        }
+        let cursor = game.cursor();
+        let legal = game.stone_at(point).is_none() && game.status() == Status::Ongoing;
+        match game.play(point) {
+            Ok(()) => {
+                prop_assert_eq!(game.len(), cursor + 1);
+                prop_assert_eq!(game.cursor(), cursor + 1);
+                prop_assert!(!game.is_rewound());
+                prop_assert_eq!(game.last_move(), Some(point));
+                prop_assert_eq!(game.outcome(), expected_outcome(&game));
+            }
+            // A refused placement is only allowed when the guard above agrees.
+            Err(_) => prop_assert!(!legal, "a legal placement was refused"),
+        }
+```
+
+- [ ] **Step 5: Add the property that reaches a won game**
+
+Random play almost never completes five in a row, so the won-game branch of
+`check` was covered only by two unit tests. Add this property at the end of the
+file, and change the import line to `use engine::{Board, Color, Move, Status};`:
+
+```rust
+    /// A won game keeps its outcome while the view moves, and the board at a
+    /// rewound view is ongoing. This is invariant I6 in the case that random
+    /// play almost never reaches.
+    #[test]
+    fn a_won_game_keeps_its_outcome_while_the_view_moves(
+        steps in prop::collection::vec(any_step(), 0..30),
+    ) {
+        let mut game = Game::new();
+        for index in 0..4u8 {
+            game.play(Move::new(7, 3 + index).expect("inside the board"))
+                .expect("the cell is empty");
+            game.play(Move::new(3 + index, index).expect("inside the board"))
+                .expect("the cell is empty");
+        }
+        game.play(Move::new(7, 7).expect("inside the board"))
+            .expect("the cell is empty");
+
+        let won = Outcome::Won {
+            winner: Color::Black,
+            method: gomoku_core::WinMethod::Five,
+        };
+        prop_assert_eq!(game.status(), Status::Won(Color::Black));
+        prop_assert_eq!(game.outcome(), won);
+
+        for step in steps {
+            // A placement is skipped: the move list must stay won and fixed.
+            if let Step::Play(_) = step {
+                continue;
+            }
+            apply(&mut game, step);
+            prop_assert_eq!(game.outcome(), won, "I6: the outcome describes the game");
+            check(&game);
+        }
+    }
+```
+
+- [ ] **Step 6: Prove that the strengthened assertion can fail**
+
+A strengthened test that cannot fail is worthless. Prove that the new `Err(_)`
+arm in Step 4 works:
+
+1. Temporarily change `play` so that it refuses a legal placement, for example
+   by moving the `GameError::GameOver` check to the top of the function.
+2. Run `cargo test -p gomoku-core --test invariants play_while_rewound` and save
+   the output to `.superpowers/sdd/2026-09-22-gomoku-core/task-8-mutation.txt`.
+   Expected: the property FAILS with "a legal placement was refused".
+3. Restore `play` exactly.
+4. Run the same command again and confirm it passes.
+
+- [ ] **Step 7: Run the gates and the strengthened run**
+
+Run: `cargo test`
+Expected: 21 unit tests and 4 property tests pass.
+
+Run: `PROPTEST_CASES=2000 cargo test -p gomoku-core --test invariants`
+Expected: 4 property tests pass. Save the output to
+`.superpowers/sdd/2026-09-22-gomoku-core/task-8-proptest-2000.txt`.
+
+Run: `cargo clippy --all-targets -- -D warnings && cargo fmt --all`
+Expected: no warnings, no diff.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/core
+git commit -m "test(core): strengthen the property tests and correct two comments"
+```
+
+---
+
 ## Completion checklist
 
 The core crate is complete when every item below is true.
