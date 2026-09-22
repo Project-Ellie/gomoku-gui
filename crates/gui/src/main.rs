@@ -28,6 +28,8 @@ fn main() -> Result<()> {
     let mut size: u32 = 1100;
     let mut frames: Option<u32> = None;
     let mut demo = false;
+    let mut pixels_per_cell: Option<f32> = None;
+    let mut centre: Option<[f32; 2]> = None;
 
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -52,6 +54,24 @@ fn main() -> Result<()> {
                 );
             }
             "--demo" => demo = true,
+            "--pixels-per-cell" => {
+                pixels_per_cell = Some(
+                    arguments
+                        .next()
+                        .and_then(|value| value.parse().ok())
+                        .context("--pixels-per-cell needs a number")?,
+                );
+            }
+            "--centre" => {
+                let value = arguments.next().context("--centre needs two numbers")?;
+                let (x, y) = value
+                    .split_once(',')
+                    .context("--centre wants the form X,Y")?;
+                centre = Some([
+                    x.parse().context("--centre x is not a number")?,
+                    y.parse().context("--centre y is not a number")?,
+                ]);
+            }
             "--help" | "-h" => {
                 print_help();
                 return Ok(());
@@ -63,7 +83,7 @@ fn main() -> Result<()> {
     let game = if demo { demo_game() } else { Game::new() };
 
     if let Some(path) = preview {
-        return write_preview(&path, size, &game);
+        return write_preview(&path, size, &game, pixels_per_cell, centre);
     }
 
     let audio = audio::Audio::start();
@@ -82,6 +102,8 @@ fn print_help() {
   --frames N          quit after N frames (a smoke test)
   --preview FILE.bmp  render one frame to a file and exit
   --size N            the window or preview size in pixels (default 1100)
+  --pixels-per-cell N zoom for a preview (default: fit the board)
+  --centre X,Y        the board point at the preview centre (default 7,7)
 
 Place a stone with the left mouse button. Drag to pan, scroll to zoom.
 u or backspace takes a move back, f fits the board, v turns it around,
@@ -112,11 +134,23 @@ fn demo_game() -> Game {
     game
 }
 
-fn write_preview(path: &Path, size: u32, game: &Game) -> Result<()> {
+fn write_preview(
+    path: &Path,
+    size: u32,
+    game: &Game,
+    pixels_per_cell: Option<f32>,
+    centre: Option<[f32; 2]>,
+) -> Result<()> {
     let gpu = preview::HeadlessGpu::new()?;
     let mut renderer = Renderer::new(&gpu.device, &gpu.queue, preview::PREVIEW_FORMAT, SAMPLES);
     let board_size = [size, size];
-    let camera = Camera::fit(board_size);
+    let mut camera = Camera::fit(board_size);
+    if let Some(pixels) = pixels_per_cell {
+        camera.pixels_per_cell = pixels;
+    }
+    if let Some(centre) = centre {
+        camera.centre = centre;
+    }
     renderer.set_globals(&gpu.queue, &app::globals_for(&camera, board_size));
     renderer.set_stones(&gpu.queue, &app::stone_instances(game));
     gpu.write_frame(path, size, size, &renderer)?;

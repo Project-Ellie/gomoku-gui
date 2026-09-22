@@ -5,8 +5,10 @@
 
 /// How far the slab reaches from the centre line, in cells.
 const SLAB_HALF: f32 = 7.85;
-/// The distance the whole board plus a small margin needs, in cells.
-const FIT_SPAN: f32 = 16.3;
+/// The distance the whole board plus a wide margin needs, in cells. The margin
+/// is what lets the table show around the slab, which is what makes the board
+/// look like an object on a surface rather than a texture filling a window.
+const FIT_SPAN: f32 = 18.8;
 /// The furthest the view may zoom in, as a multiple of the fitted scale.
 const MAX_ZOOM: f32 = 40.0;
 /// How close a click must be to an intersection to count, in cells.
@@ -168,12 +170,34 @@ mod tests {
     #[test]
     fn zoom_keeps_the_anchor_under_the_pointer() {
         let mut camera = Camera::fit(SIZE);
-        let anchor = [900.0, 200.0];
+        // An anchor near the middle of the window. There the pan limit does not
+        // engage, so the point under the pointer must not move at all.
+        let anchor = [640.0, 430.0];
         let before = camera.to_board([SIZE[0] as f32, SIZE[1] as f32], anchor);
         camera.zoom_about(SIZE, anchor, 2.5);
         let after = camera.to_board([SIZE[0] as f32, SIZE[1] as f32], anchor);
         assert!(close(before[0], after[0]), "{before:?} against {after:?}");
         assert!(close(before[1], after[1]), "{before:?} against {after:?}");
+    }
+
+    #[test]
+    fn the_pan_limit_wins_over_the_anchor_near_an_edge() {
+        // Near the edge of the board the two rules cannot both hold: a view that
+        // stayed exactly under the pointer would leave the pan limits. The limit
+        // wins, and the anchored point slides.
+        let mut camera = Camera::fit(SIZE);
+        let anchor = [1180.0, 200.0];
+        let before = camera.to_board([SIZE[0] as f32, SIZE[1] as f32], anchor);
+        camera.zoom_about(SIZE, anchor, 3.0);
+        let after = camera.to_board([SIZE[0] as f32, SIZE[1] as f32], anchor);
+        assert!(!close(before[0], after[0]), "the anchor should have slid");
+
+        let half = SIZE[0] as f32 / (2.0 * camera.pixels_per_cell);
+        assert!(
+            camera.centre[0] <= 7.0 + (SLAB_HALF - half) + 1e-3,
+            "the view left its limits: centre {}",
+            camera.centre[0]
+        );
     }
 
     #[test]

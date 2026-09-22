@@ -31,6 +31,10 @@ pub struct Globals {
     pub stone_a: [f32; 4],
     /// Shell rgb, roughness.
     pub stone_b: [f32; 4],
+    /// The reflected sky rgb, and the ambient share.
+    pub env_a: [f32; 4],
+    /// The reflected floor rgb, and the exposure.
+    pub env_b: [f32; 4],
 }
 
 /// One stone.
@@ -56,17 +60,23 @@ pub struct StoneMaterial {
     pub kind: f32,
 }
 
-/// The slate stone: dark, matte, faint veins.
+/// The slate stone: a dark blue-grey solid with a polished surface.
+///
+/// Linear albedo, from sRGB (0.33, 0.335, 0.355): dark, but a stone rather than
+/// a hole in the board. Its shine comes from the specular lobes and the room
+/// reflection, not from a lighter colour.
 pub const SLATE: StoneMaterial = StoneMaterial {
-    albedo: [0.055, 0.058, 0.068],
-    roughness: 0.42,
+    albedo: [0.089, 0.092, 0.103],
+    roughness: 0.30,
     kind: 0.0,
 };
 
-/// The shell stone: milky, cool, a tighter highlight.
+/// The shell stone: milky, faintly cool, and glossier than the slate.
+///
+/// Linear albedo, from sRGB (0.95, 0.95, 0.93) with a cool tint.
 pub const SHELL: StoneMaterial = StoneMaterial {
-    albedo: [0.900, 0.920, 0.955],
-    roughness: 0.19,
+    albedo: [0.760, 0.762, 0.735],
+    roughness: 0.20,
     kind: 1.0,
 };
 
@@ -89,15 +99,21 @@ pub struct BoardMaterial {
     pub sheen: f32,
 }
 
-/// The default board: a warm medium brown, a little darker than new kaya.
+/// The default board: a warm, light wood in the kaya family.
+///
+/// Linear albedo, from sRGB (0.80, 0.69, 0.53) for the light grain and
+/// (0.52, 0.41, 0.28) for the dark lines. The first values were far too
+/// saturated and too dark, which read as printed veneer rather than wood; a
+/// real board sits near saturation 0.35 and value 0.7, a little darker than new
+/// kaya.
 pub const AGED_WOOD: BoardMaterial = BoardMaterial {
-    light: [0.480, 0.223, 0.050],
-    dark: [0.180, 0.060, 0.014],
-    pore: [0.042, 0.018, 0.005],
-    grain: 5.0,
-    contrast: 0.85,
-    pore_depth: 0.55,
-    sheen: 0.35,
+    light: [0.604, 0.434, 0.239],
+    dark: [0.230, 0.140, 0.062],
+    pore: [0.150, 0.085, 0.038],
+    grain: 2.4,
+    contrast: 0.78,
+    pore_depth: 0.38,
+    sheen: 0.28,
 };
 
 /// The light direction: from the upper left of the board, out of the surface.
@@ -478,10 +494,10 @@ impl Renderer {
         renderer
     }
 
-    /// The materials and view for an unzoomed, unpanned window of the given size.
+    /// The materials, the room, and the view for a fitted window.
     pub fn default_globals(width: u32, height: u32) -> Globals {
         let board = AGED_WOOD;
-        let fit = (width.min(height) as f32) / 16.3;
+        let fit = crate::camera::Camera::fit_scale([width, height]);
         Globals {
             view: [7.0, 7.0, fit, 0.0],
             window: [width as f32, height as f32, 0.0, 0.0],
@@ -494,7 +510,7 @@ impl Renderer {
                 board.pore[2],
                 board.pore_depth,
             ],
-            wood_d: [0.28, 0.55, board.sheen, 0.0],
+            wood_d: [0.18, 0.48, board.sheen, 0.30],
             stone_a: [
                 SLATE.albedo[0],
                 SLATE.albedo[1],
@@ -507,6 +523,10 @@ impl Renderer {
                 SHELL.albedo[2],
                 SHELL.roughness,
             ],
+            // A cool reflection above the board, a dark one below: this is the
+            // room the stones and the varnish reflect.
+            env_a: [0.28, 0.31, 0.38, 0.28],
+            env_b: [0.045, 0.040, 0.036, 1.05],
         }
     }
 
