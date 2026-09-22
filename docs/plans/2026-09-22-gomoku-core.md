@@ -1,5 +1,10 @@
 # Gomoku Core Implementation Plan
 
+> **Superseded in one respect.** The engine is no longer a path dependency on a
+> sibling checkout; it is a copy inside this repository, so the plan builds on its
+> own. See [ADR-008](../decisions/ADR-008-engine-vendored.md). The rest of this
+> plan is the record of how the core crate was built.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `gomoku-core`, the pure Rust crate that owns game state, the move history with its undo and rewind semantics, tournament notation, the versioned JSON record format, and the settings schema.
