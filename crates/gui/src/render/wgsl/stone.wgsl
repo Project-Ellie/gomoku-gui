@@ -36,17 +36,29 @@ fn vs_stone(in: MeshIn) -> VsOut {
     return out;
 }
 
-/// The micro-relief of slate: fine, even grain.
+/// The relief of slate: coarse granular grain, the speckle a polished slate
+/// shows at arm's length. A stone is under a cell across, so the features have to
+/// be a good fraction of that, or they average away to nothing.
 fn height_slate(p: vec2<f32>) -> f32 {
-    return fbm(p * 11.0, 4) * 0.7 + fbm(p * 42.0, 3) * 0.3;
+    return fbm(p * 2.0, 4) * 0.62 + fbm(p * 5.5, 3) * 0.38;
 }
 
-/// The micro-relief of shell: faint streaks along one direction.
+/// The relief of shell: soft streaks along one direction, over fine speckle.
 fn height_shell(p: vec2<f32>) -> f32 {
     let dir = vec2<f32>(0.866, 0.5);
-    let along = dot(p, dir) * 18.0;
-    let across = dot(p, vec2<f32>(-dir.y, dir.x)) * 2.4;
-    return fbm(vec2<f32>(along, across), 4) * 0.6 + fbm(p * 38.0, 3) * 0.4;
+    let along = dot(p, dir) * 9.0;
+    let across = dot(p, vec2<f32>(-dir.y, dir.x)) * 1.6;
+    return fbm(vec2<f32>(along, across), 4) * 0.66 + fbm(p * 5.0, 3) * 0.34;
+}
+
+/// A finer layer, for when the stone is large on screen. It fades out when its
+/// features would be smaller than a pixel, so it never shimmers.
+fn fino_slate(p: vec2<f32>) -> f32 {
+    return fbm(p * 30.0, 3);
+}
+
+fn fino_shell(p: vec2<f32>) -> f32 {
+    return fbm(p * 26.0, 3);
 }
 
 /// Perturb the mesh normal with a shallow height field.
@@ -70,26 +82,38 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
     let seed = in.params.x;
     let p = in.local * 3.0 + vec2<f32>(seed * 13.7, seed * 5.3);
 
-    // The stone's micro-texture is finer than a pixel when the board is small on
-    // screen. It fades with the pixel footprint so that it never shimmers, which
-    // would look like noise rather than like stone.
+    // Two layers of texture. The coarse one is always visible, because it is the
+    // speckle a stone shows at arm's length. The fine one appears only when the
+    // stone is large on screen, and fades out when its features would be smaller
+    // than a pixel, so it never shimmers.
     let texel = max(length(fwidth(in.local)), 1e-6);
-    let detail_frequency = 11.0 * 3.0;
-    let sample = smoothstep(0.8, 2.6, 1.0 / max(detail_frequency * texel, 1e-6));
-    let detail = mix(1.0, sample, 0.85);
+    let coarse = smoothstep(0.9, 2.4, 1.0 / max(6.0 * texel, 1e-6));
+    let fine = smoothstep(1.2, 3.0, 1.0 / max(30.0 * texel, 1e-6));
+    let detail = mix(1.0, coarse, 0.8);
+    let grain_detail = mix(1.0, fine, 0.85);
 
     var albedo = in.colour.rgb;
     var roughness = in.colour.w;
     if (kind > 0.5) {
-        // Shell: a faint streak pattern, and a milky body.
-        albedo *= 1.0 + (height_shell(p) - 0.5) * 0.07 * detail;
-        roughness *= 0.88 + (height_shell(p * 1.6) - 0.5) * 0.22 * detail;
+        // Shell: a milky body with soft streaks and speckle, as a real shell stone
+        // has. The streaks vary the roughness, which is what breaks the highlight
+        // into the wide soft band a polished stone shows.
+        let streaks = height_shell(p);
+        albedo *= 0.88 + streaks * 0.22 * detail;
+        albedo *= 0.95 + fino_shell(p) * 0.10 * grain_detail;
+        roughness = clamp(roughness * (0.70 + streaks * 0.60 * detail), 0.05, 0.45);
     } else {
-        // Slate: fine grain, slightly rougher at the surface.
-        albedo *= 1.0 + (height_slate(p) - 0.5) * 0.14 * detail;
-        roughness *= 0.88 + (height_slate(p * 1.4) - 0.5) * 0.28 * detail;
+        // Slate: coarse speckle over a darker body, with faint grey veining. The
+        // veining is ridged noise, so it forms thin lines rather than blobs, and
+        // the speckle varies the roughness, which is what makes polished slate
+        // glitter rather than shine.
+        let speckle = height_slate(p);
+        let vein = 1.0 - abs(2.0 * fbm(p * 1.1, 3) - 1.0);
+        albedo *= 0.74 + speckle * 0.40 * detail;
+        albedo *= 0.96 + fino_slate(p) * 0.09 * grain_detail;
+        albedo *= 1.0 - vein * 0.16 * detail;
+        roughness = clamp(roughness * (0.62 + speckle * 0.85 * detail), 0.05, 0.45);
     }
-    roughness = clamp(roughness, 0.05, 0.6);
 
     let v = vec3<f32>(0.0, 0.0, 1.0);
     let l = key_light();
@@ -108,12 +132,12 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
     // stone; the tight one is the reflection of the light itself.
     let wide = specular(n, v, l, min(roughness * 1.6, 0.7), 0.045);
     let tight = specular(n, v, l, roughness * 0.55, 0.055);
-    var shine = vec3<f32>(tight * 1.15 + wide * 0.45);
+    var shine = vec3<f32>(tight * 1.55 + wide * 0.50);
 
     // The room, reflected. This is the term that makes a stone look glossy.
     let reflection = environment(reflect(-v, n), roughness);
     let weight = fresnel(n_dot_v, 0.05);
-    shine += reflection * weight * 0.55;
+    shine += reflection * weight * 0.80;
 
     if (kind > 0.5) {
         // Shell: light that has travelled through the stone and comes out at the

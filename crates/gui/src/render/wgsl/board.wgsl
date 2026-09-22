@@ -72,9 +72,24 @@ fn wood(uv: vec2<f32>, texel: f32) -> vec3<f32> {
         + copy_c * weight_a * weight_b) / total;
     albedo *= g.wood_a.rgb;
 
+    // The photograph has a broad bright patch and a broad dark one, and on a real
+    // board that reads as a stain. The local tone is measured by averaging five
+    // samples spread over about two cells, which is far wider than a grain line
+    // and far narrower than the blotches, and the colour is then divided by it.
+    let reach = vec2<f32>(1.6, 1.6);
+    let broad = 0.2 * (
+        luminance(albedo)
+        + luminance(sample_wood((uv + vec2<f32>(reach.x, 0.0)) / TILE))
+        + luminance(sample_wood((uv - vec2<f32>(reach.x, 0.0)) / TILE))
+        + luminance(sample_wood((uv + vec2<f32>(0.0, reach.y)) / TILE))
+        + luminance(sample_wood((uv - vec2<f32>(0.0, reach.y)) / TILE))
+    );
+    let average_broad = 0.055;
+    albedo *= clamp(pow(average_broad / max(broad, 0.004), 0.85), 0.30, 2.6);
+
     // A slow drift of tone across the board, so the eye cannot find the tiles.
     let figure = fbm(vec2<f32>(uv.x * 0.09, uv.y * 0.08), 3) - 0.5;
-    albedo *= 1.0 + figure * 0.12;
+    albedo *= 1.0 + figure * 0.08;
 
     // Fine pores, added as a darkening. They fade out as one pixel starts to
     // cover a pore, so the board never shimmers.
@@ -158,15 +173,16 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         surface += vec3<f32>(0.05) * pow(lit, 6.0);
     }
 
-    // Grid lines: thin, warm, and slightly engraved. A dark line with a faint
-    // light line beside it reads as a cut into the wood rather than as paint.
-    let half_width = texel * 0.55;
+    // Grid lines: black, about two pixels wide at any zoom, and engraved rather
+    // than painted. The line is dark; the narrow lighter band beside it is the
+    // lip of the cut catching the light.
+    let half_width = texel * 1.05;
     let dist = min(abs(uv.x - round(uv.x)), abs(uv.y - round(uv.y)));
     let inside = step(0.0, uv.x) * step(uv.x, LINE_LAST) * step(0.0, uv.y) * step(uv.y, LINE_LAST);
-    let line = inside * (1.0 - smoothstep(half_width * 0.5, half_width * 1.4, dist));
-    let groove = inside * (1.0 - smoothstep(half_width * 1.6, half_width * 3.4, dist));
-    surface = mix(surface, vec3<f32>(0.030, 0.021, 0.013), line * 0.85);
-    surface *= 1.0 + groove * 0.05;
+    let line = inside * (1.0 - smoothstep(half_width * 0.55, half_width * 1.25, dist));
+    let lip = inside * (1.0 - smoothstep(half_width * 1.3, half_width * 2.6, dist));
+    surface = mix(surface, vec3<f32>(0.004, 0.004, 0.005), line);
+    surface *= 1.0 + lip * 0.10;
 
     return vec4<f32>(tone_map(surface), 1.0);
 }

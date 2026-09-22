@@ -157,12 +157,13 @@ pub struct WoodLook {
 /// The default look.
 ///
 /// The photograph is dark, and a dark board hides dark stones. Measured on this
-/// board, a gain of 4.0 is where the black stones reach 3.3 to 1 contrast and the
-/// white stones 3.7 to 1: both above the 3 to 1 minimum, so either colour can be
-/// placed confidently. Brightening also raises the grain contrast rather than
-/// flattening it, because the tone curve has not yet compressed the wood.
+/// board, a gain of 2.8 is where the black stones reach 3.9 to 1 contrast and the
+/// white stones 3.8 to 1: even, and both above the 3 to 1 minimum, so either
+/// colour can be placed confidently. Brightening also raises the grain contrast
+/// rather than flattening it, because the tone curve has not yet compressed the
+/// wood.
 pub const WOOD: WoodLook = WoodLook {
-    gain: 4.0,
+    gain: 2.8,
     pores: 0.35,
     sheen: 0.28,
 };
