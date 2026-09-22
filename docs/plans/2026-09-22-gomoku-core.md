@@ -2432,10 +2432,10 @@ with:
 
 ```
 Check 8 catches a file whose moves are already illegal at move 20, and it also
-catches a game that continues after a win. Check 4 leaves room for a future
-ruleset field without a version bump. Check 9 makes a separate check for a
-result that the moves do not produce unnecessary: a game that continues after
-a win already fails check 8.
+catches a game that continues after a win. Check 9 is not a repeat of check 8:
+a file can hold only legal moves and still store a result that the board does not
+support, which is what check 9 catches. Check 4 leaves room for a future ruleset
+field without a version bump.
 ```
 
 In the same file, the "Time" section is wrong about the encoder. Replace:
