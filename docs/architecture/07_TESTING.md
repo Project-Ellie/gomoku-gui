@@ -103,7 +103,7 @@ Pure functions only. No GPU and no window.
 | `hit_test_finds_the_nearest_intersection` | A point 0.44 cell from the centre hits, 0.46 does not |
 | `hit_test_rejects_off_board` | Points outside `0..=14` return no target |
 | `notation_centre_is_h8` | `label(7, 7) == "H8"` |
-| `notation_skips_i` | Column 8 is `J`, and the label set has no `I` |
+| `notation_covers_every_column` | Column 0 is `A`, column 8 is `I`, column 14 is `O`, and the label set has no repeats |
 | `notation_is_a_bijection` | Every one of the 225 points maps to a unique label and back |
 | `octave_fade_range` | The fade factor is 1 for a small footprint and 0 for a large one |
 | `shortcut_map_is_stable` | Each shortcut maps to the documented action, and Cmd-Z maps to `Undo` |

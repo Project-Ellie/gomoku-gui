@@ -35,7 +35,7 @@ assumptions.
 | cpal | 0.18.2, audio output. |
 | Toolchain | `cargo` and `rustc` 1.98.1. Rust edition 2024 is available. |
 | Official record format | SGF FF[4] at red-bean.com defines `GM[4]` as "Gomoku+Renju". RIF publishes rules only, no file format. The owner chose our own JSON format instead (ADR-003). |
-| Display notation | Tournament notation labels columns A-O with the letter I skipped, rows 1-15 from the bottom, centre H8. |
+| Display notation | Tournaments label columns A-O (the letter I is included) and rows 1-15 from the bottom, so the centre is H8. |
 
 ## 3. Requirements
 

@@ -123,21 +123,27 @@ Tournament notation, as adopted by the owner:
 
 | Board index | Label |
 |---|---|
-| Column 0..14 | `A B C D E F G H J K L M N O` — the letter I is skipped |
+| Column 0..14 | `A B C D E F G H I J K L M N O` |
 | Row 0 (top) .. row 14 (bottom) | `15 14 13 12 11 10 9 8 7 6 5 4 3 2 1` |
 | Centre, column 7 row 7 | `H8` |
 
 Mapping:
 
 ```rust
-const COLUMN_LETTERS: &[u8; 15] = b"ABCDEFGHJKLMNO";
+const COLUMN_LETTERS: &[u8; 15] = b"ABCDEFGHIJKLMNO";
 letter = COLUMN_LETTERS[col];
 number = 15 - row;
 ```
 
-The letter I is skipped so that it is never read as the digit 1. With the
-skip, the centre of a 15x15 board is `H8`, which is the standard name of that
-point.
+The board is 15 columns wide, so all 15 letters A to O are used. The centre
+of the board is `H8`: H is the eighth letter, and row 7 is the eighth row
+counted from the bottom.
+
+This convention was verified against published renju notation. The opening
+`H8 H9 I8` uses the letter I, which shows that I is part of the label set.
+An earlier version of this document claimed that the letter I is skipped, as
+in Go. That is wrong for a 15-wide board: skipping I gives only 14 labels from
+A to O, which cannot label 15 columns.
 
 The record format stores numeric `[column, row]` pairs. The notation is a view
 concern only, so a change of notation never invalidates a saved file.
