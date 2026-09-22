@@ -906,6 +906,58 @@ list missed it. It is added here, with the first task that builds against it.
 - Consumes: the whole public surface of `gomoku_core::Game` from Task 2.
 - Produces: nothing that later tasks call. This task is the safety net for the invariants I1 to I6 in `docs/architecture/01_DOMAIN_MODEL.md`.
 
+**Amendments from the Task 2 review — apply these two small edits first.** The
+review approved Task 2 and rated both of these Minor. They are folded in here
+because both concern the code that this task is about to exercise, and each is
+a few lines.
+
+1. In `crates/core/src/game.rs`, `play` truncates the move list before the
+   fallible engine call. A rejected placement would therefore delete the moves
+after the cursor and then report an error, which loses game data. Put the
+engine call first:
+
+Replace:
+
+```rust
+        self.moves.truncate(self.cursor);
+        self.board.play(point).map_err(GameError::from)?;
+        self.moves.push(point);
+```
+
+with:
+
+```rust
+        self.board.play(point).map_err(GameError::from)?;
+        self.moves.truncate(self.cursor);
+        self.moves.push(point);
+```
+
+The board is at the cursor, so playing on it first is correct, and a rejected
+placement now changes nothing at all.
+
+2. In `crates/core/src/game.rs`, in `mod tests`: invariant I6, that the outcome
+describes the game and not the view, had no test. Every test that reads
+`outcome` used a board that was live. Add:
+
+```rust
+    #[test]
+    fn the_outcome_describes_the_game_not_the_view() {
+        let mut game = near_win();
+        assert!(game.rewind());
+        assert_eq!(game.status(), Status::Ongoing);
+        assert_eq!(
+            game.outcome(),
+            Outcome::Won {
+                winner: Color::Black,
+                method: WinMethod::Five
+            }
+        );
+    }
+```
+
+The rewind leaves four black stones in row 7, so the board is ongoing while the
+game is already won.
+
 - [ ] **Step 1: Write the failing test**
 
 `crates/core/tests/invariants.rs`:
