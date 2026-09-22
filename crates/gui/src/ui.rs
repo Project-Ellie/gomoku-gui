@@ -159,7 +159,6 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             names(ui, session);
             ui.separator();
             move_list(ui, session);
-            ui.separator();
             recents(ui, session);
         });
     session.panel_width = panel.response.rect.width();
@@ -336,6 +335,9 @@ fn recents(ui: &mut egui::Ui, session: &mut Session) {
     if session.recent.is_empty() {
         return;
     }
+    // The divider belongs to this section, so that it does not hang in the air
+    // when there are no recent files.
+    ui.separator();
     ui.label(RichText::new("Recent").color(PANEL_INK));
     let mut open = None;
     for path in session.recent.clone().into_iter().take(6) {
