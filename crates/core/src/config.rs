@@ -334,11 +334,19 @@ mod tests {
     #[test]
     fn a_damaged_file_is_quarantined_and_the_defaults_apply() {
         let (_directory, path) = settings_file();
-        std::fs::write(&path, "this is not toml === ").expect("the file writes");
+        let damaged = "this is not toml === ";
+        std::fs::write(&path, damaged).expect("the file writes");
 
         let loaded = load_settings(&path);
         match loaded.notice {
-            Some(ConfigNotice::Corrupt { backup }) => assert!(backup.exists()),
+            Some(ConfigNotice::Corrupt { backup }) => {
+                assert_eq!(backup, path.with_extension("toml.corrupt"));
+                assert_eq!(
+                    std::fs::read_to_string(&backup).expect("the backup reads"),
+                    damaged,
+                    "the damaged content must be preserved, not deleted"
+                );
+            }
             other => panic!("expected a corrupt notice, got {other:?}"),
         }
         assert_eq!(loaded.settings, Settings::default());
@@ -367,7 +375,10 @@ mod tests {
         let mut recent: Vec<std::path::PathBuf> = (0..12)
             .map(|index| std::path::PathBuf::from(format!("/games/{index}.json")))
             .collect();
-        recent.push(std::path::PathBuf::from("/games/0.json"));
+        // The duplicate must sit INSIDE the retained window. Further back it
+        // would be dropped by the cap alone, so the assertion would hold even
+        // if the deduplication were removed.
+        recent.insert(3, std::path::PathBuf::from("/games/0.json"));
         let mut settings = Settings {
             files: FileSettings {
                 recent,
@@ -378,14 +389,11 @@ mod tests {
 
         settings.sanitize();
 
-        assert_eq!(settings.files.recent.len(), MAX_RECENT);
-        assert_eq!(
-            settings.files.recent[0],
-            std::path::PathBuf::from("/games/0.json")
-        );
-        assert_eq!(
-            settings.files.recent.last().expect("not empty"),
-            &std::path::PathBuf::from("/games/9.json")
-        );
+        // Assert the whole list. A cap-only implementation keeps the repeat and
+        // stops one entry short, so it produces a different list.
+        let expected: Vec<std::path::PathBuf> = (0..MAX_RECENT)
+            .map(|index| std::path::PathBuf::from(format!("/games/{index}.json")))
+            .collect();
+        assert_eq!(settings.files.recent, expected);
     }
 }
