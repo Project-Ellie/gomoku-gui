@@ -1917,7 +1917,7 @@ hand transcription invites a whitespace mismatch.
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cargo test -p gomoku-core`
-Expected: all tests pass, including 7 tests in `record_format` and the 13 tests in `record::tests`.
+Expected: all tests pass, including 7 tests in `record_format` and the 15 tests in `record::tests`.
 
 - [ ] **Step 6: Add the module to the crate root**
 
