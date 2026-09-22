@@ -8,7 +8,12 @@
 mod error;
 mod game;
 mod notation;
+mod record;
 
 pub use error::{ConfigError, GameError, RecordError};
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;
+pub use record::{
+    BOARD_SIZE, FORMAT_MARKER, FORMAT_VERSION, Players, Record, StoredColor, StoredMethod,
+    StoredOutcome,
+};
