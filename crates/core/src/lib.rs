@@ -17,6 +17,7 @@ pub use config::{
     MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, Settings, StoneSettings,
     ViewSettings, WindowSettings, load_settings, save_settings,
 };
+pub use engine::{Color, Move};
 pub use error::{ConfigError, GameError, RecordError};
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;
@@ -25,3 +26,11 @@ pub use record::{
     StoredOutcome,
 };
 pub use storage::{load, save, write_atomic};
+
+/// The point at a row and a column, or `None` when it is off the board.
+///
+/// This is the only way to build a [`Move`] from coordinates, so a point
+/// outside the board cannot be constructed.
+pub fn point(row: u8, col: u8) -> Option<Move> {
+    Move::new(row, col)
+}

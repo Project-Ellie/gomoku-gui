@@ -9,3 +9,6 @@ proptest-regressions/
 
 # local screenshots from visual verification
 /artifacts
+
+# agent session state
+.pi/

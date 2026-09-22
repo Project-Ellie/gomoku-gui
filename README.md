@@ -9,9 +9,14 @@ No server. No network. One window.
 
 ## Status
 
-The `gomoku-core` crate is implemented: game state, the undo and rewind
-history, tournament notation, the versioned record format, and the settings
-schema. The graphical crate is not started.
+The application opens a window with a wooden board and stone pieces. You can
+place stones, hear them land, pan, and zoom.
+
+- `gomoku-core` — game state, undo and rewind history, notation, the versioned
+  record format, and the settings schema. Complete.
+- `gomoku-gui` — the window, the board and stone shaders, and the stone knock.
+  Under construction: the sitting now has placing, panning, zooming, and undo.
+  Saving, loading, the move list, and the overlays arrive next.
 
 - Approved design: [docs/specs/2026-09-22-gomoku-gui-design.md](docs/specs/2026-09-22-gomoku-gui-design.md)
 - Implementation plan for the core crate: [docs/plans/2026-09-22-gomoku-core.md](docs/plans/2026-09-22-gomoku-core.md)
@@ -31,21 +36,37 @@ workspace/
 Without that directory the build fails. See
 [ADR-002](docs/decisions/ADR-002-engine-reuse.md).
 
-## Build and test
-
-The workspace holds one crate, `gomoku-core`. It is a **library**: the game, the
-history, the record format, and the settings schema. **There is no application
-to run yet**, so `cargo build` produces a library and nothing else, and no
-`cargo run` line belongs here until the graphical crate exists.
+## Build and run
 
 ```bash
-cargo build   # compiles the library
-cargo test    # runs the test suite
+# Open the board. Start from a short opening with --demo.
+cargo run --release -p gomoku-gui -- --demo
+
+# Build everything, and run the test suite.
+cargo build
+cargo test
 ```
 
-The graphical crate, `gomoku-gui`, is the next piece of work. When it lands, this
-section gains the command that opens the window, and the `Status` section above
-loses its "not started" sentence.
+| Input | Action |
+|---|---|
+| Left click on an intersection | Place a stone |
+| Left drag | Pan the view |
+| Scroll, or pinch | Zoom about the pointer |
+| `u`, or Backspace | Take the last stone back |
+| `f`, or `0` | Fit the whole board |
+| `v` | Turn the board around |
+| Escape | Quit |
+
+### Check the look without a window
+
+`--preview` renders one frame to a file, which is how the shaders are checked on
+a machine with no display:
+
+```bash
+cargo run -p gomoku-gui -- --demo --preview artifacts/board.bmp --size 1200
+```
+
+`--frames N` quits after N frames, which is a smoke test of the whole pipeline.
 
 ## Gates
 
