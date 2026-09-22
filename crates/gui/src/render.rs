@@ -672,12 +672,15 @@ impl Renderer {
 
     /// The same, with a chosen look for the wood.
     pub fn globals_with_wood(viewport: crate::camera::Viewport, look: WoodLook) -> Globals {
-        let frame_width = viewport.x * 2.0 + viewport.width;
-        let frame_height = viewport.y * 2.0 + viewport.height;
         let fit = crate::camera::Camera::fit_scale(viewport);
         Globals {
             view: [7.0, 7.0, fit, 0.0],
-            frame: [frame_width, frame_height, viewport.width, viewport.height],
+            frame: [
+                viewport.frame[0],
+                viewport.frame[1],
+                viewport.width,
+                viewport.height,
+            ],
             origin: [viewport.x, viewport.y, 0.0, 0.0],
             light: [LIGHT[0], LIGHT[1], LIGHT[2], 0.0],
             // The photograph supplies the colour, so the first field is a
@@ -804,6 +807,64 @@ mod tests {
             validator
                 .validate(&module)
                 .unwrap_or_else(|err| panic!("{name} fails validation: {err:?}"));
+        }
+    }
+
+    /// Where a point goes through the uniform, as the shaders work it out: a
+    /// board point in cells, to framebuffer pixels, by way of clip space.
+    fn through_the_shader(globals: &Globals, point: [f32; 2], surface: [f32; 2]) -> [f32; 2] {
+        let d = [point[0] - globals.view[0], point[1] - globals.view[1]];
+        let screen = [
+            globals.origin[0] + globals.frame[2] * 0.5 + d[0] * globals.view[2],
+            globals.origin[1] + globals.frame[3] * 0.5 + d[1] * globals.view[2],
+        ];
+        // To clip space with the size that the uniform claims, then back to the
+        // surface with the size the surface really has: that is what the hardware
+        // does, and where a wrong size shows up.
+        let clip = [
+            screen[0] / globals.frame[0] * 2.0 - 1.0,
+            1.0 - screen[1] / globals.frame[1] * 2.0,
+        ];
+        [
+            (clip[0] + 1.0) * 0.5 * surface[0],
+            (1.0 - clip[1]) * 0.5 * surface[1],
+        ]
+    }
+
+    #[test]
+    fn the_projection_agrees_with_the_camera() {
+        // A window with a menu bar at the top and a side panel on the right, so
+        // that the board area is not centred in the surface. A projection that
+        // guesses the surface size from the board area gets this wrong.
+        let surface = [1200.0, 900.0];
+        let viewport = crate::camera::Viewport {
+            frame: surface,
+            x: 0.0,
+            y: 28.0,
+            width: 950.0,
+            height: 872.0,
+        };
+        let globals = Renderer::globals_with_wood(viewport, WOOD);
+        assert_eq!(
+            [globals.frame[0], globals.frame[1]],
+            surface,
+            "the uniform carries the size of the surface"
+        );
+        let mut camera = crate::camera::Camera::fit(viewport);
+        camera.pixels_per_cell = globals.view[2];
+        for point in [
+            [0.0, 0.0],
+            [7.0, 7.0],
+            [14.0, 14.0],
+            [3.5, 11.25],
+            [0.0, 14.0],
+        ] {
+            let shader = through_the_shader(&globals, point, surface);
+            let camera = camera.to_screen(viewport, point);
+            assert!(
+                (shader[0] - camera[0]).abs() < 0.01 && (shader[1] - camera[1]).abs() < 0.01,
+                "at {point:?} the shader says {shader:?} and the camera says {camera:?}"
+            );
         }
     }
 

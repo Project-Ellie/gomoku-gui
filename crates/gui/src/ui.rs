@@ -153,12 +153,12 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             // The interface is the only code that knows where the panels end, so
             // it owns the viewport. In physical pixels, because the board and the
             // camera work in those.
-            session.viewport = crate::camera::Viewport {
-                x: rect.min.x * scale,
-                y: rect.min.y * scale,
-                width: rect.width() * scale,
-                height: rect.height() * scale,
-            };
+            // The size of the whole surface is not known here; the application
+            // fills that in. Only the area for the board is the interface's.
+            session.viewport.x = rect.min.x * scale;
+            session.viewport.y = rect.min.y * scale;
+            session.viewport.width = rect.width() * scale;
+            session.viewport.height = rect.height() * scale;
             session.pixels_per_point = scale;
             if !session.fitted {
                 // The first frame that knows the area is the one that places the

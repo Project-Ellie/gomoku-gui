@@ -148,25 +148,31 @@ escape quits."
     );
 }
 
+/// The stones of a short opening, so that a preview shows stones and shadows.
+///
+/// Every pair is a free square on the board, which is why `play` may be relied
+/// on below.
+const DEMO: [(u8, u8); 11] = [
+    (7, 7),
+    (7, 8),
+    (8, 8),
+    (6, 6),
+    (8, 6),
+    (8, 7),
+    (6, 8),
+    (9, 7),
+    (5, 9),
+    (9, 9),
+    (6, 7),
+];
+
 /// A short opening, so that a preview shows stones and shadows.
 fn demo_game() -> Game {
     let mut game = Game::new();
-    for (column, row) in [
-        (7_u8, 7_u8),
-        (7, 8),
-        (8, 8),
-        (6, 6),
-        (8, 6),
-        (8, 7),
-        (6, 8),
-        (9, 7),
-        (5, 9),
-        (9, 9),
-        (6, 7),
-    ] {
-        if let Some(point) = gomoku_core::point(row, column) {
-            let _ = game.play(point);
-        }
+    for (column, row) in DEMO {
+        let point = gomoku_core::point(row, column).expect("the demo moves are on the board");
+        game.play(point)
+            .expect("the demo moves are on free squares");
     }
     game
 }

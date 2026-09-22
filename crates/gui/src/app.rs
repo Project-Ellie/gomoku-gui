@@ -260,7 +260,12 @@ impl App {
             pixels_per_point: state.egui.pixels_per_point(),
         };
         // The board, in the area that the interface left for it.
-        prepare_frame(&mut self.session, &mut state.renderer, &state.queue);
+        prepare_frame(
+            &mut self.session,
+            &mut state.renderer,
+            &state.queue,
+            [state.config.width, state.config.height],
+        );
 
         let mut encoder = state
             .device
@@ -463,7 +468,15 @@ fn create_multisampled(
 /// Point the camera and the renderer at the area that the interface left, and
 /// hand the board to the renderer. The window and the preview both use this, so
 /// that a preview shows what the window shows.
-pub fn prepare_frame(session: &mut Session, renderer: &mut Renderer, queue: &wgpu::Queue) {
+pub fn prepare_frame(
+    session: &mut Session,
+    renderer: &mut Renderer,
+    queue: &wgpu::Queue,
+    surface: [u32; 2],
+) {
+    // The interface knows the area for the board, and the surface knows how big
+    // the whole window is. The projection needs both.
+    session.viewport.frame = [surface[0] as f32, surface[1] as f32];
     // A resize can leave the view outside the area, and the interface has already
     // placed the view for its first frame.
     session.camera.clamp(session.viewport);

@@ -23,6 +23,10 @@ const MIN_PIXELS_PER_CELL: f32 = 4.0;
 /// The rectangle the board is drawn into, in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {
+    /// The size of the whole drawing surface, in physical pixels. The projection
+    /// needs it for clip space, and it cannot be worked out from the area of the
+    /// board, because panels take space at the top and at one side.
+    pub frame: [f32; 2],
     /// The left edge.
     pub x: f32,
     /// The top edge.
@@ -37,6 +41,7 @@ impl Viewport {
     /// A viewport at the top left of the window.
     pub fn window(width: u32, height: u32) -> Viewport {
         Viewport {
+            frame: [width as f32, height as f32],
             x: 0.0,
             y: 0.0,
             width: width as f32,
@@ -176,6 +181,7 @@ mod tests {
     /// A viewport with a side panel, as the window has.
     fn panel_viewport() -> Viewport {
         Viewport {
+            frame: [1200.0, 900.0],
             x: 0.0,
             y: 28.0,
             width: 950.0,

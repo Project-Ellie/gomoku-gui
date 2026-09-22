@@ -226,7 +226,7 @@ impl HeadlessGpu {
         textures_delta.clear();
         // The same path as the window: the interface has reported the area, so the
         // camera and the renderer can be pointed at it.
-        crate::app::prepare_frame(session, renderer, &self.queue);
+        crate::app::prepare_frame(session, renderer, &self.queue, [size, size]);
 
         self.write_frame_with(path, size, size, renderer, |encoder, target| {
             let uploads =
