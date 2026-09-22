@@ -65,3 +65,19 @@ fn temporary_path(path: &Path) -> PathBuf {
     name.push(".tmp");
     path.with_file_name(name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_temporary_file_sits_beside_its_target() {
+        // A rename is only atomic inside one file system, so the temporary
+        // file must share its directory with the target.
+        let path = Path::new("/games/2026-09-22-hotseat.json");
+        assert_eq!(
+            temporary_path(path),
+            PathBuf::from("/games/2026-09-22-hotseat.json.tmp")
+        );
+    }
+}

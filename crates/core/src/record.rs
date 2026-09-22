@@ -87,9 +87,11 @@ impl From<Outcome> for StoredOutcome {
         match outcome {
             Outcome::Ongoing => StoredOutcome::Ongoing,
             Outcome::Draw => StoredOutcome::Draw,
-            Outcome::Won { winner, .. } => StoredOutcome::Won {
+            Outcome::Won { winner, method } => StoredOutcome::Won {
                 winner: winner.into(),
-                method: StoredMethod::Five,
+                method: match method {
+                    WinMethod::Five => StoredMethod::Five,
+                },
             },
         }
     }
@@ -100,9 +102,11 @@ impl From<StoredOutcome> for Outcome {
         match outcome {
             StoredOutcome::Ongoing => Outcome::Ongoing,
             StoredOutcome::Draw => Outcome::Draw,
-            StoredOutcome::Won { winner, .. } => Outcome::Won {
+            StoredOutcome::Won { winner, method } => Outcome::Won {
                 winner: winner.into(),
-                method: WinMethod::Five,
+                method: match method {
+                    StoredMethod::Five => WinMethod::Five,
+                },
             },
         }
     }

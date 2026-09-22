@@ -170,6 +170,9 @@ pub struct Settings {
 impl Settings {
     /// Clamp the values that a hand-edited file can put out of range.
     pub fn sanitize(&mut self) {
+        if !self.audio.volume.is_finite() {
+            self.audio.volume = AudioSettings::default().volume;
+        }
         self.audio.volume = self.audio.volume.clamp(0.0, 1.0);
 
         let mut recent: Vec<PathBuf> = Vec::with_capacity(self.files.recent.len());
@@ -185,7 +188,8 @@ impl Settings {
 /// What the caller should tell the user about a load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigNotice {
-    /// There was no settings file.
+    /// Nothing could be read, so the defaults apply. A file that exists but
+    /// cannot be read is left in place and reported the same way.
     Missing,
     /// The settings file could not be read. It was moved to `backup`.
     Corrupt {
@@ -291,10 +295,17 @@ mod tests {
     fn the_settings_round_trip_through_a_file() {
         let (_directory, path) = settings_file();
         let settings = Settings {
+            window: WindowSettings {
+                width: 1400.0,
+                height: 800.0,
+                x: Some(120.0),
+                y: Some(64.0),
+                maximized: true,
+            },
             view: ViewSettings {
                 pixels_per_cell: 42.5,
+                center: [3.5, 9.25],
                 flipped: true,
-                ..ViewSettings::default()
             },
             overlays: OverlaySettings {
                 move_numbers: true,
@@ -303,11 +314,17 @@ mod tests {
             board: BoardSettings {
                 material: "walnut".to_string(),
             },
-            audio: AudioSettings {
-                volume: 0.25,
-                ..AudioSettings::default()
+            stones: StoneSettings {
+                set: "obsidian_crystal".to_string(),
             },
-            ..Settings::default()
+            audio: AudioSettings {
+                enabled: false,
+                volume: 0.25,
+            },
+            files: FileSettings {
+                last_directory: Some(std::path::PathBuf::from("/games")),
+                recent: vec![std::path::PathBuf::from("/games/a.json")],
+            },
         };
 
         save_settings(&path, &settings).expect("the settings save");
@@ -368,6 +385,21 @@ mod tests {
         settings.audio.volume = -1.0;
         settings.sanitize();
         assert_eq!(settings.audio.volume, 0.0);
+    }
+
+    #[test]
+    fn sanitize_replaces_a_non_finite_volume() {
+        let mut settings = Settings {
+            audio: AudioSettings {
+                volume: f32::NAN,
+                ..AudioSettings::default()
+            },
+            ..Settings::default()
+        };
+
+        settings.sanitize();
+
+        assert_eq!(settings.audio.volume, AudioSettings::default().volume);
     }
 
     #[test]

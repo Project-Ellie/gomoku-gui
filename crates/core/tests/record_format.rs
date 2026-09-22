@@ -91,7 +91,10 @@ fn a_missing_file_is_an_io_error() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("absent.json");
     let error = load(&path).expect_err("the file is absent");
-    assert!(matches!(error, RecordError::Io { .. }));
+    assert!(
+        matches!(&error, RecordError::Io { path: failed, .. } if failed == &path),
+        "the error must name the file that failed, got {error:?}"
+    );
 }
 
 #[test]

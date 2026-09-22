@@ -2,12 +2,13 @@
 //!
 //! I1 cursor <= len
 //! I2 the board equals a replay of moves[..cursor]
-//! I3 the move list has no repeat and no point off the board
+//! I3 the move list has no repeated point. A point outside the board is
+//!    unrepresentable, because `Move::new` rejects it.
 //! I4 the board holds exactly `cursor` moves
 //! I5 the side to move follows the cursor parity
 //! I6 the outcome follows the board at the latest position
 
-use engine::{Board, Move, Status};
+use engine::{Board, Color, Move, Status};
 use gomoku_core::{Game, GameError, Outcome};
 use proptest::prelude::*;
 
@@ -152,13 +153,17 @@ proptest! {
         for step in steps {
             apply(&mut game, step);
         }
-        // Forward stops at the latest move, so the cycle restores the live
-        // position. Normalize the snapshot: `apply` can leave a rewound view.
         let mut live_before = game.clone();
         live_before.live();
+        let view_before = game.clone();
+        let cursor = game.cursor();
         while game.rewind() {}
         while game.forward() {}
-        prop_assert_eq!(game, live_before);
+        prop_assert_eq!(&game, &live_before);
+
+        let moved = game.seek(cursor);
+        prop_assert_eq!(moved, cursor != live_before.len());
+        prop_assert_eq!(&game, &view_before);
     }
 
     #[test]
@@ -168,12 +173,53 @@ proptest! {
             apply(&mut game, step);
         }
         let cursor = game.cursor();
-        if game.stone_at(point).is_none() && game.status() == Status::Ongoing && game.play(point).is_ok() {
-            prop_assert_eq!(game.len(), cursor + 1);
-            prop_assert_eq!(game.cursor(), cursor + 1);
-            prop_assert!(!game.is_rewound());
-            prop_assert_eq!(game.last_move(), Some(point));
-            prop_assert_eq!(game.outcome(), expected_outcome(&game));
+        let legal = game.stone_at(point).is_none() && game.status() == Status::Ongoing;
+        match game.play(point) {
+            Ok(()) => {
+                prop_assert_eq!(game.len(), cursor + 1);
+                prop_assert_eq!(game.cursor(), cursor + 1);
+                prop_assert!(!game.is_rewound());
+                prop_assert_eq!(game.last_move(), Some(point));
+                prop_assert_eq!(game.outcome(), expected_outcome(&game));
+            }
+            // A refused placement is only allowed when the guard above agrees.
+            Err(_) => prop_assert!(!legal, "a legal placement was refused"),
+        }
+    }
+
+    /// A won game keeps its outcome while the view moves, and the board at a
+    /// rewound view is ongoing. This is invariant I6 in the case that random
+    /// play almost never reaches.
+    #[test]
+    fn a_won_game_keeps_its_outcome_while_the_view_moves(
+        steps in prop::collection::vec(any_step(), 0..30),
+    ) {
+        let mut game = Game::new();
+        for index in 0..4u8 {
+            game.play(Move::new(7, 3 + index).expect("inside the board"))
+                .expect("the cell is empty");
+            game.play(Move::new(3 + index, index).expect("inside the board"))
+                .expect("the cell is empty");
+        }
+        game.play(Move::new(7, 7).expect("inside the board"))
+            .expect("the cell is empty");
+
+        let won = Outcome::Won {
+            winner: Color::Black,
+            method: gomoku_core::WinMethod::Five,
+        };
+        prop_assert_eq!(game.status(), Status::Won(Color::Black));
+        prop_assert_eq!(game.outcome(), won);
+
+        for step in steps {
+            // A placement or an undo is skipped: the move list must stay won
+            // and fixed while the view moves.
+            if let Step::Play(_) | Step::Undo = step {
+                continue;
+            }
+            apply(&mut game, step);
+            prop_assert_eq!(game.outcome(), won, "I6: the outcome describes the game");
+            check(&game);
         }
     }
 }

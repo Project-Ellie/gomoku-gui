@@ -165,9 +165,10 @@ impl Game {
 
     /// Play a stone at `point`.
     ///
-    /// When the view is rewound, every move after the cursor is deleted
-    /// first. Read `pending_truncation` before you call this, and confirm
-    /// with the user when it is not zero.
+    /// When the view is rewound, the moves after the cursor are deleted as
+    /// part of the placement, so a rejected placement changes nothing. Read
+    /// `pending_truncation` before you call this, and confirm with the user
+    /// when it is not zero.
     ///
     /// # Errors
     /// `GameError::Occupied` if the point holds a stone.
