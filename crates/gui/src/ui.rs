@@ -34,9 +34,24 @@ pub struct Requests {
 const OUTSIDE: f32 = 1.15;
 
 /// The colours of the interface.
-const INK: Color32 = Color32::from_rgb(226, 226, 230);
 const MUTED: Color32 = Color32::from_rgb(150, 150, 158);
-const ACCENT: Color32 = Color32::from_rgb(240, 196, 90);
+
+/// The side panel is middle grey. On the dark background of the window a black
+/// stone could not be told from the panel, so the move list could not show both
+/// stones as a filled circle of their own colour.
+const PANEL: Color32 = Color32::from_rgb(126, 126, 132);
+/// The ink for the middle grey panel.
+const PANEL_INK: Color32 = Color32::from_rgb(26, 26, 30);
+/// The background of the row that the board is showing, lighter than the panel
+/// so that both stone colours stay visible on it.
+const PANEL_CURRENT: Color32 = Color32::from_rgb(178, 178, 184);
+/// The colour of a black stone in the move list.
+const SLATE_MARK: Color32 = Color32::from_rgb(22, 22, 26);
+/// The colour of a white stone in the move list.
+const SHELL_MARK: Color32 = Color32::from_rgb(246, 246, 250);
+/// The last move is marked in bright red, which reads on the wood and on both
+/// stone colours.
+const MARK: Color32 = Color32::from_rgb(232, 36, 36);
 
 /// Draw the whole interface and return what the application should do next.
 ///
@@ -135,6 +150,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         .resizable(true)
         .default_size(session.panel_width)
         .size_range(180.0..=420.0)
+        .frame(Frame::NONE.fill(PANEL))
         .show(ui, |ui| {
             names(ui, session);
             ui.separator();
@@ -214,14 +230,14 @@ fn names(ui: &mut egui::Ui, session: &mut Session) {
     let mut white = session.game.meta().white.clone().unwrap_or_default();
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Black").color(MUTED));
+        ui.label(RichText::new("Black").color(PANEL_INK));
         let edit = egui::TextEdit::singleline(&mut black).desired_width(120.0);
         if ui.add(edit).changed() {
             changed = true;
         }
     });
     ui.horizontal(|ui| {
-        ui.label(RichText::new("White").color(MUTED));
+        ui.label(RichText::new("White").color(PANEL_INK));
         let edit = egui::TextEdit::singleline(&mut white).desired_width(120.0);
         if ui.add(edit).changed() {
             changed = true;
@@ -236,7 +252,7 @@ fn names(ui: &mut egui::Ui, session: &mut Session) {
 
 /// The list of moves, one row each, with a click to look at that position.
 fn move_list(ui: &mut egui::Ui, session: &mut Session) {
-    ui.label(RichText::new("Moves").color(MUTED));
+    ui.label(RichText::new("Moves").color(PANEL_INK));
     let cursor = session.game.cursor();
     let mut seek = None;
     // The whole game, so that the moves ahead of the cursor stay visible. They
@@ -249,20 +265,35 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
             for (index, (point, colour)) in record.into_iter().enumerate() {
                 let number = index + 1;
                 let here = number == cursor;
-                let glyph = match colour {
-                    Color::Black => "●",
-                    Color::White => "○",
-                };
-                let text = format!("{number:>4}  {glyph}  {}", label(point));
-                let rich = if here {
-                    RichText::new(text).color(ACCENT).strong()
-                } else if number > cursor {
-                    RichText::new(text).color(MUTED)
+                let ink = if number > cursor {
+                    RichText::new(format!("{number:>4}")).color(MUTED)
                 } else {
-                    RichText::new(text).color(INK)
+                    RichText::new(format!("{number:>4}")).color(PANEL_INK)
                 };
-                if ui.selectable_label(here, rich).clicked() {
-                    seek = Some(number);
+                let place = RichText::new(label(point)).color(PANEL_INK);
+                if here {
+                    let row = Frame::NONE
+                        .fill(PANEL_CURRENT)
+                        .inner_margin(2.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(ink.strong());
+                                stone_dot(ui, colour);
+                                ui.label(place.strong());
+                            });
+                        });
+                    if row.response.interact(egui::Sense::click()).clicked() {
+                        seek = Some(number);
+                    }
+                } else {
+                    let row = ui.horizontal(|ui| {
+                        ui.label(ink);
+                        stone_dot(ui, colour);
+                        ui.label(place);
+                    });
+                    if row.response.interact(egui::Sense::click()).clicked() {
+                        seek = Some(number);
+                    }
                 }
             }
         });
@@ -271,12 +302,31 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
     }
 }
 
+/// A filled circle in the colour of a stone.
+///
+/// It is drawn rather than typed: the interface font has no filled circle glyph,
+/// so typing one shows an empty box. A drawn circle can also carry the thin
+/// outline that each stone needs against the row behind it.
+fn stone_dot(ui: &mut egui::Ui, colour: Color) {
+    let size = 13.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let radius = size * 0.42;
+    let centre = rect.center();
+    let painter = ui.painter();
+    let (fill, outline) = match colour {
+        Color::Black => (SLATE_MARK, Color32::from_rgb(150, 150, 158)),
+        Color::White => (SHELL_MARK, Color32::from_rgb(64, 64, 70)),
+    };
+    painter.circle_filled(centre, radius, fill);
+    painter.circle_stroke(centre, radius, Stroke::new(0.8, outline));
+}
+
 /// The recently used files.
 fn recents(ui: &mut egui::Ui, session: &mut Session) {
     if session.recent.is_empty() {
         return;
     }
-    ui.label(RichText::new("Recent").color(MUTED));
+    ui.label(RichText::new("Recent").color(PANEL_INK));
     let mut open = None;
     for path in session.recent.clone().into_iter().take(6) {
         if ui.link(name_of(&path)).clicked() {
@@ -345,7 +395,7 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
             let width = (ppc * 0.10 / pixels_per_point).max(2.0);
             painter.line_segment(
                 [start, end],
-                Stroke::new(width, Color32::from_rgba_unmultiplied(240, 90, 70, 170)),
+                Stroke::new(width, Color32::from_rgba_unmultiplied(246, 186, 60, 190)),
             );
             for point in [from, to] {
                 let centre = to_screen([point.col() as f32, point.row() as f32]);
@@ -354,7 +404,7 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
                     ppc * 0.44 / pixels_per_point,
                     Stroke::new(
                         width * 0.6,
-                        Color32::from_rgba_unmultiplied(240, 90, 70, 200),
+                        Color32::from_rgba_unmultiplied(246, 186, 60, 210),
                     ),
                 );
             }
@@ -381,11 +431,11 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     if session.toggles.last_move {
         if let Some(point) = session.game.last_move() {
             let centre = to_screen([point.col() as f32, point.row() as f32]);
-            let width = (ppc * 0.045 / pixels_per_point).max(1.0);
+            let width = (ppc * 0.055 / pixels_per_point).max(1.5);
             painter.circle_stroke(
                 centre,
                 ppc * 0.34 / pixels_per_point,
-                Stroke::new(width, ACCENT),
+                Stroke::new(width, MARK),
             );
         }
     }
