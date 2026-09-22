@@ -2570,6 +2570,7 @@ git commit -m "docs: align the design documents with the core implementation"
 - Modify: `crates/core/src/game.rs`
 - Modify: `crates/core/src/record.rs`
 - Modify: `crates/core/src/storage.rs`
+- Modify: `crates/core/src/config.rs`
 - Modify: `crates/core/tests/invariants.rs`
 - Modify: `crates/core/tests/record_format.rs`
 
@@ -2802,7 +2803,94 @@ with:
     );
 ```
 
-- [ ] **Step 8: Prove that the strengthened assertion can fail**
+- [ ] **Step 8: Harden the settings schema**
+
+Three Task 6 review findings.
+
+First, a hand-edited `volume = nan` survives `sanitize`, because `f32::clamp`
+returns `NaN` unchanged. The documented range is `0.0..=1.0`. Replace the first
+line of `Settings::sanitize` with a finite check followed by the clamp:
+
+```rust
+        if !self.audio.volume.is_finite() {
+            self.audio.volume = AudioSettings::default().volume;
+        }
+        self.audio.volume = self.audio.volume.clamp(0.0, 1.0);
+```
+
+Add this test to `mod tests`:
+
+```rust
+    #[test]
+    fn sanitize_replaces_a_non_finite_volume() {
+        let mut settings = Settings {
+            audio: AudioSettings {
+                volume: f32::NAN,
+                ..AudioSettings::default()
+            },
+            ..Settings::default()
+        };
+
+        settings.sanitize();
+
+        assert_eq!(settings.audio.volume, AudioSettings::default().volume);
+    }
+```
+
+Second, the `Missing` notice says "There was no settings file", but an unreadable
+file produces the same notice. Replace the doc comment on the variant with:
+
+```rust
+    /// Nothing could be read, so the defaults apply. A file that exists but
+    /// cannot be read is left in place and reported the same way.
+    Missing,
+```
+
+Third, the round trip never exercises a non-default value, so a serde problem with
+`window.x`, `window.y`, `maximized`, `last_directory`, or a non-empty `recent` list
+would not be caught. In `the_settings_round_trip_through_a_file`, replace the
+`settings` binding with a complete literal, so every field carries a value that is
+not the default:
+
+```rust
+        let settings = Settings {
+            window: WindowSettings {
+                width: 1400.0,
+                height: 800.0,
+                x: Some(120.0),
+                y: Some(64.0),
+                maximized: true,
+            },
+            view: ViewSettings {
+                pixels_per_cell: 42.5,
+                center: [3.5, 9.25],
+                flipped: true,
+            },
+            overlays: OverlaySettings {
+                move_numbers: true,
+                ..OverlaySettings::default()
+            },
+            board: BoardSettings {
+                material: "walnut".to_string(),
+            },
+            stones: StoneSettings {
+                set: "obsidian_crystal".to_string(),
+            },
+            audio: AudioSettings {
+                enabled: false,
+                volume: 0.25,
+            },
+            files: FileSettings {
+                last_directory: Some(std::path::PathBuf::from("/games")),
+                recent: vec![std::path::PathBuf::from("/games/a.json")],
+            },
+        };
+```
+
+The literal has no `..Default::default()`, so the compiler reports any field that a
+later change adds.
+
+- [ ] **Step 9: Prove that the strengthened assertion can fail**
 
 A strengthened test that cannot fail is worthless. Prove that the new `Err(_)`
 arm in Step 4 works:
@@ -2815,7 +2903,7 @@ arm in Step 4 works:
 3. Restore `play` exactly.
 4. Run the same command again and confirm it passes.
 
-- [ ] **Step 9: Run the gates and the strengthened run**
+- [ ] **Step 10: Run the gates and the strengthened run**
 
 Run: `cargo test`
 Expected: 21 unit tests and 4 property tests pass.
@@ -2827,7 +2915,7 @@ Expected: 4 property tests pass. Save the output to
 Run: `cargo clippy --all-targets -- -D warnings && cargo fmt --all`
 Expected: no warnings, no diff.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add crates/core
