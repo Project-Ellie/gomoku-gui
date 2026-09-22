@@ -2438,6 +2438,22 @@ result that the moves do not produce unnecessary: a game that continues after
 a win already fails check 8.
 ```
 
+In the same file, the "Time" section is wrong about the encoder. Replace:
+
+```
+The type is `time::OffsetDateTime` from the `time` crate with the
+`serde` feature, which serialises as RFC 3339.
+```
+
+with:
+
+```
+The type is `time::OffsetDateTime` from the `time` crate, with the `serde` and
+`serde-human-readable` features and the per-field attribute
+`#[serde(with = "time::serde::rfc3339")]`. The attribute is required: without
+it the crate writes its own space-separated form, not RFC 3339.
+```
+
 - [ ] **Step 2: Remove the same check from the persistence document**
 
 In `docs/architecture/03_PERSISTENCE.md`, in the error list, delete these two lines:
