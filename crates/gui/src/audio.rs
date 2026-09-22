@@ -76,6 +76,16 @@ pub struct Voicing {
     /// How long the contact lasts, in seconds. A real one is one to three
     /// milliseconds.
     pub contact_decay: f32,
+    /// How long the contact takes to reach full strength, in seconds. A stone puts
+    /// its weight down over a fraction of a millisecond; zero here is a hard hit.
+    pub contact_rise: f32,
+    /// How long the whole knock takes to reach full strength, in seconds.
+    ///
+    /// This is the softness of the landing itself. At zero the knock is at its full
+    /// strength in its first sample, which is what a blow sounds like. A stone set
+    /// down deforms the board over a few milliseconds, so the sound arrives over
+    /// those milliseconds and the first thing heard is not the loudest.
+    pub attack: f32,
     /// The modes of the board itself. Low, and quickly damped.
     pub body: Modes,
     /// The modes of the stone. Higher than the board, and shorter still.
@@ -109,6 +119,8 @@ pub const CURRENT: Voicing = Voicing {
     contact: 0.35,
     contact_centre: 3000.0,
     contact_decay: 0.0006,
+    contact_rise: 0.0,
+    attack: 0.0,
     body: Modes::new(&[]),
     stone: Modes::new(&[
         (420.0, 0.055, 1.00),
@@ -143,6 +155,8 @@ pub const DEEP_BOARD: Voicing = Voicing {
     contact: 0.8,
     contact_centre: 1600.0,
     contact_decay: 0.0015,
+    contact_rise: 0.0,
+    attack: 0.0,
     body: Modes::new(&[(140.0, 0.035, 0.70), (310.0, 0.020, 0.35)]),
     stone: Modes::new(&[(2000.0, 0.014, 0.15)]),
     tone: 3500.0,
@@ -170,6 +184,8 @@ pub fn candidates() -> Vec<Candidate> {
             contact: 1.0,
             contact_centre: 2200.0,
             contact_decay: 0.0012,
+            contact_rise: 0.0,
+            attack: 0.0,
             body: Modes::new(&[(260.0, 0.012, 0.25)]),
             stone: Modes::new(&[(3000.0, 0.008, 0.15)]),
             tone: 6000.0,
@@ -187,6 +203,8 @@ pub fn candidates() -> Vec<Candidate> {
             contact: 0.9,
             contact_centre: 1800.0,
             contact_decay: 0.0015,
+            contact_rise: 0.0,
+            attack: 0.0,
             body: Modes::new(&[(190.0, 0.022, 0.55), (430.0, 0.014, 0.30)]),
             stone: Modes::new(&[(2400.0, 0.012, 0.20)]),
             tone: 4500.0,
@@ -209,6 +227,8 @@ pub fn candidates() -> Vec<Candidate> {
             contact: 0.9,
             contact_centre: 2000.0,
             contact_decay: 0.0012,
+            contact_rise: 0.0,
+            attack: 0.0,
             body: Modes::new(&[(200.0, 0.020, 0.45)]),
             stone: Modes::new(&[(2700.0, 0.030, 0.40), (4100.0, 0.018, 0.20)]),
             tone: 6500.0,
@@ -226,6 +246,8 @@ pub fn candidates() -> Vec<Candidate> {
             contact: 0.6,
             contact_centre: 1400.0,
             contact_decay: 0.0010,
+            contact_rise: 0.0,
+            attack: 0.0,
             body: Modes::new(&[(230.0, 0.016, 0.50)]),
             stone: Modes::new(&[(1800.0, 0.010, 0.12)]),
             tone: 2600.0,
@@ -243,6 +265,8 @@ pub fn candidates() -> Vec<Candidate> {
             contact: 0.85,
             contact_centre: 1500.0,
             contact_decay: 0.0014,
+            contact_rise: 0.0,
+            attack: 0.0,
             body: Modes::new(&[(170.0, 0.028, 0.65), (600.0, 0.012, 0.20)]),
             stone: Modes::new(&[(2200.0, 0.010, 0.10)]),
             tone: 3000.0,
@@ -253,6 +277,57 @@ pub fn candidates() -> Vec<Candidate> {
             length: 0.100,
         },
     );
+    made
+}
+
+/// The voicing that the owner picked: the wood run of the variations, at its
+/// third step.
+pub fn chosen() -> Voicing {
+    variations()
+        .into_iter()
+        .find(|candidate| candidate.name == "13-wood")
+        .map(|candidate| candidate.voicing)
+        .unwrap_or(DEEP_BOARD)
+}
+
+/// The number of quieter variations that were made around the chosen sound.
+pub const QUIETER: usize = 10;
+
+/// The chosen sound with a softer landing, in ten steps.
+///
+/// The only thing that changes is the contact, which is what the ear hears as the
+/// hardness of the hit: it gets quieter, it takes longer to reach full strength,
+/// it lasts longer, and it loses its top end. Everything that gave the chosen
+/// sound its character, which is the pitch fall, the spreading partials, the noise
+/// and the dark tone, stays exactly as it was.
+///
+/// Because every knock is normalised to the same peak before it is played, a
+/// quieter contact lifts the body of the board up with it. The result is a knock
+/// with less contrast: a stone set down rather than struck.
+pub fn quieter() -> Vec<Candidate> {
+    let chosen = chosen();
+    let mut made = Vec::with_capacity(QUIETER);
+    for step in 0..QUIETER {
+        let share = (step + 1) as f32 / QUIETER as f32;
+        let quieter = Voicing {
+            contact: chosen.contact * (1.0 - 0.6 * share),
+            contact_centre: chosen.contact_centre * (1.0 - 0.25 * share),
+            contact_decay: chosen.contact_decay * (1.0 + 0.8 * share),
+            contact_rise: 0.0015 * share,
+            // The landing, from a tenth of a millisecond to four milliseconds,
+            // which is the difference between a blow and a stone set down. The
+            // steps are closer together at the start, so that the first few can be
+            // compared against the chosen sound without jumping past it.
+            attack: 0.0001 + 0.0039 * share * share,
+            length: chosen.length * (1.0 + 0.3 * share),
+            ..chosen
+        };
+        made.push(Candidate {
+            name: format!("{:02}-quieter", step + 21),
+            intent: intent_of(&quieter),
+            voicing: quieter,
+        });
+    }
     made
 }
 
@@ -339,7 +414,7 @@ fn scaled(modes: Modes, frequency: f32, decay: f32, level: f32) -> Modes {
 }
 
 /// What a variation changed, in the numbers.
-fn intent_of(voicing: &Voicing) -> String {
+pub fn intent_of(voicing: &Voicing) -> String {
     let body: Vec<String> = voicing
         .body
         .used()
@@ -347,10 +422,12 @@ fn intent_of(voicing: &Voicing) -> String {
         .map(|(frequency, decay, _)| format!("{frequency:.0} Hz/{:.0} ms", decay * 1000.0))
         .collect();
     format!(
-        "contact {:.2} at {:.0} Hz over {:.1} ms, body {}, tone {:.0} Hz, \
-         glides {:.0}%, partials spread {:.0}%, roughness {:.2}, noise {:.2}",
+        "contact {:.2} at {:.0} Hz, rising over {:.2} ms and lasting {:.1} ms, \
+         body {}, tone {:.0} Hz, glides {:.0}%, partials spread {:.0}%, \
+         roughness {:.2}, noise {:.2}",
         voicing.contact,
         voicing.contact_centre,
+        voicing.contact_rise * 1000.0,
         voicing.contact_decay * 1000.0,
         body.join(" and "),
         voicing.tone,
@@ -504,7 +581,12 @@ pub fn render_click(sample_rate: u32, seed: u32, damped: bool, voicing: &Voicing
             low_1 += low_alpha * (noise - low_1);
             low_2 += low_alpha * (low_1 - low_2);
             high += high_alpha * (low_2 - high);
-            (low_2 - high) * voicing.contact * (-time / voicing.contact_decay).exp()
+            let rise = if voicing.contact_rise > 0.0 {
+                1.0 - (-time / voicing.contact_rise).exp()
+            } else {
+                1.0
+            };
+            (low_2 - high) * voicing.contact * rise * (-time / voicing.contact_decay).exp()
         } else {
             0.0
         };
@@ -526,7 +608,15 @@ pub fn render_click(sample_rate: u32, seed: u32, damped: bool, voicing: &Voicing
             0.0
         };
 
-        tone += tone_alpha * (value + contact + breath_noise - tone);
+        // The landing itself: at an attack of zero this is one from the first
+        // sample, and with a longer one the knock arrives over that time.
+        let arriving = if voicing.attack > 0.0 {
+            1.0 - (-time / voicing.attack).exp()
+        } else {
+            1.0
+        };
+
+        tone += tone_alpha * ((value + contact + breath_noise) * arriving - tone);
         *sample = tone;
     }
 
@@ -823,6 +913,34 @@ mod tests {
             }
         }
         assert_eq!(moved, 10, "ten of the variations must move the pitch");
+    }
+
+    #[test]
+    fn a_longer_landing_arrives_more_gently() {
+        // The level of the first millisecond against the peak of the whole knock:
+        // this is the number the owner's ear was complaining about.
+        let opening = |voicing: &Voicing| {
+            let samples = render_click(48_000, 5, false, voicing);
+            let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+            let first = samples[..48]
+                .iter()
+                .fold(0.0_f32, |peak, s| peak.max(s.abs()));
+            first / peak
+        };
+        let hard = Voicing {
+            attack: 0.0,
+            ..DEEP_BOARD
+        };
+        let soft = Voicing {
+            attack: 0.004,
+            ..DEEP_BOARD
+        };
+        assert!(
+            opening(&soft) < opening(&hard) * 0.5,
+            "a four millisecond landing must arrive far more gently, got {} against {}",
+            opening(&soft),
+            opening(&hard)
+        );
     }
 
     #[test]

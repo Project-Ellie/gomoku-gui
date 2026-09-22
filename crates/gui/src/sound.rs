@@ -12,7 +12,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use crate::audio;
+use crate::audio::{self, Voicing};
 
 /// The rate the files are written at.
 const RATE: u32 = 48_000;
@@ -29,10 +29,20 @@ const BANDS: usize = 120;
 /// What the ear would notice about one knock.
 #[derive(Debug, Clone, Copy)]
 pub struct Analysis {
-    /// The highest sample, in the range 0 to 1.
-    pub peak: f32,
-    /// The root mean square over the whole knock.
-    pub rms: f32,
+    /// How loud the contact is against the loudest moment of the knock, in dB.
+    ///
+    /// The contact is the part above 800 Hz in the first few milliseconds, which is
+    /// what the ear hears as how hard the stone hit. A hard hit is at its full
+    /// level at once, so this is near zero; a stone set down arrives far below its
+    /// own loudest moment, so this is well down.
+    ///
+    /// Neither the crest factor nor the level of the whole first milliseconds says
+    /// this, because both are dominated by the board's low body, which is loud
+    /// whatever the contact does.
+    pub hit_db: f32,
+    /// The time from the start until the loudest moment, in milliseconds. A hard
+    /// hit peaks at once; a soft landing takes a moment to arrive.
+    pub rise_ms: f32,
     /// Where the energy sits on average, in Hz. Higher is brighter.
     pub centroid: f32,
     /// How far the energy is spread around the centroid, in Hz. A single tone is
@@ -51,7 +61,6 @@ pub struct Analysis {
 /// Measure one knock.
 pub fn analyse(samples: &[f32], rate: u32) -> Analysis {
     let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
-    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
 
     // The spectrum, in bands of the same width.
     //
@@ -98,15 +107,22 @@ pub fn analyse(samples: &[f32], rate: u32) -> Analysis {
         0.0
     };
 
+    let peak_index = samples
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).expect("no NaN"))
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+
     Analysis {
-        peak,
-        rms,
+        hit_db: hit_db(samples, rate, peak),
+        rise_ms: peak_index as f32 / rate as f32 * 1000.0,
         centroid,
         width: variance.sqrt(),
         low: share(low),
         mid: share(mid),
         high: share(high),
-        decay_ms: decay_ms(samples, rate, peak),
+        decay_ms: decay_ms(samples, rate, peak, peak_index),
     }
 }
 
@@ -123,18 +139,39 @@ fn goertzel(samples: &[f32], rate: u32, frequency: f32) -> f32 {
     (previous * previous + before * before - coefficient * previous * before).max(0.0)
 }
 
+/// How loud the contact is, in dB against the peak of the knock.
+///
+/// The signal is passed through a one-pole high pass at 800 Hz, which keeps the
+/// contact and drops most of the board, and the loudest moment of what is left in
+/// the first five milliseconds is compared with the peak of the whole knock.
+fn hit_db(samples: &[f32], rate: u32, peak: f32) -> f32 {
+    if peak <= 0.0 {
+        return 0.0;
+    }
+    // Three poles, because one leaves too much of the board behind: the body sits
+    // at a few hundred hertz and a single pole only takes eight decibels off it.
+    let corner = 900.0_f32;
+    let alpha = 1.0 - (-std::f32::consts::TAU * corner / rate as f32).exp();
+    let window = samples.len().min(rate as usize / 200);
+    let mut low = [0.0_f32; 3];
+    let mut loudest = 0.0_f32;
+    for sample in &samples[..window] {
+        let mut value = *sample;
+        for stage in &mut low {
+            *stage += alpha * (value - *stage);
+            value -= *stage;
+        }
+        loudest = loudest.max(value.abs());
+    }
+    20.0 * (loudest / peak).log10()
+}
+
 /// The time from the peak until the level is 20 dB down, in milliseconds.
 ///
 /// Twenty decibels rather than forty, because forty is past the end of a knock:
 /// a body that decays over 35 ms needs 160 ms to fall that far, so the number
 /// would say nothing about how the knock sounds.
-fn decay_ms(samples: &[f32], rate: u32, peak: f32) -> f32 {
-    let peak_index = samples
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).expect("no NaN"))
-        .map(|(index, _)| index)
-        .unwrap_or(0);
+fn decay_ms(samples: &[f32], rate: u32, peak: f32, peak_index: usize) -> f32 {
     let step = (rate as usize / 200).max(1);
     let threshold = peak * 0.1;
     let mut index = peak_index;
@@ -185,44 +222,57 @@ struct Sound {
     analysis: Analysis,
 }
 
-/// Render every voicing into `directory`, and write a page that plays them.
+/// Render the sounds that are being decided on into `directory`, with a page.
 pub fn audition(directory: &Path) -> Result<()> {
     std::fs::create_dir_all(directory)
         .with_context(|| format!("cannot create {}", directory.display()))?;
 
-    // The sound in use first, so that it can be compared against the candidates.
-    let mut sounds = Vec::new();
-    let samples = audio::render_click(RATE, 7, false, audio::IN_USE);
-    write_wav(&directory.join("0-the-sound-now.wav"), &samples, RATE)?;
-    sounds.push(Sound {
-        group: "The sound the game makes now".to_string(),
-        name: "0-the-sound-now".to_string(),
-        intent: "Four ringing modes, which sound hollow.".to_string(),
-        analysis: analyse(&samples, RATE),
-    });
-
-    // The variations of the sound he picked come first, then the round that the
-    // deep board came from.
-    let mut all: Vec<(String, audio::Candidate)> = Vec::new();
-    for candidate in audio::variations() {
-        let group = if candidate.name.ends_with("soft") {
-            "Softer than number 3"
-        } else {
-            "Number 3, with the wood moving"
-        };
-        all.push((group.to_string(), candidate));
-    }
+    // Each sound, with the group it belongs to and what it is for.
+    let mut wanted: Vec<(&str, &str, String, Voicing)> = vec![
+        (
+            "The sound the game makes now",
+            "0-the-sound-now",
+            "Four ringing modes, which sound hollow.".to_string(),
+            *audio::IN_USE,
+        ),
+        (
+            "Number 13, which you picked",
+            "13-wood",
+            audio::intent_of(&audio::chosen()),
+            audio::chosen(),
+        ),
+        (
+            "Number 3, its parent",
+            "3-deep-board",
+            "A thick board: lower, and a little longer.".to_string(),
+            audio::DEEP_BOARD,
+        ),
+    ];
     for candidate in audio::candidates() {
-        all.push(("The first round".to_string(), candidate));
+        wanted.push((
+            "Earlier rounds, for reference",
+            Box::leak(candidate.name.into_boxed_str()),
+            candidate.intent,
+            candidate.voicing,
+        ));
     }
-    for (group, candidate) in all {
-        let samples = audio::render_click(RATE, 7, false, &candidate.voicing);
-        let file = directory.join(format!("{}.wav", candidate.name));
-        write_wav(&file, &samples, RATE)?;
+    for candidate in audio::quieter() {
+        wanted.push((
+            "Quieter than 13",
+            Box::leak(candidate.name.into_boxed_str()),
+            candidate.intent,
+            candidate.voicing,
+        ));
+    }
+
+    let mut sounds = Vec::new();
+    for (group, name, intent, voicing) in wanted {
+        let samples = audio::render_click(RATE, 7, false, &voicing);
+        write_wav(&directory.join(format!("{name}.wav")), &samples, RATE)?;
         sounds.push(Sound {
-            group,
-            name: candidate.name.clone(),
-            intent: candidate.intent.clone(),
+            group: group.to_string(),
+            name: name.to_string(),
+            intent,
             analysis: analyse(&samples, RATE),
         });
     }
@@ -233,17 +283,13 @@ pub fn audition(directory: &Path) -> Result<()> {
 
     println!("{}", table(&sounds));
     println!("page: {}", page.display());
-    println!(
-        "play one on the command line with: afplay {}/1-dry-clack.wav",
-        directory.display()
-    );
     Ok(())
 }
 
 /// A table of the measurements, for the terminal.
 fn table(sounds: &[Sound]) -> String {
     let mut text = String::from(
-        "  name                    peak   rms  centroid  width    low   mid  high  to -20 dB\n",
+        "  name                    impact  rises  centroid  width    low   mid  high  to -20 dB\n",
     );
     let mut group = "";
     for sound in sounds {
@@ -252,10 +298,10 @@ fn table(sounds: &[Sound]) -> String {
             text.push_str(&format!("\n  -- {group}\n"));
         }
         text.push_str(&format!(
-            "  {:22} {:5.2} {:5.2}  {:5.0} Hz {:4.0} Hz {:4.0}% {:4.0}% {:4.0}%  {:5.0} ms\n",
+            "  {:22} {:5.1} dB {:5.2} ms {:5.0} Hz {:4.0} Hz {:4.0}% {:4.0}% {:4.0}%  {:5.0} ms\n",
             sound.name,
-            sound.analysis.peak,
-            sound.analysis.rms,
+            sound.analysis.hit_db,
+            sound.analysis.rise_ms,
             sound.analysis.centroid,
             sound.analysis.width,
             sound.analysis.low * 100.0,
@@ -295,16 +341,15 @@ fn html(sounds: &[Sound]) -> String {
         }
         page.push_str(&format!(
             "<li><div class=\"name\">{}</div><div class=\"intent\">{}</div>\
-             <div class=\"numbers\">centroid {:.0} Hz &middot; width {:.0} Hz &middot; low {:.0}% \
-             &middot; mid {:.0}% &middot; high {:.0}% &middot; to -20 dB in {:.0} ms</div>\
+             <div class=\"numbers\">impact {:.1} dB &middot; rises in {:.2} ms &middot; \
+             centroid {:.0} Hz &middot; width {:.0} Hz &middot; to -20 dB in {:.0} ms</div>\
              <audio controls preload=\"none\" src=\"{}.wav\"></audio></li>\n",
             sound.name,
             sound.intent,
+            sound.analysis.hit_db,
+            sound.analysis.rise_ms,
             sound.analysis.centroid,
             sound.analysis.width,
-            sound.analysis.low * 100.0,
-            sound.analysis.mid * 100.0,
-            sound.analysis.high * 100.0,
             sound.analysis.decay_ms,
             sound.name,
         ));
