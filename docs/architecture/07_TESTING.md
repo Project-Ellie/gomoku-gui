@@ -82,7 +82,7 @@ One test per rejection path from the persistence document:
 | 226 moves | `TooManyMoves` |
 | `[15, 0]` | `PointOutOfRange` with the index |
 | The same point twice | `RepeatedPoint` with the index |
-| A move onto an occupied point | `IllegalMove` with the index |
+| A move after the game ended | `IllegalMove` with the index |
 | `result: won` with an ongoing board | `ResultMismatch` |
 | Truncated JSON | `Parse` |
 | Unknown extra field | Loads successfully, field ignored |

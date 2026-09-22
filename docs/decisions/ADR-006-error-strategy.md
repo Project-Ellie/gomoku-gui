@@ -35,8 +35,8 @@ user, and continue or exit.
 
 - The caller can decide what to do from the error variant, which the user
   interface needs in order to offer the right action.
-- A test can assert `Err(RecordError::UnsupportedVersion(2))` instead of a
-  string match.
+- A test can match the variant with `matches!`, for example
+  `Err(RecordError::UnsupportedVersion(2))`, instead of a string match.
 - The binary stays free of error-mapping boilerplate.
 - Error messages are part of the user-visible surface and are written in plain
   language, not in Rust vocabulary.

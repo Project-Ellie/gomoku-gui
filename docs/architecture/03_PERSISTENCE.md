@@ -223,7 +223,7 @@ pub enum RecordError {
 
 `Display` messages are written for the user, not for a log file. Examples:
 
-- "This file is a version 2 record. This version of Gomoku can open version 1."
+- "This file is a version 2 record. This version of Gomoku opens version 1."
 - "Move 34 in this file is not legal. The file may be damaged."
 
 The binary adds the file path with `anyhow::Context` and shows a dialog. A

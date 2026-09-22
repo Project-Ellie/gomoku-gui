@@ -34,7 +34,11 @@ Without that directory the build fails. See
 ## Build and run
 
 ```bash
+# Build the workspace
 cargo build
+
+# Run the application. This works when the graphical crate lands, which the
+# Status section describes as not started.
 cargo run --release -p gomoku-gui
 ```
 
