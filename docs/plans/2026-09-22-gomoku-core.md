@@ -2484,13 +2484,11 @@ with:
     Io { path: PathBuf, source: std::io::Error },
 ```
 
-- [ ] **Step 3: Remove the check row and the test row**
+- [ ] **Step 3: Remove the test row**
 
-In `docs/architecture/03_PERSISTENCE.md`, in the numbered check table, delete the row:
-
-```
-| 10 | a result of `Won` or `Draw` appears only on the last move of the game | `PrematureResult` |
-```
+The numbered check table lives in `docs/architecture/02_CORE_LOGIC.md` only, and
+Step 1 already removed the removed check from it. `03_PERSISTENCE.md` has no such
+table, so there is nothing to delete there.
 
 In `docs/architecture/07_TESTING.md`, in the malformed input table, delete the row:
 
@@ -2557,8 +2555,9 @@ with:
 
 - [ ] **Step 6: Verify the documentation claims against the code**
 
-Run: `grep -rn "PrematureResult" docs README.md`
-Expected: no output.
+Run: `grep -rn "PrematureResult" docs README.md | grep -v "^docs/plans/"`
+Expected: no output. The implementation plan under `docs/plans/` quotes the removed
+check as part of its own instructions, so that directory is excluded.
 
 Run: `cargo test -p gomoku-core`
 Expected: every test passes. The count is the count from Task 6.
