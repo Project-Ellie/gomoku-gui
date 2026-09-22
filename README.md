@@ -31,16 +31,21 @@ workspace/
 Without that directory the build fails. See
 [ADR-002](docs/decisions/ADR-002-engine-reuse.md).
 
-## Build and run
+## Build and test
+
+The workspace holds one crate, `gomoku-core`. It is a **library**: the game, the
+history, the record format, and the settings schema. **There is no application
+to run yet**, so `cargo build` produces a library and nothing else, and no
+`cargo run` line belongs here until the graphical crate exists.
 
 ```bash
-# Build the workspace
-cargo build
-
-# Run the application. This works when the graphical crate lands, which the
-# Status section describes as not started.
-cargo run --release -p gomoku-gui
+cargo build   # compiles the library
+cargo test    # runs the test suite
 ```
+
+The graphical crate, `gomoku-gui`, is the next piece of work. When it lands, this
+section gains the command that opens the window, and the `Status` section above
+loses its "not started" sentence.
 
 ## Gates
 
