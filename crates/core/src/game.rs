@@ -101,11 +101,7 @@ impl Game {
     /// position in the list.
     pub fn stones(&self) -> impl Iterator<Item = (Move, Color)> + '_ {
         self.board.moves().iter().enumerate().map(|(index, &mv)| {
-            let color = if index % 2 == 0 {
-                Color::Black
-            } else {
-                Color::White
-            };
+            let color = color_of(index);
             (mv, color)
         })
     }
@@ -131,6 +127,15 @@ impl Game {
     /// The moves of the game.
     pub fn moves(&self) -> &[Move] {
         &self.moves
+    }
+
+    /// Every stone in the game, in play order, including any move after the
+    /// cursor. Use this to list the game; use `stones` for the board.
+    pub fn record(&self) -> impl Iterator<Item = (Move, Color)> + '_ {
+        self.moves
+            .iter()
+            .enumerate()
+            .map(|(index, &point)| (point, color_of(index)))
     }
 
     /// The number of moves in the game.
@@ -268,6 +273,16 @@ fn outcome_of(status: Status) -> Outcome {
             method: WinMethod::Five,
         },
         Status::Draw => Outcome::Draw,
+    }
+}
+
+/// The colour of the stone played at a given index. Freestyle play starts from
+/// Black and alternates.
+fn color_of(index: usize) -> Color {
+    if index % 2 == 0 {
+        Color::Black
+    } else {
+        Color::White
     }
 }
 
@@ -485,6 +500,24 @@ mod tests {
         assert_eq!(game.stone_at(point(7, 8)), None);
         assert_eq!(game.stone_at(point(9, 9)), None);
         assert_eq!(game.stone_at(point(3, 3)), Some(Color::White));
+    }
+
+    #[test]
+    fn the_record_keeps_the_moves_that_the_board_has_left_behind() {
+        let mut game = Game::new();
+        for column in 0..4_u8 {
+            game.play(point(0, column)).expect("the square is free");
+            game.play(point(1, column)).expect("the square is free");
+        }
+        game.rewind();
+        game.rewind();
+        assert_eq!(game.stones().count(), 6, "the board stops at the cursor");
+        let record: Vec<_> = game.record().collect();
+        assert_eq!(record.len(), 8, "the record keeps every move");
+        assert_eq!(record[6].0, point(0, 3), "Black plays the odd moves");
+        assert_eq!(record[6].1, Color::Black);
+        assert_eq!(record[7].0, point(1, 3));
+        assert_eq!(record[7].1, Color::White, "and White plays the even ones");
     }
 
     #[test]
