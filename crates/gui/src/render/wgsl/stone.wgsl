@@ -70,22 +70,30 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
     let seed = in.params.x;
     let p = in.local * 3.0 + vec2<f32>(seed * 13.7, seed * 5.3);
 
+    // The stone's micro-texture is finer than a pixel when the board is small on
+    // screen. It fades with the pixel footprint so that it never shimmers, which
+    // would look like noise rather than like stone.
+    let texel = max(length(fwidth(in.local)), 1e-6);
+    let detail_frequency = 11.0 * 3.0;
+    let sample = smoothstep(0.8, 2.6, 1.0 / max(detail_frequency * texel, 1e-6));
+    let detail = mix(1.0, sample, 0.85);
+
     var albedo = in.colour.rgb;
     var roughness = in.colour.w;
     if (kind > 0.5) {
         // Shell: a faint streak pattern, and a milky body.
-        albedo *= 0.95 + height_shell(p) * 0.07;
-        roughness *= 0.80 + height_shell(p * 1.6) * 0.20;
+        albedo *= 1.0 + (height_shell(p) - 0.5) * 0.07 * detail;
+        roughness *= 0.88 + (height_shell(p * 1.6) - 0.5) * 0.22 * detail;
     } else {
         // Slate: fine grain, slightly rougher at the surface.
-        albedo *= 0.92 + height_slate(p) * 0.12;
-        roughness *= 0.80 + height_slate(p * 1.4) * 0.25;
+        albedo *= 1.0 + (height_slate(p) - 0.5) * 0.14 * detail;
+        roughness *= 0.88 + (height_slate(p * 1.4) - 0.5) * 0.28 * detail;
     }
     roughness = clamp(roughness, 0.05, 0.6);
 
     let v = vec3<f32>(0.0, 0.0, 1.0);
     let l = key_light();
-    let strength = select(0.16, 0.08, kind > 0.5);
+    let strength = select(0.16, 0.08, kind > 0.5) * detail;
     let n = perturb(normalize(in.normal), p, kind, strength);
 
     let n_dot_l = max(dot(n, l), 0.0);

@@ -34,11 +34,15 @@ fn slab_sdf(p: vec2<f32>) -> f32 {
 
 /// The wood, in board-space uv: a colour and a height for the normal.
 ///
+/// `texel` is one screen pixel in board units. The fine detail fades out as a
+/// pixel starts to cover more than a pore, so the board never shimmers when it
+/// is small on screen and never looks bare when it is close up.
+///
 /// The grain runs along the x axis, so it varies with y. Real grain is not a set
 /// of even stripes: the bands wander, they are spaced unevenly, and their
 /// contrast varies along the length of the board. Two warped band layers plus a
 /// broad tone variation give that.
-fn wood(uv: vec2<f32>) -> vec3<f32> {
+fn wood(uv: vec2<f32>, texel: f32) -> vec3<f32> {
     let frequency = g.wood_a.w;
 
     // Slow wander across the grain, and a second layer at a different scale, so
@@ -62,16 +66,26 @@ fn wood(uv: vec2<f32>) -> vec3<f32> {
     let figure = fbm(vec2<f32>(uv.x * 0.09, uv.y * 0.08), 3);
     grain = clamp(grain * (0.90 + figure * 0.20), 0.0, 1.0);
 
-    // Fine pores: short, thin, dark marks that follow the grain.
-    let pores = smoothstep(0.62, 0.92, fbm(vec2<f32>(uv.x * 0.9, uv.y * 96.0), 4));
+    // Fine pores: thin dark marks that follow the grain. About forty to a cell,
+    // which is finer than a pixel when the whole board is on screen, so they
+    // fade with the pixel footprint.
+    let pore_frequency = 40.0;
+    let pores_per_pixel = 1.0 / max(pore_frequency * texel, 1e-6);
+    let pore_fade = smoothstep(0.7, 2.2, pores_per_pixel);
+    let pores = smoothstep(0.42, 0.78, fbm(vec2<f32>(uv.x * 0.9, uv.y * pore_frequency), 4))
+        * pore_fade;
+
+    // A mid-scale mottle that survives at every zoom, so the surface is never
+    // flat even when the pores have faded.
+    let mottle = fbm(vec2<f32>(uv.x * 2.6, uv.y * 7.5), 3) - 0.5;
 
     let body = mix(g.wood_b.rgb, g.wood_a.rgb, grain * g.wood_b.w);
-    let albedo = mix(body, g.wood_c.rgb, pores * g.wood_c.w);
+    let albedo = mix(body, g.wood_c.rgb, pores * g.wood_c.w) * (1.0 + mottle * 0.07);
 
     // The height field: one gentle ridge per band, and the pores cut into it.
     let height = grain * 0.30 - pores * 0.40;
-    let slope_x = (fbm(vec2<f32>((uv.x + 0.02) * 0.9, uv.y * 96.0), 3)
-        - fbm(vec2<f32>((uv.x - 0.02) * 0.9, uv.y * 96.0), 3)) * pores;
+    let slope_x = (fbm(vec2<f32>((uv.x + 0.02) * 0.9, uv.y * pore_frequency), 3)
+        - fbm(vec2<f32>((uv.x - 0.02) * 0.9, uv.y * pore_frequency), 3)) * pores;
     let n = normalize(vec3<f32>(-slope_x * 3.0, -(height - 0.5) * 0.55, 1.0));
 
     let v = vec3<f32>(0.0, 0.0, 1.0);
@@ -131,7 +145,7 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let inward = normalize(vec2<f32>(7.0, 7.0) - uv + vec2<f32>(1e-5, 1e-5));
         wood_uv = uv + inward * (1.0 - bevel) * 1.5;
     }
-    var surface = wood(wood_uv);
+    var surface = wood(wood_uv, texel);
 
     if (bevel > 0.0) {
         let inward = normalize(vec2<f32>(7.0, 7.0) - uv + vec2<f32>(1e-5, 1e-5));

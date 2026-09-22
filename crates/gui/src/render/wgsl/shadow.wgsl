@@ -26,7 +26,10 @@ fn vs_shadow(
     // light and squashed along it.
     let radius = 0.62;
     let squash = 0.92;
-    let offset = normalize(g.light.xy) * 0.10;
+    // The light comes in at about 46 degrees, and the stone is 0.40 cells tall,
+    // so the shadow of its top edge falls about 0.39 cells away. The base sits
+    // on the board, so the visible shadow is a blend of the two.
+    let offset = normalize(g.light.xy) * 0.18;
     let world = centre + offset
         + vec2<f32>(corner.x * radius, corner.y * radius * squash);
 

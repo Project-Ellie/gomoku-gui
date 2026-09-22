@@ -145,7 +145,11 @@ struct Vertex {
 /// The radius of a stone at its widest, in cells.
 const STONE_RADIUS: f32 = 0.47;
 /// The height of a stone at its apex, in cells.
-const STONE_HEIGHT: f32 = 0.175;
+///
+/// A real Go or Gomoku stone is about 10 mm thick for a 22 mm diameter, so its
+/// height is a little under half its width. A flatter stone reads as a disc,
+/// however well it is shaded, so the proportion matters more than the material.
+const STONE_HEIGHT: f32 = 0.40;
 /// How many times the lens profile is sampled.
 const RINGS: usize = 14;
 /// How many segments the lens is revolved with.
@@ -153,10 +157,13 @@ const SEGMENTS: usize = 56;
 
 /// The lens profile, as (radius, height) pairs from the base to the apex.
 fn profile() -> Vec<[f32; 2]> {
+    // (radius, height) from the base to the apex: a widening foot, the widest
+    // point low down, then a dome, as a real stone is shaped.
     let control = [
-        [0.40, 0.0],
-        [STONE_RADIUS, 0.085],
-        [0.36, 0.150],
+        [0.42, 0.0],
+        [STONE_RADIUS, 0.090],
+        [0.415, 0.250],
+        [0.30, 0.345],
         [0.0, STONE_HEIGHT],
     ];
     let mut points = Vec::with_capacity(RINGS + 1);
