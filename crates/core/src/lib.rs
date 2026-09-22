@@ -5,12 +5,18 @@
 //! dialog. The rules engine is called from the `game` module only.
 #![deny(missing_docs)]
 
+mod config;
 mod error;
 mod game;
 mod notation;
 mod record;
 mod storage;
 
+pub use config::{
+    AudioSettings, BoardSettings, ConfigLoad, ConfigNotice, FileSettings, MAX_RECENT,
+    OverlaySettings, Settings, StoneSettings, ViewSettings, WindowSettings, load_settings,
+    save_settings,
+};
 pub use error::{ConfigError, GameError, RecordError};
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;
