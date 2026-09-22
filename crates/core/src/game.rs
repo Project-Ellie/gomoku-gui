@@ -179,8 +179,8 @@ impl Game {
         if self.status() != Status::Ongoing {
             return Err(GameError::GameOver);
         }
-        self.moves.truncate(self.cursor);
         self.board.play(point).map_err(GameError::from)?;
+        self.moves.truncate(self.cursor);
         self.moves.push(point);
         self.cursor += 1;
         self.meta.outcome = outcome_of(self.board.status());
@@ -376,6 +376,20 @@ mod tests {
         assert_eq!(game.status(), Status::Ongoing);
         game.play(point(7, 2)).expect("empty cell");
         assert_eq!(game.len(), 9);
+    }
+
+    #[test]
+    fn the_outcome_describes_the_game_not_the_view() {
+        let mut game = near_win();
+        assert!(game.rewind());
+        assert_eq!(game.status(), Status::Ongoing);
+        assert_eq!(
+            game.outcome(),
+            Outcome::Won {
+                winner: Color::Black,
+                method: WinMethod::Five
+            }
+        );
     }
 
     #[test]
