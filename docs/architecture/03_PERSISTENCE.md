@@ -19,9 +19,7 @@ Extension: `.json`. One JSON object, pretty-printed, with a trailing newline.
   },
   "created": "2026-09-22T18:04:11Z",
   "result": {
-    "kind": "won",
-    "winner": "black",
-    "method": "five"
+    "kind": "ongoing"
   },
   "moves": [
     [
@@ -31,12 +29,23 @@ Extension: `.json`. One JSON object, pretty-printed, with a trailing newline.
     [
       8,
       7
+    ],
+    [
+      8,
+      8
+    ],
+    [
+      6,
+      6
     ]
   ]
 }
 ```
 
-The example above is the real output of the encoder for two moves.
+The example above is the exact content of the committed fixture
+`crates/core/tests/golden/hotseat-v1.json`. A test compares the encoder's output
+against those bytes, so the example cannot drift from the code.
+
 `serde_json::to_string_pretty` writes every array element on its own line, so each
 move occupies five lines. The file is longer than a hand-written sample, and every
 new move changes only its own lines, which keeps a version control diff clean. Do

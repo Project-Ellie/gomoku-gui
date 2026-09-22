@@ -2454,6 +2454,21 @@ and insert this line in their place:
     ResultMismatch,
 ```
 
+In the same error list, correct the `Io` variant, which the code spells as a struct
+with a named path and an `#[source]`:
+
+Replace:
+
+```
+    Io(std::io::Error),
+```
+
+with:
+
+```
+    Io { path: PathBuf, source: std::io::Error },
+```
+
 - [ ] **Step 3: Remove the check row and the test row**
 
 In `docs/architecture/03_PERSISTENCE.md`, in the numbered check table, delete the row:
@@ -2555,7 +2570,9 @@ git commit -m "docs: align the design documents with the core implementation"
 **Files:**
 - Modify: `crates/core/src/game.rs`
 - Modify: `crates/core/src/record.rs`
+- Modify: `crates/core/src/storage.rs`
 - Modify: `crates/core/tests/invariants.rs`
+- Modify: `crates/core/tests/record_format.rs`
 
 **Interfaces:**
 - Consumes: everything from Tasks 1 to 7.
@@ -2739,7 +2756,54 @@ with:
             },
 ```
 
-- [ ] **Step 7: Prove that the strengthened assertion can fail**
+- [ ] **Step 7: Pin the storage behaviour that the file tests cannot reach**
+
+Two Task 5 review findings, both about behaviour that the file-level tests cannot
+observe through the public interface.
+
+Atomicity is pinned by inspection only today:
+`a_save_leaves_no_temporary_file_behind` would also pass an implementation that
+writes straight to the target and never creates a `.tmp` file. Add a unit test at
+the end of `crates/core/src/storage.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_temporary_file_sits_beside_its_target() {
+        // A rename is only atomic inside one file system, so the temporary
+        // file must share its directory with the target.
+        let path = Path::new("/games/2026-09-22-hotseat.json");
+        assert_eq!(
+            temporary_path(path),
+            PathBuf::from("/games/2026-09-22-hotseat.json.tmp")
+        );
+    }
+}
+```
+
+Second, `a_missing_file_is_an_io_error` asserts only the error variant, so a loader
+that reported an empty or wrong path would pass. The path is the whole point of the
+`Io { path, source }` shape. Replace in `crates/core/tests/record_format.rs`:
+
+```rust
+    let error = load(&path).expect_err("the file is absent");
+    assert!(matches!(error, RecordError::Io { .. }));
+```
+
+with:
+
+```rust
+    let error = load(&path).expect_err("the file is absent");
+    assert!(
+        matches!(&error, RecordError::Io { path: failed, .. } if failed == &path),
+        "the error must name the file that failed, got {error:?}"
+    );
+```
+
+- [ ] **Step 8: Prove that the strengthened assertion can fail**
 
 A strengthened test that cannot fail is worthless. Prove that the new `Err(_)`
 arm in Step 4 works:
@@ -2752,7 +2816,7 @@ arm in Step 4 works:
 3. Restore `play` exactly.
 4. Run the same command again and confirm it passes.
 
-- [ ] **Step 8: Run the gates and the strengthened run**
+- [ ] **Step 9: Run the gates and the strengthened run**
 
 Run: `cargo test`
 Expected: 21 unit tests and 4 property tests pass.
@@ -2764,7 +2828,7 @@ Expected: 4 property tests pass. Save the output to
 Run: `cargo clippy --all-targets -- -D warnings && cargo fmt --all`
 Expected: no warnings, no diff.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add crates/core
