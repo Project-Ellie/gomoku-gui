@@ -18,6 +18,8 @@ pub struct Requests {
     pub new_game: bool,
     /// Ask for a file and open it.
     pub open: bool,
+    /// Ask for a puzzle file and load it.
+    pub open_puzzle: bool,
     /// Save to the open file, or ask for one.
     pub save: bool,
     /// Ask for a file and save to it.
@@ -35,6 +37,8 @@ const OUTSIDE: f32 = 1.15;
 
 /// The colours of the interface.
 const MUTED: Color32 = Color32::from_rgb(150, 150, 158);
+/// The puzzle-start cursor ring.
+const PUZZLE_CURSOR: Color32 = Color32::from_rgb(50, 232, 90);
 
 /// The side panel is middle grey. On the dark background of the window a black
 /// stone could not be told from the panel, so the move list could not show both
@@ -73,6 +77,10 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                 }
                 if ui.button("Open...").clicked() {
                     requests.open = true;
+                    ui.close();
+                }
+                if ui.button("Load puzzle...").clicked() {
+                    requests.open_puzzle = true;
                     ui.close();
                 }
                 ui.separator();
@@ -452,6 +460,18 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
         }
     }
 
+    // The puzzle-start cursor ring, drawn after the last-move ring so that it
+    // stands out when the two coincide.
+    if let Some(point) = session.puzzle_cursor {
+        let centre = to_screen([point.col() as f32, point.row() as f32]);
+        let width = (ppc * 0.085 / pixels_per_point).max(2.0);
+        painter.circle_stroke(
+            centre,
+            ppc * 0.40 / pixels_per_point,
+            Stroke::new(width, PUZZLE_CURSOR),
+        );
+    }
+
     // The intersection under the pointer, when a placement there is legal.
     if let Some(point) = session.hover {
         let centre = to_screen([point.col() as f32, point.row() as f32]);
@@ -502,6 +522,7 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 ui.label(match then {
                     After::NewGame => "Start a new game anyway?",
                     After::Open => "Open another game anyway?",
+                    After::OpenPuzzle => "Load a puzzle anyway?",
                     After::Quit => "Quit anyway?",
                 });
                 ui.add_space(8.0);
@@ -564,10 +585,70 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 close = true;
             }
         }
+        Dialog::PickPuzzle { puzzles, index } => {
+            let mut new_index = index;
+            let mut input = index.to_string();
+            let response = egui::Modal::new(egui::Id::new("pick-puzzle")).show(ctx, |ui| {
+                ui.set_max_width(360.0);
+                ui.heading("Load a puzzle");
+                ui.label(format!("{} puzzles in this file", puzzles.len()));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled(index > 0, egui::Button::new("← Prev"))
+                        .clicked()
+                        .then(|| new_index = index.saturating_sub(1));
+                    let puzzle = &puzzles[new_index];
+                    let depth = puzzle
+                        .depth
+                        .map(|d| format!("depth {d}"))
+                        .unwrap_or_else(|| "no depth".to_string());
+                    ui.label(format!("{} — {}", puzzle.name, depth));
+                    ui.add_enabled(index + 1 < puzzles.len(), egui::Button::new("Next →"))
+                        .clicked()
+                        .then(|| new_index = (index + 1).min(puzzles.len() - 1));
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Index:");
+                    let edit = egui::TextEdit::singleline(&mut input)
+                        .desired_width(60.0)
+                        .char_limit(6);
+                    ui.add(edit);
+                });
+                if let Some(parsed) = parse_puzzle_index(&input, puzzles.len()) {
+                    new_index = parsed;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Load").clicked() {
+                        let _ = session.load_puzzle(&puzzles[new_index]);
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+            if !close {
+                session.dialog = Some(Dialog::PickPuzzle {
+                    puzzles,
+                    index: new_index,
+                });
+            }
+            if response.should_close() {
+                close = true;
+            }
+        }
     }
     if close {
         session.dialog = None;
     }
+}
+
+/// Parse a puzzle index from user input, refusing values outside `0..len`.
+fn parse_puzzle_index(input: &str, len: usize) -> Option<usize> {
+    let index: usize = input.parse().ok()?;
+    (index < len).then_some(index)
 }
 
 #[cfg(test)]
@@ -668,6 +749,17 @@ mod tests {
                 title: "The game could not be opened".to_string(),
                 body: "the record has no marker".to_string(),
             },
+            Dialog::PickPuzzle {
+                puzzles: vec![gomoku_core::Puzzle {
+                    name: "test #0".to_string(),
+                    black: vec![point],
+                    white: vec![],
+                    to_move: gomoku_core::Color::Black,
+                    solution: None,
+                    depth: Some(3),
+                }],
+                index: 0,
+            },
         ];
         for dialog in dialogs {
             let mut session = Session::new(&gomoku_core::Settings::default());
@@ -679,5 +771,19 @@ mod tests {
                 "a dialog takes the pointer while it is open"
             );
         }
+    }
+
+    #[test]
+    fn parse_puzzle_index_accepts_valid_indices() {
+        assert_eq!(parse_puzzle_index("0", 3), Some(0));
+        assert_eq!(parse_puzzle_index("2", 3), Some(2));
+    }
+
+    #[test]
+    fn parse_puzzle_index_rejects_out_of_range_and_garbage() {
+        assert_eq!(parse_puzzle_index("3", 3), None);
+        assert_eq!(parse_puzzle_index("-1", 3), None);
+        assert_eq!(parse_puzzle_index("abc", 3), None);
+        assert_eq!(parse_puzzle_index("1.5", 3), None);
     }
 }

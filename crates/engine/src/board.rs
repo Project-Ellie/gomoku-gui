@@ -58,6 +58,9 @@ pub enum PositionError {
     /// Stone counts differ by more than one or disagree with `to_move`.
     #[error("Stone counts are inconsistent with the side to move.")]
     InvalidCounts,
+    /// The same cell appears twice in one color's stone list.
+    #[error("The same cell appears twice for one color.")]
+    DuplicateStone,
 }
 
 /// The production board. Two bitboards in ABSOLUTE colors (ch. 13,
@@ -236,12 +239,13 @@ impl Board {
 
     /// Build a board from an arbitrary valid position.
     ///
-    /// Validates that the two colors do not overlap and that the stone
-    /// counts differ by at most one, with `to_move` being the color
-    /// that has fewer-or-equal stones. The Zobrist key is computed from
-    /// scratch via `zobrist::compute_key`.
+    /// Validates that no cell appears twice in one list, that the two colors
+    /// do not overlap, and that the stone counts differ by at most one, with
+    /// `to_move` being the color that has fewer-or-equal stones. The Zobrist
+    /// key is computed from scratch via `zobrist::compute_key`.
     ///
     /// # Errors
+    /// * `PositionError::DuplicateStone` if a cell appears twice in one list.
     /// * `PositionError::OverlappingColors` if a cell appears in both lists.
     /// * `PositionError::InvalidCounts` if counts differ by more than one
     ///   or do not match `to_move`.
@@ -253,10 +257,20 @@ impl Board {
         let mut bb_black = Bitboard::EMPTY;
         let mut bb_white = Bitboard::EMPTY;
         for mv in black {
-            bb_black = bb_black.with_bit(idx(mv.row(), mv.col()));
+            let i = idx(mv.row(), mv.col());
+            let bit = Bitboard::EMPTY.with_bit(i);
+            if !(bb_black & bit).is_zero() {
+                return Err(PositionError::DuplicateStone);
+            }
+            bb_black = bb_black | bit;
         }
         for mv in white {
-            bb_white = bb_white.with_bit(idx(mv.row(), mv.col()));
+            let i = idx(mv.row(), mv.col());
+            let bit = Bitboard::EMPTY.with_bit(i);
+            if !(bb_white & bit).is_zero() {
+                return Err(PositionError::DuplicateStone);
+            }
+            bb_white = bb_white | bit;
         }
 
         if !(bb_black & bb_white).is_zero() {

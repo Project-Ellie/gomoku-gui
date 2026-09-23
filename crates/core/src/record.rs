@@ -137,9 +137,17 @@ pub struct Record {
 
 impl Record {
     /// Build a record from a game.
-    pub fn from_game(game: &Game) -> Record {
+    ///
+    /// # Errors
+    /// `RecordError::FromPosition` if the game was loaded from a puzzle
+    /// position, because the moves-only record format cannot represent the
+    /// starting stones.
+    pub fn from_game(game: &Game) -> Result<Record, RecordError> {
+        if game.is_from_position() {
+            return Err(RecordError::FromPosition);
+        }
         let meta = game.meta();
-        Record {
+        Ok(Record {
             format: FORMAT_MARKER.to_string(),
             version: FORMAT_VERSION,
             size: BOARD_SIZE,
@@ -151,7 +159,7 @@ impl Record {
             created: meta.created,
             result: meta.outcome.into(),
             moves: game.moves().iter().map(|mv| [mv.col(), mv.row()]).collect(),
-        }
+        })
     }
 
     /// Encode the record as pretty JSON with a trailing newline.
@@ -253,7 +261,7 @@ mod tests {
     }
 
     fn record() -> Record {
-        Record::from_game(&played_game())
+        Record::from_game(&played_game()).expect("a normal game encodes")
     }
 
     #[test]
@@ -278,7 +286,7 @@ mod tests {
 
     #[test]
     fn a_won_game_round_trips_with_its_result() {
-        let record = Record::from_game(&won_game());
+        let record = Record::from_game(&won_game()).expect("a normal game encodes");
         assert_eq!(
             record.result,
             StoredOutcome::Won {
@@ -394,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_record_refuses_a_move_after_the_game_ended() {
-        let mut record = Record::from_game(&won_game());
+        let mut record = Record::from_game(&won_game()).expect("a normal game encodes");
         record.moves.push([10, 10]);
         assert!(matches!(
             record.into_game(),

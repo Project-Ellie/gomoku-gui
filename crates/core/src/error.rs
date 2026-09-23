@@ -88,6 +88,10 @@ pub enum RecordError {
     /// The stored result disagrees with the stored moves.
     #[error("The result stored in this file does not match the moves it holds.")]
     ResultMismatch,
+    /// The game was built from a puzzle position and cannot be saved as a
+    /// moves-only record.
+    #[error("Games loaded from a puzzle position cannot be saved as game records.")]
+    FromPosition,
 }
 
 /// Errors returned when the settings are written.

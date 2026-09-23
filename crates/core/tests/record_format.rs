@@ -24,6 +24,7 @@ fn golden_game() -> Game {
 #[test]
 fn the_encoder_still_writes_the_golden_file() {
     let text = Record::from_game(&golden_game())
+        .expect("the record builds")
         .to_json()
         .expect("the record encodes");
     assert_eq!(text, GOLDEN, "the record schema changed");
@@ -104,4 +105,23 @@ fn a_damaged_file_is_a_parse_error() {
     std::fs::write(&path, "{\"format\": \"gomoku-gui/record\",").expect("the file writes");
     let error = load(&path).expect_err("the text is not a record");
     assert!(matches!(error, RecordError::Parse(_)));
+}
+
+#[test]
+fn a_from_position_game_refuses_to_save() {
+    let black = vec![Move::new(7, 7).expect("inside the board")];
+    let white = vec![Move::new(6, 7).expect("inside the board")];
+    let game = Game::from_position(black, white, engine::Color::Black).expect("valid position");
+    assert!(
+        matches!(Record::from_game(&game), Err(RecordError::FromPosition)),
+        "from-position games must not round-trip through the moves-only format"
+    );
+
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("puzzle.json");
+    assert!(
+        matches!(save(&path, &game), Err(RecordError::FromPosition)),
+        "the file path must also be refused"
+    );
+    assert!(!path.exists(), "no file is written");
 }

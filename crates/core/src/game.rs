@@ -54,6 +54,17 @@ pub struct Game {
     board: Board,
     cursor: usize,
     meta: MetaData,
+    /// Stones that were present before any move in `moves`, with their
+    /// absolute colors. Empty for a normal game; populated by
+    /// [`Game::from_position`].
+    initial_stones: Vec<(Move, Color)>,
+    /// The side that had the first move in this game. For a normal game this
+    /// is always `Black`; for a game built from a puzzle position it is the
+    /// side to move in that position.
+    initial_to_move: Color,
+    /// True when the game was built from an arbitrary position rather than an
+    /// empty board. Such games cannot be saved as move-only records.
+    from_position: bool,
 }
 
 impl Game {
@@ -66,9 +77,13 @@ impl Game {
     ///
     /// The record loader uses this to keep the original start time.
     pub fn started_at(created: OffsetDateTime) -> Game {
+        Game::from_board(Board::new(), created)
+    }
+
+    fn from_board(board: Board, created: OffsetDateTime) -> Game {
         Game {
             moves: Vec::new(),
-            board: Board::new(),
+            board,
             cursor: 0,
             meta: MetaData {
                 black: None,
@@ -76,7 +91,47 @@ impl Game {
                 created,
                 outcome: Outcome::Ongoing,
             },
+            initial_stones: Vec::new(),
+            initial_to_move: Color::Black,
+            from_position: false,
         }
+    }
+
+    /// Build a game from an arbitrary valid position.
+    ///
+    /// The `to_move` side is the side that plays next. The returned game has
+    /// an empty move list and its cursor at the root, so that undo and rewind
+    /// stop at the loaded position rather than at an empty board.
+    ///
+    /// # Errors
+    /// `engine::PositionError` if the stone lists are inconsistent.
+    pub fn from_position(
+        black: Vec<Move>,
+        white: Vec<Move>,
+        to_move: Color,
+    ) -> Result<Game, engine::PositionError> {
+        let mut seen = std::collections::HashSet::new();
+        for mv in &black {
+            if !seen.insert(mv.index()) {
+                return Err(engine::PositionError::DuplicateStone);
+            }
+        }
+        for mv in &white {
+            if !seen.insert(mv.index()) {
+                return Err(engine::PositionError::DuplicateStone);
+            }
+        }
+        let board = Board::from_position(&black, &white, to_move)?;
+        let mut game = Game::from_board(board, OffsetDateTime::now_utc());
+        game.initial_to_move = to_move;
+        game.from_position = true;
+        game.initial_stones = black
+            .into_iter()
+            .map(|mv| (mv, Color::Black))
+            .chain(white.into_iter().map(|mv| (mv, Color::White)))
+            .collect();
+        game.meta.outcome = outcome_of(game.board.status());
+        Ok(game)
     }
 
     /// The metadata of the game.
@@ -95,15 +150,16 @@ impl Game {
         self.board.stone_at(point)
     }
 
-    /// The stones on the visible board, in play order.
-    ///
-    /// Freestyle play alternates from Black, so the color follows the
-    /// position in the list.
+    /// The stones on the visible board. Stones that came from a loaded puzzle
+    /// position are listed first in the order they were given; moves played
+    /// through this `Game` follow in play order.
     pub fn stones(&self) -> impl Iterator<Item = (Move, Color)> + '_ {
-        self.board.moves().iter().enumerate().map(|(index, &mv)| {
-            let color = color_of(index);
+        let initial = self.initial_stones.iter().copied();
+        let played = self.board.moves().iter().enumerate().map(|(index, &mv)| {
+            let color = color_of(index, self.initial_to_move);
             (mv, color)
-        })
+        });
+        initial.chain(played)
     }
 
     /// The status of the board at the review cursor.
@@ -119,6 +175,13 @@ impl Game {
         self.meta.outcome
     }
 
+    /// True when the game was built from an arbitrary position rather than an
+    /// empty board. Such games cannot be round-tripped through the v1 record
+    /// format.
+    pub fn is_from_position(&self) -> bool {
+        self.from_position
+    }
+
     /// The side to move at the review cursor.
     pub fn to_move(&self) -> Color {
         self.board.to_move()
@@ -129,13 +192,14 @@ impl Game {
         &self.moves
     }
 
-    /// Every stone in the game, in play order, including any move after the
-    /// cursor. Use this to list the game; use `stones` for the board.
+    /// Every stone played after the loaded position, in play order, including
+    /// any move after the cursor. Use this to list the game; use `stones` for
+    /// the board.
     pub fn record(&self) -> impl Iterator<Item = (Move, Color)> + '_ {
         self.moves
             .iter()
             .enumerate()
-            .map(|(index, &point)| (point, color_of(index)))
+            .map(|(index, &point)| (point, color_of(index, self.initial_to_move)))
     }
 
     /// The number of moves in the game.
@@ -198,6 +262,12 @@ impl Game {
     /// Returns false when the game has no move.
     pub fn undo(&mut self) -> bool {
         if self.moves.is_empty() {
+            return false;
+        }
+        // For a game loaded from a position, the root is the loaded position,
+        // not an empty board. Rewinding to the root must not let undo erase
+        // the loaded stones.
+        if self.from_position && self.cursor == 0 {
             return false;
         }
         // Undo acts on the last move of the game, so leave a rewound view.
@@ -276,19 +346,20 @@ fn outcome_of(status: Status) -> Outcome {
     }
 }
 
-/// The colour of the stone played at a given index. Freestyle play starts from
-/// Black and alternates.
-fn color_of(index: usize) -> Color {
+/// The colour of the stone played at a given index, starting from
+/// `initial_to_move` and alternating.
+fn color_of(index: usize, initial_to_move: Color) -> Color {
     if index % 2 == 0 {
-        Color::Black
+        initial_to_move
     } else {
-        Color::White
+        initial_to_move.other()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::PositionError;
     use time::macros::datetime;
 
     fn point(row: u8, col: u8) -> Move {
@@ -527,5 +598,80 @@ mod tests {
         game.set_players(Some("Wolfie".to_string()), None);
         assert_eq!(game.meta().black.as_deref(), Some("Wolfie"));
         assert_eq!(game.meta().white, None);
+    }
+
+    #[test]
+    fn from_position_loads_black_attacker_root() {
+        let black = vec![point(7, 7)];
+        let white = vec![point(6, 7)];
+        let game = Game::from_position(black, white, Color::Black).expect("valid position");
+        assert!(game.is_from_position());
+        assert_eq!(game.to_move(), Color::Black);
+        assert_eq!(game.len(), 0);
+        assert_eq!(game.cursor(), 0);
+        assert_eq!(game.stone_at(point(7, 7)), Some(Color::Black));
+        assert_eq!(game.stone_at(point(6, 7)), Some(Color::White));
+    }
+
+    #[test]
+    fn from_position_loads_white_attacker_root() {
+        let black = vec![point(7, 7), point(7, 8)];
+        let white = vec![point(6, 7)];
+        let mut game = Game::from_position(black, white, Color::White).expect("valid position");
+        assert_eq!(game.to_move(), Color::White);
+        assert_eq!(game.len(), 0);
+        // Play from the root must continue with the correct side.
+        game.play(point(5, 7)).expect("empty cell");
+        assert_eq!(game.stone_at(point(5, 7)), Some(Color::White));
+        assert_eq!(game.to_move(), Color::Black);
+    }
+
+    #[test]
+    fn play_after_from_position_alternates_from_the_root() {
+        let black = vec![point(7, 7)];
+        let white = vec![point(6, 7)];
+        let mut game = Game::from_position(black, white, Color::Black).expect("valid position");
+        game.play(point(5, 7)).expect("empty cell");
+        game.play(point(8, 7)).expect("empty cell");
+        assert_eq!(game.stone_at(point(5, 7)), Some(Color::Black));
+        assert_eq!(game.stone_at(point(8, 7)), Some(Color::White));
+    }
+
+    #[test]
+    fn rewind_and_undo_stop_at_the_position_root() {
+        let black = vec![point(7, 7)];
+        let white = vec![point(6, 7)];
+        let mut game = Game::from_position(black, white, Color::Black).expect("valid position");
+        game.play(point(5, 7)).expect("empty cell");
+        game.play(point(8, 7)).expect("empty cell");
+        assert!(game.rewind());
+        assert!(game.rewind());
+        assert!(
+            !game.rewind(),
+            "the root is the loaded position, not an empty board"
+        );
+        assert_eq!(game.stone_at(point(7, 7)), Some(Color::Black));
+        assert_eq!(game.cursor(), 0);
+        assert!(!game.undo(), "nothing to undo at the root");
+    }
+
+    #[test]
+    fn from_position_refuses_inconsistent_counts() {
+        let black = vec![point(7, 7), point(7, 8)];
+        let white = vec![];
+        assert_eq!(
+            Game::from_position(black, white, Color::Black),
+            Err(PositionError::InvalidCounts)
+        );
+    }
+
+    #[test]
+    fn from_position_refuses_a_duplicate_stone() {
+        let black = vec![point(7, 7), point(7, 7)];
+        let white = vec![];
+        assert_eq!(
+            Game::from_position(black, white, Color::White),
+            Err(PositionError::DuplicateStone)
+        );
     }
 }

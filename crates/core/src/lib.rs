@@ -9,6 +9,7 @@ mod config;
 mod error;
 mod game;
 mod notation;
+mod puzzle;
 mod record;
 mod storage;
 
@@ -17,10 +18,11 @@ pub use config::{
     MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, Settings, StoneSettings,
     ViewSettings, WindowSettings, load_settings, save_settings,
 };
-pub use engine::{Color, Move, Status};
+pub use engine::{Color, Move, PositionError, Status};
 pub use error::{ConfigError, GameError, RecordError};
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;
+pub use puzzle::{Puzzle, PuzzleError, load_puzzles};
 pub use record::{
     BOARD_SIZE, FORMAT_MARKER, FORMAT_VERSION, Players, Record, StoredColor, StoredMethod,
     StoredOutcome,

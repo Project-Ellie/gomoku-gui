@@ -86,8 +86,14 @@ impl App {
 
     /// Open the window and run until it is closed.
     pub fn run(mut self) -> Result<()> {
-        if let Some(offer) = self.session.autosave_to_offer() {
-            self.session.dialog = Some(Dialog::Resume { source: offer });
+        match self.session.autosave_to_offer() {
+            Some(offer) => {
+                log::trace!("offering autosave from {:?}", offer);
+                self.session.dialog = Some(Dialog::Resume { source: offer });
+            }
+            None => {
+                log::trace!("no autosave to offer");
+            }
         }
         let event_loop = EventLoop::new().context("cannot open an event loop")?;
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -139,6 +145,7 @@ impl App {
                 self.request_redraw();
             }
             After::Open => self.ask_to_open(),
+            After::OpenPuzzle => self.ask_to_open_puzzle(),
             After::Quit => {
                 self.closing = true;
                 event_loop.exit();
@@ -156,6 +163,20 @@ impl App {
         }
         if let Some(path) = dialog.pick_file() {
             self.session.open(&path);
+            self.request_redraw();
+        }
+    }
+
+    /// Ask for a puzzle file and load it.
+    fn ask_to_open_puzzle(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Gomoku puzzle", &["json"])
+            .set_title("Load a puzzle");
+        if let Some(directory) = &self.session.last_directory {
+            dialog = dialog.set_directory(directory);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.session.open_puzzle(&path);
             self.request_redraw();
         }
     }
@@ -199,6 +220,8 @@ impl App {
             self.attempt(After::NewGame, event_loop);
         } else if requests.open {
             self.attempt(After::Open, event_loop);
+        } else if requests.open_puzzle {
+            self.attempt(After::OpenPuzzle, event_loop);
         } else if requests.save {
             self.save(event_loop);
         } else if requests.save_as {

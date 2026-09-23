@@ -37,8 +37,9 @@ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
 /// # Errors
 /// `RecordError::Io` if the file cannot be written.
 /// `RecordError::Parse` if the record cannot be encoded.
+/// `RecordError::FromPosition` if the game was loaded from a puzzle position.
 pub fn save(path: &Path, game: &Game) -> Result<(), RecordError> {
-    let text = Record::from_game(game).to_json()?;
+    let text = Record::from_game(game)?.to_json()?;
     write_atomic(path, &text).map_err(|source| RecordError::Io {
         path: path.to_path_buf(),
         source,

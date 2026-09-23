@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use gomoku_core::{Color, Game, Move, Outcome, Settings};
+use gomoku_core::{Color, Game, Move, Outcome, PositionError, Puzzle, Settings};
 
 use crate::camera::Camera;
 
@@ -38,6 +38,13 @@ pub enum Dialog {
         /// The body text.
         body: String,
     },
+    /// More than one puzzle is in the file; pick one.
+    PickPuzzle {
+        /// The loaded puzzles.
+        puzzles: Vec<Puzzle>,
+        /// The index the user has selected.
+        index: usize,
+    },
 }
 
 /// What an unsaved-changes answer should do next.
@@ -47,6 +54,8 @@ pub enum After {
     NewGame,
     /// Open a game from a file.
     Open,
+    /// Open a puzzle from a file.
+    OpenPuzzle,
     /// Close the application.
     Quit,
 }
@@ -107,6 +116,12 @@ pub struct Session {
     pub knock: Option<usize>,
     /// True when the window title should be refreshed.
     pub title_stale: bool,
+    /// The cell to mark with the puzzle-start cursor ring, if a puzzle is
+    /// loaded and its claimed solution names a first move.
+    ///
+    /// Cleared when a stone is placed, a new or opened game starts, or
+    /// another puzzle is loaded.
+    pub puzzle_cursor: Option<Move>,
     /// The rectangle the board is drawn into, in physical pixels.
     pub viewport: crate::camera::Viewport,
     /// The same rectangle in interface points, as the interface reports it.
@@ -156,6 +171,7 @@ impl Session {
             recent: settings.files.recent.clone(),
             knock: None,
             title_stale: true,
+            puzzle_cursor: None,
             viewport: crate::camera::Viewport::window(1180, 950),
             viewport_points: [0.0, 28.0, 930.0, 922.0],
             remembered: Some(settings.view.clone()),
@@ -255,6 +271,16 @@ impl Session {
         };
         if let Err(error) = gomoku_core::save(&path, &self.game) {
             log::warn!("the game could not be autosaved: {error}");
+            // A puzzle position cannot be saved as a moves-only record. Throw
+            // any older autosave away so the next launch does not offer a stale
+            // normal-game autosave in place of the lost puzzle game.
+            if matches!(error, gomoku_core::RecordError::FromPosition) {
+                let _ = std::fs::remove_file(&path);
+                if let Ok(state_path) = autosave_state_path() {
+                    let _ = std::fs::remove_file(&state_path);
+                }
+                log::trace!("discarded stale autosave after FromPosition error");
+            }
             return;
         }
         let state = format!(
@@ -281,12 +307,14 @@ impl Session {
             // Only offer it when the autosave is newer than the file it came from.
             if let Ok(saved) = std::fs::metadata(source).and_then(|meta| meta.modified()) {
                 if modified <= saved {
+                    log::trace!("autosave is not newer than its source; not offering");
                     return None;
                 }
             }
         }
         let game = gomoku_core::load(&path).ok()?;
         if game.is_empty() {
+            log::trace!("autosave is empty; not offering");
             return None;
         }
         Some(source)
@@ -317,6 +345,7 @@ impl Session {
         }
         self.revision += 1;
         self.knock = Some(neighbours(&self.game, point));
+        self.puzzle_cursor = None;
         self.title_stale = true;
     }
 
@@ -358,6 +387,7 @@ impl Session {
         game.set_players(black, white);
         self.game = game;
         self.path = None;
+        self.puzzle_cursor = None;
         self.revision += 1;
         self.saved_revision = self.revision;
         self.dialog = None;
@@ -403,6 +433,7 @@ impl Session {
             Ok(game) => {
                 self.game = game;
                 self.path = Some(path.to_path_buf());
+                self.puzzle_cursor = None;
                 self.revision += 1;
                 self.saved_revision = self.revision;
                 self.dialog = None;
@@ -411,6 +442,58 @@ impl Session {
                 self.title_stale = true;
             }
             Err(error) => self.fail("The game could not be opened", &error),
+        }
+    }
+
+    /// Load a puzzle file and either open the single puzzle or ask the user
+    /// to pick one.
+    pub fn open_puzzle(&mut self, path: &Path) {
+        match gomoku_core::load_puzzles(path) {
+            Ok(puzzles) if puzzles.is_empty() => {
+                self.fail("No puzzles in file", &"the file contains no puzzles");
+            }
+            Ok(puzzles) if puzzles.len() == 1 => {
+                if self.load_puzzle(&puzzles[0]).is_ok() {
+                    self.notice = Some(format!("loaded puzzle {}", puzzles[0].name));
+                    self.remember(path);
+                }
+            }
+            Ok(puzzles) => {
+                self.puzzle_cursor = None;
+                self.dialog = Some(Dialog::PickPuzzle { puzzles, index: 0 });
+                self.title_stale = true;
+                self.remember(path);
+            }
+            Err(error) => self.fail("The puzzle could not be loaded", &error),
+        }
+    }
+
+    /// Build the game for the selected puzzle and clear any previous puzzle
+    /// cursor.
+    ///
+    /// Returns `Ok(())` when the puzzle was loaded, or `Err` when the
+    /// position was rejected. On error a message dialog has already been
+    /// opened.
+    pub fn load_puzzle(&mut self, puzzle: &Puzzle) -> Result<(), PositionError> {
+        match Game::from_position(puzzle.black.clone(), puzzle.white.clone(), puzzle.to_move) {
+            Ok(game) => {
+                self.game = game;
+                self.path = None;
+                self.puzzle_cursor = puzzle
+                    .solution
+                    .as_ref()
+                    .and_then(|line| line.first())
+                    .copied();
+                self.revision += 1;
+                self.saved_revision = self.revision;
+                self.dialog = None;
+                self.title_stale = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.fail("The puzzle position is invalid", &error);
+                Err(error)
+            }
         }
     }
 
@@ -936,5 +1019,30 @@ mod tests {
         session.place_now(gomoku_core::point(9, 9).expect("inside"));
         assert_eq!(session.game.len(), 2);
         assert!(session.changed());
+    }
+
+    #[test]
+    fn load_puzzle_builds_the_position_and_sets_cursor() {
+        let settings = Settings::default();
+        let mut session = Session::new(&settings);
+        let first_solution = gomoku_core::point(5, 7).expect("inside the board");
+        let puzzle = gomoku_core::Puzzle {
+            name: "test puzzle".to_string(),
+            black: vec![gomoku_core::point(7, 7).expect("inside the board")],
+            white: vec![gomoku_core::point(6, 7).expect("inside the board")],
+            to_move: gomoku_core::Color::Black,
+            solution: Some(vec![first_solution]),
+            depth: Some(3),
+        };
+        assert!(session.load_puzzle(&puzzle).is_ok());
+        assert!(session.game.is_from_position());
+        assert_eq!(session.game.to_move(), gomoku_core::Color::Black);
+        assert_eq!(
+            session.game.stone_at(puzzle.black[0]),
+            Some(gomoku_core::Color::Black)
+        );
+        assert_eq!(session.puzzle_cursor, Some(first_solution));
+        assert!(session.path.is_none());
+        assert!(session.dialog.is_none());
     }
 }

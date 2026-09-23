@@ -20,6 +20,10 @@ overlays. Games are saved and loaded, and the game in progress survives a crash.
   [ADR-008](docs/decisions/ADR-008-engine-vendored.md).
 - `gomoku-gui` — the window, the board and stone shaders, the stone knock, and
   the interface. Complete.
+- Puzzle loading (File → Load puzzle...) for `vcf-material-v1` files with a
+  `.parser` sidecar. The first move of the claimed solution is marked with a
+  bright green cursor ring. Games loaded from a puzzle position cannot be saved
+  as game records.
 
 - Approved design: [docs/specs/2026-09-22-gomoku-gui-design.md](docs/specs/2026-09-22-gomoku-gui-design.md)
 - Implementation plan for the core crate: [docs/plans/2026-09-22-gomoku-core.md](docs/plans/2026-09-22-gomoku-core.md)
