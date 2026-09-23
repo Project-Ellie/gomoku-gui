@@ -36,6 +36,15 @@ pub struct App {
     frame_limit: Option<u32>,
     frames: u32,
     dirty: bool,
+    /// When the interface asked for its next frame, if it did. egui
+    /// reports this per frame as `FullOutput::repaint_after`; honouring
+    /// it is what makes clicks settle without a mouse wiggle.
+    wake_at: Option<std::time::Instant>,
+    /// A redraw was requested but no RedrawRequested has arrived yet.
+    /// Re-requesting while one is pending starves the display pass on
+    /// macOS: the pending event is coalesced away and never dispatched,
+    /// which froze modal dialogs until the next mouse move.
+    redraw_pending: bool,
     closing: bool,
     geometry: WindowGeometry,
 }
@@ -79,6 +88,8 @@ impl App {
             frame_limit,
             frames: 0,
             dirty: true,
+            wake_at: None,
+            redraw_pending: false,
             closing: false,
             geometry,
         }
@@ -122,7 +133,11 @@ impl App {
 
     fn request_redraw(&mut self) {
         self.dirty = true;
+        if self.redraw_pending {
+            return; // one request in flight is enough; see redraw_pending
+        }
         if let Some(state) = &self.state {
+            self.redraw_pending = true;
             state.window.request_redraw();
         }
     }
@@ -255,6 +270,11 @@ impl App {
                 return false;
             }
         };
+        // dirty accumulates during the frame: egui's repaint requests,
+        // request_redraw() calls, and the settling frame after input all
+        // set it. It is reset here, at the start, never overwritten later.
+        self.dirty = false;
+
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -265,10 +285,28 @@ impl App {
         // The interface runs first, because it is what works out where the board
         // may be drawn: the panels take their space from the window.
         let raw_input = state.egui_state.take_egui_input(&state.window);
+        // A frame that consumed input is never allowed to be the last frame:
+        // on macOS a burst-final present can sit unflushed until the next
+        // event, which reads as "the click only lands when the mouse moves".
+        let had_input = !raw_input.events.is_empty();
         let mut requests = Requests::default();
         let full_output = state.egui.run_ui(raw_input, |ui| {
             requests = ui::draw(ui, &mut self.session);
         });
+        // The interface's own repaint requests ride the Wait loop with us:
+        // an immediate request stays dirty, a delayed one becomes a wake-up.
+        // egui 0.36 reports the delay per viewport; there is only the root.
+        let repaint_after = full_output
+            .viewport_output
+            .values()
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap_or(std::time::Duration::MAX);
+        if repaint_after.is_zero() {
+            self.dirty = true;
+        } else if repaint_after != std::time::Duration::MAX {
+            self.wake_at = Some(std::time::Instant::now() + repaint_after);
+        }
         let egui::FullOutput {
             platform_output,
             textures_delta,
@@ -364,7 +402,10 @@ impl App {
 
         self.run_requests(requests, event_loop);
 
-        self.dirty = false;
+        // A frame that consumed input is never allowed to be the last
+        // frame; everything else (repaint_after, request_redraw) has
+        // already accumulated into dirty during the frame.
+        self.dirty |= had_input;
         self.frames += 1;
         match self.frame_limit {
             Some(limit) if self.frames >= limit => {
@@ -815,6 +856,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.redraw_pending = false;
                 if self.state.is_none() {
                     event_loop.exit();
                     return;
@@ -829,11 +871,20 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
-            if let Some(state) = &self.state {
-                state.window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(wake) = self.wake_at {
+            if std::time::Instant::now() >= wake {
+                self.wake_at = None;
+                self.request_redraw();
+            } else {
+                // Sleeping past the deadline is fine; winit re-enters here.
+                event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+                return;
             }
+        }
+        event_loop.set_control_flow(ControlFlow::Wait);
+        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
+            self.request_redraw();
         }
     }
 
