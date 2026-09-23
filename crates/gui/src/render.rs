@@ -10,10 +10,12 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt as _;
 
 /// The board's wood: a photograph of a real board, from the owner's collection.
-const WOOD_PNG: &[u8] = include_bytes!("../assets/wood-left.png");
+pub const WOOD_PNG: &[u8] = include_bytes!("../assets/wood-left.png");
+/// The engraved coordinate labels, generated offline as a signed-distance field.
+pub const GLYPH_PNG: &[u8] = include_bytes!("../assets/glyphs.png");
 
-/// The decoded photograph.
-pub struct WoodTexture {
+/// A decoded RGBA8 image, used for the wood photograph and the glyph atlas.
+pub struct RgbaTexture {
     /// The width in pixels.
     pub width: u32,
     /// The height in pixels.
@@ -22,25 +24,46 @@ pub struct WoodTexture {
     pub rgba: Vec<u8>,
 }
 
-impl WoodTexture {
-    /// Decode the embedded photograph.
+/// The decoded photograph.
+pub type WoodTexture = RgbaTexture;
+/// The decoded glyph atlas.
+pub type GlyphTexture = RgbaTexture;
+
+impl RgbaTexture {
+    /// Decode the embedded wood photograph.
     ///
     /// # Errors
     /// An error when the embedded image is not a readable PNG.
-    pub fn load() -> anyhow::Result<WoodTexture> {
+    pub fn load_wood() -> anyhow::Result<RgbaTexture> {
+        Self::load(WOOD_PNG)
+    }
+
+    /// Decode the embedded coordinate-label atlas.
+    ///
+    /// # Errors
+    /// An error when the embedded image is not a readable PNG.
+    pub fn load_glyphs() -> anyhow::Result<RgbaTexture> {
+        Self::load(GLYPH_PNG)
+    }
+
+    /// Decode an embedded PNG photograph or glyph atlas.
+    ///
+    /// # Errors
+    /// An error when the embedded image is not a readable PNG.
+    pub fn load(bytes: &[u8]) -> anyhow::Result<RgbaTexture> {
         // A Cursor, because the PNG decoder seeks within its input.
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(WOOD_PNG));
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
         decoder.set_transformations(png::Transformations::normalize_to_color8());
         let mut reader = decoder
             .read_info()
-            .context("the wood texture could not be read")?;
+            .context("the texture could not be read")?;
         let capacity = reader
             .output_buffer_size()
-            .context("the wood texture has no readable size")?;
+            .context("the texture has no readable size")?;
         let mut buffer = vec![0; capacity];
         let info = reader
             .next_frame(&mut buffer)
-            .context("the wood texture could not be decoded")?;
+            .context("the texture could not be decoded")?;
         buffer.truncate(info.buffer_size());
 
         let pixels = info.width as usize * info.height as usize;
@@ -60,9 +83,16 @@ impl WoodTexture {
                 }
                 out
             }
-            other => anyhow::bail!("the wood texture has an unsupported colour type: {other:?}"),
+            png::ColorType::GrayscaleAlpha => {
+                let mut out = Vec::with_capacity(pixels * 4);
+                for pixel in buffer.chunks_exact(2) {
+                    out.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+                }
+                out
+            }
+            other => anyhow::bail!("the texture has an unsupported colour type: {other:?}"),
         };
-        Ok(WoodTexture {
+        Ok(RgbaTexture {
             width: info.width,
             height: info.height,
             rgba,
@@ -99,6 +129,10 @@ pub struct Globals {
     pub env_a: [f32; 4],
     /// The reflected floor rgb, and the exposure.
     pub env_b: [f32; 4],
+    /// The last-placed stone for the red glow: .xy = cell col/row, .z = enabled.
+    pub last_move: [f32; 4],
+    /// Overlay toggles: .x = coordinate labels.
+    pub toggles: [f32; 4],
 }
 
 /// One stone.
@@ -363,7 +397,7 @@ pub struct Renderer {
     shadow_pipeline: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    wood_group: wgpu::BindGroup,
+    board_textures_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
@@ -380,6 +414,7 @@ impl Renderer {
         format: wgpu::TextureFormat,
         sample_count: u32,
         wood: &WoodTexture,
+        glyphs: &GlyphTexture,
     ) -> Renderer {
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -456,30 +491,95 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let wood_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wood layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+
+        // The glyph atlas is a signed-distance field in linear greyscale.  It
+        // is clamped at its edges so neighbouring cells never bleed into a
+        // sample.
+        let glyph_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyphs"),
+            size: wgpu::Extent3d {
+                width: glyphs.width,
+                height: glyphs.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
-        let wood_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wood"),
-            layout: &wood_layout,
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &glyph_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &glyphs.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * glyphs.width),
+                rows_per_image: Some(glyphs.height),
+            },
+            wgpu::Extent3d {
+                width: glyphs.width,
+                height: glyphs.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let glyph_view = glyph_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let glyph_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("glyphs"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let board_textures_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("board textures layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let board_textures_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("board textures"),
+            layout: &board_textures_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -489,12 +589,20 @@ impl Renderer {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&wood_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&glyph_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&glyph_sampler),
+                },
             ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipelines"),
-            bind_group_layouts: &[Some(&layout), Some(&wood_layout)],
+            bind_group_layouts: &[Some(&layout), Some(&board_textures_layout)],
             immediate_size: 0,
         });
 
@@ -653,7 +761,7 @@ impl Renderer {
             shadow_pipeline,
             globals,
             bind_group,
-            wood_group,
+            board_textures_group,
             vertices,
             indices,
             index_count: mesh_indices.len() as u32,
@@ -708,6 +816,8 @@ impl Renderer {
             // room the stones and the varnish reflect.
             env_a: [0.28, 0.31, 0.38, 0.28],
             env_b: [0.045, 0.040, 0.036, 1.05],
+            last_move: [0.0; 4],
+            toggles: [0.0; 4],
         }
     }
 
@@ -759,7 +869,7 @@ impl Renderer {
             multiview_mask: None,
         });
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_bind_group(1, &self.wood_group, &[]);
+        pass.set_bind_group(1, &self.board_textures_group, &[]);
 
         pass.set_pipeline(&self.board_pipeline);
         pass.draw(0..3, 0..1);

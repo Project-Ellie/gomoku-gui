@@ -16,7 +16,7 @@ use winit::window::{Window, WindowId};
 
 use crate::audio::Audio;
 use crate::camera::Viewport;
-use crate::render::{Globals, Renderer, SHELL, SLATE, StoneInstance, WoodTexture};
+use crate::render::{Globals, GlyphTexture, Renderer, SHELL, SLATE, StoneInstance, WoodTexture};
 use crate::session::{After, Dialog, Session, WindowGeometry};
 use crate::ui::{self, Requests};
 
@@ -433,8 +433,9 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let wood = WoodTexture::load()?;
-        let renderer = Renderer::new(&device, &queue, format, SAMPLES, &wood);
+        let wood = WoodTexture::load_wood()?;
+        let glyphs = GlyphTexture::load_glyphs()?;
+        let renderer = Renderer::new(&device, &queue, format, SAMPLES, &wood, &glyphs);
         let multisampled = create_multisampled(&device, &config);
 
         let egui = egui::Context::default();
@@ -527,6 +528,25 @@ fn globals_for(session: &Session) -> Globals {
         session.camera.centre[1],
         session.camera.pixels_per_cell,
         if session.camera.flipped { 1.0 } else { 0.0 },
+    ];
+    globals.last_move = if session.toggles.last_move {
+        session
+            .game
+            .last_move()
+            .map(|point| [point.col() as f32, point.row() as f32, 1.0, 0.0])
+            .unwrap_or([0.0; 4])
+    } else {
+        [0.0; 4]
+    };
+    globals.toggles = [
+        if session.toggles.coordinates {
+            1.0
+        } else {
+            0.0
+        },
+        0.0,
+        0.0,
+        0.0,
     ];
     globals
 }

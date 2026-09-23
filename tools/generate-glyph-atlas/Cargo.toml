@@ -1,0 +1,12 @@
+[package]
+name = "generate-glyph-atlas"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.85"
+description = "Offline generator for the engraved coordinate-label atlas."
+
+[dependencies]
+png = "0.18"
+fontdue = "0.9"
+signed-distance-field = "0.6"

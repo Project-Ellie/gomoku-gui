@@ -28,13 +28,6 @@ pub struct Requests {
     pub quit: bool,
 }
 
-/// How far outside the grid the coordinates are drawn, in cells.
-///
-/// The wood of the board reaches 0.85 of a cell beyond the last line, so a label
-/// closer than this would sit on the dark edge of the board and could not be
-/// read.
-const OUTSIDE: f32 = 1.15;
-
 /// The colours of the interface.
 const MUTED: Color32 = Color32::from_rgb(150, 150, 158);
 /// The puzzle-start cursor ring.
@@ -57,10 +50,6 @@ const PANEL_FIELD: Color32 = Color32::from_rgb(200, 200, 206);
 const SLATE_MARK: Color32 = Color32::from_rgb(22, 22, 26);
 /// The colour of a white stone in the move list.
 const SHELL_MARK: Color32 = Color32::from_rgb(246, 246, 250);
-/// The last move is marked in bright red, which reads on the wood and on both
-/// stone colours.
-const MARK: Color32 = Color32::from_rgb(232, 36, 36);
-
 /// Draw the whole interface and return what the application should do next.
 ///
 /// `ui` covers the whole window: the panels take their edges from it and the
@@ -358,7 +347,7 @@ fn recents(ui: &mut egui::Ui, session: &mut Session) {
     }
 }
 
-/// The coordinates, the markers, and the winning line, drawn on the board.
+/// The markers and the winning line, drawn on top of the board.
 fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     let ppc = session.camera.pixels_per_cell;
     let font = FontId::monospace((ppc * 0.40 / pixels_per_point).clamp(9.0, 28.0));
@@ -366,47 +355,6 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
         let pixel = session.camera.to_screen(session.viewport, board);
         egui::Pos2::new(pixel[0] / pixels_per_point, pixel[1] / pixels_per_point)
     };
-
-    if session.toggles.coordinates {
-        for index in 0..15_u8 {
-            let along = index as f32;
-            let letter = label(gomoku_core::point(0, index).expect("inside"))
-                .chars()
-                .next()
-                .unwrap_or('?');
-            let number = 15 - index;
-            // Above and below the board.
-            painter.text(
-                to_screen([along, -OUTSIDE]),
-                Align2::CENTER_CENTER,
-                format!("{letter}"),
-                font.clone(),
-                MUTED,
-            );
-            painter.text(
-                to_screen([along, 14.0 + OUTSIDE]),
-                Align2::CENTER_CENTER,
-                format!("{letter}"),
-                font.clone(),
-                MUTED,
-            );
-            // Left and right of the board.
-            painter.text(
-                to_screen([-OUTSIDE, along]),
-                Align2::CENTER_CENTER,
-                format!("{number}"),
-                font.clone(),
-                MUTED,
-            );
-            painter.text(
-                to_screen([14.0 + OUTSIDE, along]),
-                Align2::CENTER_CENTER,
-                format!("{number}"),
-                font.clone(),
-                MUTED,
-            );
-        }
-    }
 
     if session.toggles.win_line {
         if let Some([from, to]) = winning_line(&session.game) {
@@ -448,20 +396,8 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
         }
     }
 
-    if session.toggles.last_move {
-        if let Some(point) = session.game.last_move() {
-            let centre = to_screen([point.col() as f32, point.row() as f32]);
-            let width = (ppc * 0.055 / pixels_per_point).max(1.5);
-            painter.circle_stroke(
-                centre,
-                ppc * 0.34 / pixels_per_point,
-                Stroke::new(width, MARK),
-            );
-        }
-    }
-
-    // The puzzle-start cursor ring, drawn after the last-move ring so that it
-    // stands out when the two coincide.
+    // The puzzle-start cursor ring.  The last-move marker is now rendered by
+    // the board shader as a red glow, so it no longer competes with this ring.
     if let Some(point) = session.puzzle_cursor {
         let centre = to_screen([point.col() as f32, point.row() as f32]);
         let width = (ppc * 0.085 / pixels_per_point).max(2.0);

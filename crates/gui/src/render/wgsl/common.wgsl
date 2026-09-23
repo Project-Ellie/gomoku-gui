@@ -27,6 +27,10 @@ struct Globals {
     env_a: vec4<f32>,
     // ground colour rgb, exposure
     env_b: vec4<f32>,
+    // last-placed stone: .xy cell col/row, .z enabled
+    last_move: vec4<f32>,
+    // overlay toggles: .x = coordinate labels
+    toggles: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -35,6 +39,10 @@ struct Globals {
 @group(1) @binding(0) var wood_texture: texture_2d<f32>;
 /// A linear sampler, repeating in both directions.
 @group(1) @binding(1) var wood_sampler: sampler;
+/// The engraved coordinate-label atlas: signed-distance field, 0.5 = edge.
+@group(1) @binding(2) var glyph_texture: texture_2d<f32>;
+/// Clamped, so neighbouring glyphs never bleed in.
+@group(1) @binding(3) var glyph_sampler: sampler;
 
 /// Mirror tiling: the tile is reflected at every boundary, so that its edges
 /// meet exactly and no seam shows.

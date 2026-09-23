@@ -19,7 +19,7 @@ use anyhow::{Context as _, Result};
 use gomoku_core::Game;
 
 use crate::camera::Camera;
-use crate::render::Renderer;
+use crate::render::{GlyphTexture, Renderer, WoodTexture};
 
 /// How many samples each pixel takes.
 const SAMPLES: u32 = 4;
@@ -232,13 +232,15 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
         with_ui,
     } = preview;
     let gpu = preview::HeadlessGpu::new()?;
-    let wood = render::WoodTexture::load()?;
+    let wood = WoodTexture::load_wood()?;
+    let glyphs = GlyphTexture::load_glyphs()?;
     let mut renderer = Renderer::new(
         &gpu.device,
         &gpu.queue,
         preview::PREVIEW_FORMAT,
         SAMPLES,
         &wood,
+        &glyphs,
     );
     let board_size = [size, size];
     let mut camera = Camera::fit(camera::Viewport::window(board_size[0], board_size[1]));

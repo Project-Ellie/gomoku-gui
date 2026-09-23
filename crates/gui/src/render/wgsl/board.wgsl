@@ -1,4 +1,5 @@
-// The board: background, wooden slab, grid lines, and the slab shadow.
+// The board: background, wooden slab, grid lines, coordinate labels, dimples,
+// and the slab shadow.
 //
 // The wood is a photograph of a real board, supplied by the owner. It is tiled
 // with mirrored edges and two offset copies are crossfaded, so no seam and no
@@ -10,9 +11,37 @@ const SLAB_RADIUS: f32 = 0.25;
 const BEVEL: f32 = 0.22;
 const LINE_LAST: f32 = 14.0;
 
+/// Distance from the outer grid line to the slab edge, measured from the
+/// rounded-rectangle geometry in `slab_sdf`.
+const SLAB_EDGE: f32 = SLAB_HALF - 7.0;
+/// The chamfer begins one `BEVEL` inside the slab edge, so the flat margin is
+/// the band from the outer grid line to `SLAB_EDGE - BEVEL`.
+const LABEL_MARGIN: f32 = (SLAB_EDGE - BEVEL) * 0.5;
+/// The board-space size of one glyph cell.  Letters and single digits are one
+/// cell wide; two-digit numbers are one cell plus one digit advance wide.
+const LABEL_SIZE: f32 = 0.34;
+const LABEL_HALF: f32 = LABEL_SIZE * 0.5;
+/// Horizontal advance from one digit origin to the next in the kerned pairs.
+/// Menlo Bold digits at the atlas font size advance ~60.1 px in a 128 px cell,
+/// so the natural step is ~0.47 of the glyph cell.
+const DIGIT_ADVANCE: f32 = LABEL_SIZE * 0.47;
+const PAIR_WIDTH: f32 = LABEL_SIZE + DIGIT_ADVANCE;
+const PAIR_HALF: f32 = PAIR_WIDTH * 0.5;
+
+/// Saturated red for the last-move glow.  The small green/blue components keep
+/// it from reading as a magenta light, but it stays visibly red.
+const GLOW_HUE: vec3<f32> = vec3<f32>(0.95, 0.04, 0.02);
+const GLOW_STRENGTH: f32 = 5.5;
+
 /// How much of the board one copy of the photograph covers, in cells. The
 /// proportions of the image are kept, so the grain is not stretched.
 const TILE: vec2<f32> = vec2<f32>(5.0, 8.6);
+
+/// Atlas layout: 16 columns by 2 rows.  Row 0 is A-O, row 1 is 0-9.
+const GLYPH_ATLAS_COLS: f32 = 16.0;
+const GLYPH_ATLAS_ROWS: f32 = 2.0;
+const GLYPH_ROW_LETTERS: i32 = 0;
+const GLYPH_ROW_DIGITS: i32 = 1;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -129,6 +158,177 @@ fn wood(uv: vec2<f32>, texel: f32) -> vec3<f32> {
     return tone_map(diffuse + vec3<f32>(tight * 0.55 + wide * 0.30 + sheen * 0.05) + reflection * 0.10);
 }
 
+/// Red glow around the last-placed stone.  The result is blended onto the
+/// already tone-mapped board surface so the brightest ring stays saturated red
+/// instead of clipping the green/blue channels to yellow.
+fn last_move_glow(uv: vec2<f32>, surface: vec3<f32>) -> vec3<f32> {
+    if (g.last_move.z < 0.5) {
+        return surface;
+    }
+    let r = length(uv - g.last_move.xy);
+    // Dark under the stone itself, peaking right at the stone perimeter
+    // (~0.44 cell), and essentially gone by one cell out so the glow hugs a
+    // single intersection instead of washing over a 3x3 region.
+    let inner = smoothstep(0.0, 0.44, r);
+    let outer = smoothstep(1.05, 0.44, r);
+    let falloff = inner * outer;
+    if (falloff < 1e-4) {
+        return surface;
+    }
+
+    // Tone-map the falloff so the peak is bright but never clips to white.
+    let raw = falloff * GLOW_STRENGTH;
+    let weight = raw / (1.0 + raw);
+
+    // A saturated red with roughly the same brightness as the wood underneath,
+    // so the glow reads as a red tint rather than a dark overlay.
+    let surface_lum = luminance(surface);
+    let glow_lum = luminance(GLOW_HUE);
+    let glow_target = GLOW_HUE * clamp(surface_lum / glow_lum, 0.0, 5.0);
+
+    return mix(surface, glow_target, weight);
+}
+
+/// Sample one glyph cell from the atlas and return (fill, lip).
+fn sample_glyph(atlas_uv: vec2<f32>) -> vec2<f32> {
+    let sdf = textureSample(glyph_texture, glyph_sampler, atlas_uv).r;
+    // fwidth gives the right smoothstep width automatically at any zoom and
+    // any mip level.
+    let smoothing = max(fwidth(sdf), 1e-4) * 0.65;
+    // The generated atlas stores dark glyphs on a light background, so the
+    // edge is still 0.5 but "inside" is below it.
+    let fill = 1.0 - smoothstep(0.5 - smoothing, 0.5 + smoothing, sdf);
+
+    // The SDF gradient points outward from the glyph.  The mapping from atlas
+    // cell to board cell is uniform, so this direction is valid in board space
+    // and can be dotted straight onto the light.
+    let grad = normalize(vec2<f32>(dpdx(sdf), dpdy(sdf)) + vec2<f32>(1e-6));
+    let lit = max(dot(grad, normalize(g.light.xy)), 0.0);
+    let lip_width = 0.045;
+    // The lip is a narrow band just outside the glyph edge, on the side that
+    // faces the light.
+    let lip = lit
+        * smoothstep(0.5, 0.5 + lip_width * 0.5, sdf)
+        * (1.0 - smoothstep(0.5 + lip_width * 0.5, 0.5 + lip_width, sdf));
+    return vec2<f32>(fill, lip);
+}
+
+/// Engraved coordinate labels: letters A-O on the top and bottom margins,
+/// numbers 1-15 on the left and right margins.  Returns (fill, lip) where fill
+/// is the dark cut and lip is the light-facing bevel highlight.
+fn coordinate_labels(uv: vec2<f32>, texel: f32) -> vec2<f32> {
+    if (g.toggles.x < 0.5) {
+        return vec2<f32>(0.0);
+    }
+    var glyph_col = -1;
+    var glyph_row = -1;
+    // For two-digit numbers: which two digits to compose, x = tens, y = ones.
+    var digits = vec2<i32>(-1, -1);
+    var local = vec2<f32>(0.0);
+    var is_wide = false;
+    var margin_x = 0.0;
+
+    // Top margin: letters A-O.
+    if (uv.y > -LABEL_MARGIN - LABEL_HALF && uv.y < -LABEL_MARGIN + LABEL_HALF) {
+        let col = i32(round(clamp(uv.x, 0.0, LINE_LAST)));
+        local = (uv - vec2<f32>(f32(col), -LABEL_MARGIN)) / LABEL_SIZE + 0.5;
+        glyph_col = col;
+        glyph_row = GLYPH_ROW_LETTERS;
+    // Bottom margin: letters A-O.
+    } else if (uv.y > 14.0 + LABEL_MARGIN - LABEL_HALF && uv.y < 14.0 + LABEL_MARGIN + LABEL_HALF) {
+        let col = i32(round(clamp(uv.x, 0.0, LINE_LAST)));
+        local = (uv - vec2<f32>(f32(col), 14.0 + LABEL_MARGIN)) / LABEL_SIZE + 0.5;
+        glyph_col = col;
+        glyph_row = GLYPH_ROW_LETTERS;
+    } else {
+        // Left and right margins: numbers 1-15.  Two-digit labels are kerned
+        // by placing the digit origins one advance apart rather than one full
+        // glyph cell apart, so the pair reads as "12" rather than "1 2".
+        let row = i32(round(clamp(uv.y, 0.0, LINE_LAST)));
+        let n = 15 - row;
+        is_wide = n >= 10;
+        let half = select(LABEL_HALF, PAIR_HALF, is_wide);
+
+        local.y = (uv.y - f32(row)) / LABEL_SIZE + 0.5;
+
+        if (uv.x > -LABEL_MARGIN - half && uv.x < -LABEL_MARGIN + half) {
+            margin_x = -LABEL_MARGIN;
+            if (is_wide) {
+                digits = vec2<i32>(1, n - 10);
+            } else {
+                local.x = (uv.x + LABEL_MARGIN) / LABEL_SIZE + 0.5;
+                glyph_col = n;
+                glyph_row = GLYPH_ROW_DIGITS;
+            }
+        } else if (uv.x > 14.0 + LABEL_MARGIN - half && uv.x < 14.0 + LABEL_MARGIN + half) {
+            margin_x = 14.0 + LABEL_MARGIN;
+            if (is_wide) {
+                digits = vec2<i32>(1, n - 10);
+            } else {
+                local.x = (uv.x - (14.0 + LABEL_MARGIN)) / LABEL_SIZE + 0.5;
+                glyph_col = n;
+                glyph_row = GLYPH_ROW_DIGITS;
+            }
+        }
+    }
+
+    if (glyph_col >= 0) {
+        if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) {
+            return vec2<f32>(0.0);
+        }
+        let safe = clamp(local, vec2<f32>(0.005), vec2<f32>(0.995));
+        let atlas_uv = vec2<f32>(
+            (f32(glyph_col) + safe.x) / GLYPH_ATLAS_COLS,
+            (f32(glyph_row) + safe.y) / GLYPH_ATLAS_ROWS,
+        );
+        return sample_glyph(atlas_uv);
+    }
+
+    if (is_wide && digits.x >= 0) {
+        // The pair is centred on the margin line; each digit is centred on its
+        // own origin, offset by half the advance on either side.
+        let is_ones = uv.x >= margin_x;
+        let dcol = select(digits.x, digits.y, is_ones);
+        let origin_x = margin_x + select(-0.5, 0.5, is_ones) * DIGIT_ADVANCE;
+        local.x = (uv.x - origin_x) / LABEL_SIZE + 0.5;
+        if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) {
+            return vec2<f32>(0.0);
+        }
+        let safe = clamp(local, vec2<f32>(0.005), vec2<f32>(0.995));
+        let atlas_uv = vec2<f32>(
+            (f32(dcol) + safe.x) / GLYPH_ATLAS_COLS,
+            (f32(GLYPH_ROW_DIGITS) + safe.y) / GLYPH_ATLAS_ROWS,
+        );
+        return sample_glyph(atlas_uv);
+    }
+
+    return vec2<f32>(0.0);
+}
+
+/// A drilled dimple at each grid crossing.  Returns (darken, rim).
+fn dimple(uv: vec2<f32>, texel: f32) -> vec2<f32> {
+    let inside = step(0.0, uv.x) * step(uv.x, LINE_LAST) * step(0.0, uv.y) * step(uv.y, LINE_LAST);
+    let cell = clamp(round(uv), vec2<f32>(0.0), vec2<f32>(LINE_LAST));
+    let r = length(uv - cell);
+    // Larger radius so the cup reads clearly at normal zoom, but capped so it
+    // stays tasteful when the board is zoomed in.
+    let radius = clamp(texel * 6.0, 0.16, 0.22);
+    let t = smoothstep(0.0, radius, r);
+    // A deeper centre darkening: the bottom of the cup is darker than a linear
+    // falloff would give.
+    let dark = inside * (1.0 - pow(t, 2.0));
+
+    // The light-facing rim of the drilling sits at the outer edge of the
+    // dimple, on the side that faces the key light.
+    let light_dir = normalize(g.light.xy);
+    let rim_centre = cell + light_dir * radius * 0.75;
+    let rim_r = length(uv - rim_centre);
+    let rim = inside
+        * (1.0 - smoothstep(radius * 0.05, radius * 0.35, rim_r))
+        * (1.0 - smoothstep(radius * 0.55, radius * 1.05, r));
+    return vec2<f32>(dark, rim);
+}
+
 @fragment
 fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = unproject_board(frag.xy);
@@ -173,6 +373,9 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         surface += vec3<f32>(0.05) * pow(lit, 6.0);
     }
 
+    // The last stone gets a soft red glow on the wood around it.
+    surface = last_move_glow(uv, surface);
+
     // Grid lines: black, about two pixels wide at any zoom, and engraved rather
     // than painted. The line is dark; the narrow lighter band beside it is the
     // lip of the cut catching the light.
@@ -183,6 +386,19 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let lip = inside * (1.0 - smoothstep(half_width * 1.3, half_width * 2.6, dist));
     surface = mix(surface, vec3<f32>(0.004, 0.004, 0.005), line);
     surface *= 1.0 + lip * 0.10;
+
+    // Dimples at the crossings, drawn after the grid so they stay visible on
+    // the dark intersections.
+    let dimple_effect = dimple(uv, texel);
+    surface = mix(surface, vec3<f32>(0.004, 0.004, 0.005), dimple_effect.x);
+    surface *= 1.0 + dimple_effect.y * 0.38;
+
+    // Coordinate labels engraved into the margins.  The fill is a deep cut
+    // and the light-facing bevel is bright so the glyphs punch through the
+    // busy wood grain at a glance.
+    let label_effect = coordinate_labels(uv, texel);
+    surface = mix(surface, vec3<f32>(0.001, 0.001, 0.0015), label_effect.x);
+    surface *= 1.0 + label_effect.y * 0.32;
 
     return vec4<f32>(encode(tone_map(surface)), 1.0);
 }
