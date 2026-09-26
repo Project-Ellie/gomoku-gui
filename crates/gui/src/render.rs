@@ -150,7 +150,8 @@ pub struct StoneInstance {
     pub centre: [f32; 2],
     /// Linear albedo rgb and roughness.
     pub colour: [f32; 4],
-    /// Texture seed, material kind, roughness cap (0.0 for the default), unused.
+    /// Texture seed, material kind, roughness cap (0.0 for the default), limb
+    /// darkening (0.0 keeps the outer ring fully bright).
     pub params: [f32; 4],
 }
 
@@ -164,6 +165,9 @@ pub struct StoneMaterial {
     /// How dull the stone may go: where the highlight stops spreading. A low cap
     /// keeps a tight sparkle; a high one lets the light smear into a soft sheen.
     pub cap: f32,
+    /// The limb darkening: how far the thin outer ring fades as the surface
+    /// turns parallel to the line of sight. 0 keeps the ring fully bright.
+    pub limb: f32,
     /// How much of the light the surface reflects and how strongly it shines.
     /// A polished shell stone takes the full reflection; slate is duller and
     /// mostly scatters the light, so it takes little.
@@ -181,10 +185,12 @@ pub struct StoneMaterial {
 /// breaking it into a hard, shiny ring.
 ///
 /// Tuned in the B10 take of `--variants`: a dull, dry stone with no sparkle.
+/// The limb is the BL1 take: the outer ring barely fades, a hint of depth.
 pub const SLATE: StoneMaterial = StoneMaterial {
     albedo: [0.062, 0.065, 0.075],
     roughness: 0.72,
     cap: 0.90,
+    limb: 0.1,
     gloss: 0.22,
     kind: 0.0,
 };
@@ -194,11 +200,13 @@ pub const SLATE: StoneMaterial = StoneMaterial {
 /// Linear albedo, from sRGB (0.95, 0.95, 0.93) with a cool tint.
 ///
 /// Tuned in the W9 take of `--variants`: the streaks stand out, and the body is
-/// a little darker to give them something to stand against.
+/// a little darker to give them something to stand against. The limb is the WL5
+/// take: the outer ring fades to two thirds, against the stone's rim glow.
 pub const SHELL: StoneMaterial = StoneMaterial {
     albedo: [0.760, 0.762, 0.735],
     roughness: 0.20,
     cap: 0.672,
+    limb: 0.5,
     gloss: 1.0,
     kind: 1.0,
 };

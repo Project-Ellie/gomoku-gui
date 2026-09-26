@@ -195,6 +195,19 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
         colour *= 1.0 - edge * 0.06;
     }
 
+    // The limb: as the surface turns parallel to the line of sight, less and
+    // less light is reflected towards the eye, so the last thin ring of the
+    // stone fades. The turn itself would be the measure, but the lentil's rim
+    // is so steep that the turn runs its course within two pixels — a fade
+    // nobody can see. So the ring is measured against the radius, and kept
+    // thin at every strength: at most the last six percent of it.
+    let limb_amount = in.params.w;
+    if (limb_amount > 0.001) {
+        let width = 0.47 * (0.02 + limb_amount * 0.04);
+        let limb = smoothstep(0.47 - width, 0.47, radius);
+        colour *= 1.0 - limb * limb_amount * 0.7;
+    }
+
     // The soft edge. A thing that rounds away from the eye does not end in a
     // hard line: the last sliver lets the board show through, as a photograph
     // blurs the silhouette of a stone. The feather is measured in pixels, not

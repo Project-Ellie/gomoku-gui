@@ -57,6 +57,8 @@ struct StoneVariant {
     grain: f32,
     /// The softness of the edge: how far the rim feathers, from 0 to 1.
     soft: f32,
+    /// The limb darkening: how far the thin outer ring fades, from 0 to 1.
+    limb: f32,
 }
 
 /// The stone of one colour as the game plays it now, the base the surface
@@ -76,7 +78,38 @@ fn base_stone(black: bool) -> StoneVariant {
         },
         grain: 0.0,
         soft: 0.0,
+        limb: material.limb,
     }
+}
+
+/// Ten takes on the limb darkening, for one colour, with the stone as it plays
+/// now for reference.
+fn limb_variants(black: bool) -> Vec<StoneVariant> {
+    let colour = if black { "B" } else { "W" };
+    let mut takes = vec![StoneVariant {
+        name: format!("{colour}L0"),
+        intent: "the stone before the limb, for reference".to_string(),
+        limb: 0.0,
+        ..base_stone(black)
+    }];
+    for index in 0..10 {
+        let limb = (index + 1) as f32 / 10.0;
+        let chosen = if (black && index == 0) || (!black && index == 4) {
+            " — chosen, now the game's stone"
+        } else {
+            ""
+        };
+        takes.push(StoneVariant {
+            name: format!("{colour}L{}", index + 1),
+            intent: format!(
+                "the outer ring fades to {:.0}%{chosen}",
+                100.0 - limb * 70.0
+            ),
+            limb,
+            ..base_stone(black)
+        });
+    }
+    takes
 }
 
 /// Ten takes on the tooth of the surface, for one colour, with the stone as it
@@ -258,6 +291,7 @@ fn slate_variants() -> Vec<StoneVariant> {
                 knobs: [shine, glitter, albedo, env],
                 grain: 0.0,
                 soft: 0.0,
+                limb: 0.0,
             }
         })
         .collect()
@@ -290,6 +324,7 @@ fn shell_variants() -> Vec<StoneVariant> {
                 knobs: [1.0, contrast, albedo, 1.0],
                 grain: 0.0,
                 soft: 0.0,
+                limb: 0.0,
             }
         })
         .collect()
@@ -354,7 +389,7 @@ fn knock_variants() -> Vec<KnockVariant> {
 }
 
 /// One stone on an empty board, at the centre crossing.
-fn lone_stone(kind: f32, roughness: f32, cap: f32) -> Vec<StoneInstance> {
+fn lone_stone(kind: f32, roughness: f32, cap: f32, limb: f32) -> Vec<StoneInstance> {
     let material = if kind > 0.5 { SHELL } else { SLATE };
     vec![StoneInstance {
         centre: [7.0, 7.0],
@@ -365,7 +400,7 @@ fn lone_stone(kind: f32, roughness: f32, cap: f32) -> Vec<StoneInstance> {
             roughness,
         ],
         // A fixed seed, so that every take shows the same grain of stone.
-        params: [0.618, kind, cap, 0.0],
+        params: [0.618, kind, cap, limb],
     }]
 }
 
@@ -410,7 +445,10 @@ fn render_take(
         &take.shape,
     );
     renderer
-        .set_stones(&gpu.queue, &lone_stone(kind, take.roughness, take.cap));
+        .set_stones(
+            &gpu.queue,
+            &lone_stone(kind, take.roughness, take.cap, take.limb),
+        );
 
     let mut files = Vec::new();
     for (label, pixels_per_cell) in ZOOMS {
@@ -518,6 +556,7 @@ pub fn audition(directory: &Path) -> Result<()> {
         knobs: [1.0, 1.0, 1.0, 1.0],
         grain: 0.0,
         soft: 0.0,
+        limb: 0.0,
     };
     let shell_now = StoneVariant {
         name: "W0".to_string(),
@@ -528,6 +567,7 @@ pub fn audition(directory: &Path) -> Result<()> {
         knobs: [1.0, 1.0, 1.0, 1.0],
         grain: 0.0,
         soft: 0.0,
+        limb: 0.0,
     };
 
     let mut slate = vec![render_take(&gpu, &wood, &glyphs, 0.0, &slate_now, directory)?];
@@ -569,6 +609,16 @@ pub fn audition(directory: &Path) -> Result<()> {
         edge_white.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
         log::info!("edge {} rendered", take.name);
     }
+    let mut limb_black = Vec::new();
+    for take in limb_variants(true) {
+        limb_black.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
+        log::info!("limb {} rendered", take.name);
+    }
+    let mut limb_white = Vec::new();
+    for take in limb_variants(false) {
+        limb_white.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
+        log::info!("limb {} rendered", take.name);
+    }
 
     let knock_now = KnockVariant {
         name: "K0".to_string(),
@@ -589,6 +639,8 @@ pub fn audition(directory: &Path) -> Result<()> {
         grain_white: &grain_white,
         edge_black: &edge_black,
         edge_white: &edge_white,
+        limb_black: &limb_black,
+        limb_white: &limb_white,
         knocks: &knocks,
     };
     let page = directory.join("index.html");
@@ -630,6 +682,8 @@ struct Sheets<'a> {
     grain_white: &'a [SheetRow],
     edge_black: &'a [SheetRow],
     edge_white: &'a [SheetRow],
+    limb_black: &'a [SheetRow],
+    limb_white: &'a [SheetRow],
     knocks: &'a [KnockRow],
 }
 
@@ -643,6 +697,8 @@ fn html(sheets: &Sheets) -> String {
         grain_white,
         edge_black,
         edge_white,
+        limb_black,
+        limb_white,
         knocks,
     } = *sheets;
     let mut page = String::from(
@@ -688,6 +744,23 @@ fn html(sheets: &Sheets) -> String {
         }
     };
 
+    section(
+        "Black stones: the limb turns away",
+        "As the surface turns parallel to the line of sight, less light is reflected towards \
+         the eye, so the last thin ring fades. The ring is thin at every strength, because \
+         the lentil's rim is steep: what grows from BL1 to BL10 is how far the ring fades. \
+         BL0 is the stone as it plays now.",
+        limb_black,
+        &mut page,
+    );
+    section(
+        "White stones: the limb turns away",
+        "The same fade on the shell stone, WL1 to WL10 deeper and deeper. On the shell it \
+         works against the stone's rim glow, which is why the ring reads as a shadowed edge \
+         rather than a grey one. WL0 is the stone as it plays now.",
+        limb_white,
+        &mut page,
+    );
     section(
         "Black stones: the tooth of the surface",
         "White noise at the pixel scale, BN1 to BN10 more and more. No new structure: the \

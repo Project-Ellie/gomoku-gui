@@ -619,7 +619,7 @@ pub fn stone_instances(game: &gomoku_core::Game) -> Vec<StoneInstance> {
                     material.albedo[2],
                     material.roughness,
                 ],
-                params: [seed, material.kind, material.cap, 0.0],
+                params: [seed, material.kind, material.cap, material.limb],
             }
         })
         .collect()
