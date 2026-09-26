@@ -120,41 +120,48 @@ pub type Parts = Vec<(f32, Voicing)>;
 /// quiet, low, slow, and takes a millisecond to reach its own strength, and the
 /// whole knock arrives over two milliseconds and falls in pitch by two percent
 /// with its partials spread, so that it sounds like a material rather than a bell.
+///
+/// A second listening round (the K10 take of `--variants`) asked for a shorter
+/// tail and a flatter landing: the modes ring for forty-five hundredths of their
+/// first tuning, the file runs for fifty-five, the landing takes six
+/// milliseconds, and the contact is at sixty-five hundredths.
 pub const SET_DOWN: Voicing = Voicing {
-    contact: 0.4292,
+    contact: 0.27898,
     contact_centre: 1258.125,
     contact_decay: 0.002808,
     contact_rise: 0.00105,
-    attack: 0.002011,
-    body: Modes::new(&[(136.64, 0.039725, 0.70), (302.56, 0.0227, 0.35)]),
-    stone: Modes::new(&[(2000.0, 0.014, 0.15)]),
+    attack: 0.006,
+    body: Modes::new(&[(136.64, 0.01787625, 0.70), (302.56, 0.010215, 0.35)]),
+    stone: Modes::new(&[(2000.0, 0.0063, 0.15)]),
     tone: 3200.0,
     roughness: 0.34,
     glide: 0.018,
     spread: 0.03,
     whisper: 0.09,
-    length: 0.15609,
+    length: 0.0858495,
 };
 
 /// The ringing stone that the game did not use on its own.
 ///
-/// It is the bright half of the sound: it holds its pitch, the stone rings for
-/// thirty milliseconds, and its tone is open. A fifth of it is mixed into the
-/// sound that is played, which is what gives the quiet knock a trace of the stone.
+/// It is the bright half of the sound: it holds its pitch, the stone rings, and
+/// its tone is open. A fifth of it is mixed into the sound that is played, which
+/// is what gives the quiet knock a trace of the stone. It carries the same K10
+/// retuning as the quiet half: shorter modes, a short landing of its own, and a
+/// quieter contact.
 pub const STONE_RING: Voicing = Voicing {
-    contact: 0.9,
+    contact: 0.585,
     contact_centre: 2000.0,
     contact_decay: 0.0012,
     contact_rise: 0.0,
-    attack: 0.0,
-    body: Modes::new(&[(200.0, 0.020, 0.45)]),
-    stone: Modes::new(&[(2700.0, 0.030, 0.40), (4100.0, 0.018, 0.20)]),
+    attack: 0.0024,
+    body: Modes::new(&[(200.0, 0.009, 0.45)]),
+    stone: Modes::new(&[(2700.0, 0.0135, 0.40), (4100.0, 0.0081, 0.20)]),
     tone: 6500.0,
     roughness: 0.2,
     glide: 0.0,
     spread: 0.0,
     whisper: 0.0,
-    length: 0.110,
+    length: 0.0605,
 };
 
 /// The share of the quiet sound in what is played.
@@ -717,6 +724,10 @@ mod tests {
             roughness: 0.0,
             tone: 20000.0,
             glide: 0.10,
+            // No breath and a fixed length: the cycle count must measure the
+            // mode and nothing else, however the sound in use is tuned.
+            whisper: 0.0,
+            length: 0.15,
             ..SET_DOWN
         };
         let plain = Voicing {

@@ -133,6 +133,11 @@ pub struct Globals {
     pub last_move: [f32; 4],
     /// Overlay toggles: .x = coordinate labels.
     pub toggles: [f32; 4],
+    /// Slate look dials: shine scale, texture contrast scale, albedo scale,
+    /// room reflection scale.
+    pub slate_knobs: [f32; 4],
+    /// Shell look dials, in the same order.
+    pub shell_knobs: [f32; 4],
 }
 
 /// One stone.
@@ -143,7 +148,7 @@ pub struct StoneInstance {
     pub centre: [f32; 2],
     /// Linear albedo rgb and roughness.
     pub colour: [f32; 4],
-    /// Texture seed, material kind, unused, unused.
+    /// Texture seed, material kind, roughness cap (0.0 for the default), unused.
     pub params: [f32; 4],
 }
 
@@ -154,6 +159,9 @@ pub struct StoneMaterial {
     pub albedo: [f32; 3],
     /// Base roughness. Higher is duller.
     pub roughness: f32,
+    /// How dull the stone may go: where the highlight stops spreading. A low cap
+    /// keeps a tight sparkle; a high one lets the light smear into a soft sheen.
+    pub cap: f32,
     /// How much of the light the surface reflects and how strongly it shines.
     /// A polished shell stone takes the full reflection; slate is duller and
     /// mostly scatters the light, so it takes little.
@@ -169,9 +177,12 @@ pub struct StoneMaterial {
 /// reflects very little of its surroundings. A low gloss is what stops it looking
 /// wet, and a higher roughness spreads what highlight there is instead of
 /// breaking it into a hard, shiny ring.
+///
+/// Tuned in the B10 take of `--variants`: a dull, dry stone with no sparkle.
 pub const SLATE: StoneMaterial = StoneMaterial {
     albedo: [0.062, 0.065, 0.075],
-    roughness: 0.58,
+    roughness: 0.72,
+    cap: 0.90,
     gloss: 0.22,
     kind: 0.0,
 };
@@ -179,9 +190,13 @@ pub const SLATE: StoneMaterial = StoneMaterial {
 /// The shell stone: milky, faintly cool, and glossier than the slate.
 ///
 /// Linear albedo, from sRGB (0.95, 0.95, 0.93) with a cool tint.
+///
+/// Tuned in the W9 take of `--variants`: the streaks stand out, and the body is
+/// a little darker to give them something to stand against.
 pub const SHELL: StoneMaterial = StoneMaterial {
     albedo: [0.760, 0.762, 0.735],
     roughness: 0.20,
+    cap: 0.672,
     gloss: 1.0,
     kind: 1.0,
 };
@@ -240,27 +255,53 @@ struct Vertex {
 
 /// The radius of a stone at its widest, in cells.
 const STONE_RADIUS: f32 = 0.47;
-/// The height of a stone at its apex, in cells.
-///
-/// A real Go or Gomoku stone is about 10 mm thick for a 22 mm diameter, so its
-/// height is a little under half its width. A flatter stone reads as a disc,
-/// however well it is shaded, so the proportion matters more than the material.
-const STONE_HEIGHT: f32 = 0.40;
 /// How many times the lens profile is sampled.
 const RINGS: usize = 14;
 /// How many segments the lens is revolved with.
 const SEGMENTS: usize = 56;
 
+/// The shape of a stone: how tall the lens is, and where its profile bends.
+///
+/// A real Go or Gomoku stone is about 10 mm thick for a 22 mm diameter, so its
+/// height is a little under half its width. A flatter stone reads as a disc,
+/// however well it is shaded, so the proportion matters more than the material.
+/// The three fractions say where the widest point, the shoulder, and the start
+/// of the dome sit between the base and the apex: lower values put more of the
+/// stone's height into a flat top, which is the lentil shape of a real stone,
+/// and higher values put it into a round dome, which reads as a ball.
+#[derive(Debug, Clone, Copy)]
+pub struct StoneShape {
+    /// The height of a stone at its apex, in cells.
+    pub height: f32,
+    /// The height of the widest point, as a fraction of the height.
+    pub widest: f32,
+    /// The height of the shoulder, as a fraction of the height.
+    pub shoulder: f32,
+    /// The height where the dome begins, as a fraction of the height.
+    pub dome: f32,
+}
+
+/// The shape the game plays with: a lentil, not a ball. Lower than a tenth of
+/// a cell taller than a real stone, with the widest point low and the dome
+/// flat, which is the shape of the stones on a real board.
+pub const STONE_SHAPE: StoneShape = StoneShape {
+    height: 0.30,
+    widest: 0.18,
+    shoulder: 0.55,
+    dome: 0.82,
+};
+
 /// The lens profile, as (radius, height) pairs from the base to the apex.
-fn profile() -> Vec<[f32; 2]> {
+fn profile(shape: &StoneShape) -> Vec<[f32; 2]> {
     // (radius, height) from the base to the apex: a widening foot, the widest
     // point low down, then a dome, as a real stone is shaped.
+    let height = shape.height;
     let control = [
         [0.42, 0.0],
-        [STONE_RADIUS, 0.090],
-        [0.415, 0.250],
-        [0.30, 0.345],
-        [0.0, STONE_HEIGHT],
+        [STONE_RADIUS, shape.widest * height],
+        [0.415, shape.shoulder * height],
+        [0.30, shape.dome * height],
+        [0.0, height],
     ];
     let mut points = Vec::with_capacity(RINGS + 1);
     let segments = control.len() - 1;
@@ -283,8 +324,8 @@ fn profile() -> Vec<[f32; 2]> {
 }
 
 /// Build the lens mesh: a profile revolved around the height axis.
-fn lens_mesh() -> (Vec<Vertex>, Vec<u32>) {
-    let points = profile();
+fn lens_mesh(shape: &StoneShape) -> (Vec<Vertex>, Vec<u32>) {
+    let points = profile(shape);
     let mut vertices = Vec::with_capacity((RINGS + 1) * (SEGMENTS + 1));
 
     for ring in 0..=RINGS {
@@ -415,6 +456,7 @@ impl Renderer {
         sample_count: u32,
         wood: &WoodTexture,
         glyphs: &GlyphTexture,
+        shape: &StoneShape,
     ) -> Renderer {
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -737,7 +779,7 @@ impl Renderer {
             cache: None,
         });
 
-        let (mesh_vertices, mesh_indices) = lens_mesh();
+        let (mesh_vertices, mesh_indices) = lens_mesh(shape);
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("lens vertices"),
             contents: bytemuck::cast_slice(&mesh_vertices),
@@ -818,6 +860,12 @@ impl Renderer {
             env_b: [0.045, 0.040, 0.036, 1.05],
             last_move: [0.0; 4],
             toggles: [0.0; 4],
+            // The B10 take: a quarter of the shine, the glitter calmed, the body
+            // a touch lighter, and little of the room. Dry, not wet.
+            slate_knobs: [0.25, 0.60, 1.25, 0.12],
+            // The W9 take: the streaks stand well out, and the body is a little
+            // darker to give them something to stand against.
+            shell_knobs: [1.0, 3.72, 0.874, 1.0],
         }
     }
 
@@ -980,14 +1028,14 @@ mod tests {
 
     #[test]
     fn the_lens_mesh_is_closed_and_inside_its_bounds() {
-        let (vertices, indices) = lens_mesh();
+        let (vertices, indices) = lens_mesh(&STONE_SHAPE);
         assert_eq!(vertices.len(), (RINGS + 1) * (SEGMENTS + 1));
         assert_eq!(indices.len(), RINGS * SEGMENTS * 6);
         for vertex in &vertices {
             let radius = (vertex.position[0].powi(2) + vertex.position[1].powi(2)).sqrt();
             assert!(radius <= STONE_RADIUS + 1e-5, "radius {radius} is too wide");
             assert!(
-                (0.0..=STONE_HEIGHT + 1e-5).contains(&vertex.position[2]),
+                (0.0..=STONE_SHAPE.height + 1e-5).contains(&vertex.position[2]),
                 "height {} is outside the stone",
                 vertex.position[2]
             );

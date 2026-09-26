@@ -310,22 +310,32 @@ fn dimple(uv: vec2<f32>, texel: f32) -> vec2<f32> {
     let inside = step(0.0, uv.x) * step(uv.x, LINE_LAST) * step(0.0, uv.y) * step(uv.y, LINE_LAST);
     let cell = clamp(round(uv), vec2<f32>(0.0), vec2<f32>(LINE_LAST));
     let r = length(uv - cell);
-    // Larger radius so the cup reads clearly at normal zoom, but capped so it
-    // stays tasteful when the board is zoomed in.
-    let radius = clamp(texel * 6.0, 0.16, 0.22);
-    let t = smoothstep(0.0, radius, r);
-    // A deeper centre darkening: the bottom of the cup is darker than a linear
-    // falloff would give.
-    let dark = inside * (1.0 - pow(t, 2.0));
+    // A small drilling: a third of the first drilling's radius, so the dark
+    // spot is a mark at the crossing rather than a blob that owns it.
+    let radius = clamp(texel * 2.0, 0.053, 0.073);
+    // A drilled hole has a sharp rim: the darkening keeps its strength all the
+    // way out to the edge and is then cut within one pixel, rather than fading
+    // away. One pixel of antialiasing, no more. `floor` is how dark the cup
+    // still is at the rim: at one the drilling is as dark and as sharp as the
+    // grid lines themselves.
+    let floor = select(0.85, g.toggles.y, g.toggles.y > 0.01);
+    let aa = max(texel, 1e-4);
+    let t = clamp(r / radius, 0.0, 1.0);
+    // The bottom of the cup is a little darker than its walls, but the walls
+    // stay dark all the way out to the cut.
+    let cup = 1.0 - pow(t, 2.0) * (1.0 - floor);
+    let cut = 1.0 - smoothstep(radius - aa, radius + aa, r);
+    let dark = inside * cup * cut;
 
     // The light-facing rim of the drilling sits at the outer edge of the
-    // dimple, on the side that faces the key light.
+    // dimple, on the side that faces the key light. It ends at the same sharp
+    // border as the cup.
     let light_dir = normalize(g.light.xy);
     let rim_centre = cell + light_dir * radius * 0.75;
     let rim_r = length(uv - rim_centre);
     let rim = inside
         * (1.0 - smoothstep(radius * 0.05, radius * 0.35, rim_r))
-        * (1.0 - smoothstep(radius * 0.55, radius * 1.05, r));
+        * cut;
     return vec2<f32>(dark, rim);
 }
 

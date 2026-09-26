@@ -59,6 +59,17 @@ impl HeadlessGpu {
         self.write_frame_with(path, width, height, renderer, |_, _| {})
     }
 
+    /// Render one frame and return the pixels: tightly packed RGBA, top row
+    /// first.
+    pub fn read_frame(
+        &self,
+        width: u32,
+        height: u32,
+        renderer: &crate::render::Renderer,
+    ) -> Result<Vec<u8>> {
+        self.frame_rgba(width, height, renderer, |_, _| {})
+    }
+
     /// Render one frame, let the caller add more passes, and write a BMP.
     pub fn write_frame_with(
         &self,
@@ -68,6 +79,19 @@ impl HeadlessGpu {
         renderer: &crate::render::Renderer,
         extra: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) -> Result<()> {
+        let pixels = self.frame_rgba(width, height, renderer, extra)?;
+        write_bmp(path, width, height, &pixels)
+    }
+
+    /// Render one frame, let the caller add more passes, and return the pixels:
+    /// tightly packed RGBA, top row first.
+    fn frame_rgba(
+        &self,
+        width: u32,
+        height: u32,
+        renderer: &crate::render::Renderer,
+        extra: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Result<Vec<u8>> {
         let samples = renderer.sample_count();
         let multisampled = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("preview multisampled"),
@@ -166,11 +190,14 @@ impl HeadlessGpu {
             .slice(..)
             .get_mapped_range()
             .context("the preview buffer could not be mapped")?;
-        let pixels: &[u8] = &data;
-        write_bmp(path, width, height, pixels, padded)?;
+        let mut pixels = Vec::with_capacity((unpadded * height) as usize);
+        for row in 0..height as usize {
+            let start = row * padded as usize;
+            pixels.extend_from_slice(&data[start..start + unpadded as usize]);
+        }
         drop(data);
         readback.unmap();
-        Ok(())
+        Ok(pixels)
     }
 }
 
@@ -270,13 +297,8 @@ impl HeadlessGpu {
 }
 
 /// Write 24-bit BMP data, with the rows in the order a BMP expects: bottom up.
-fn write_bmp(
-    path: &Path,
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    padded_row_bytes: u32,
-) -> Result<()> {
+/// The input is tightly packed RGBA, top row first.
+fn write_bmp(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
     let row_bytes = width * 3;
     let row_padding = (4 - (row_bytes % 4)) % 4;
     let image_bytes = (row_bytes + row_padding) * height;
@@ -301,7 +323,7 @@ fn write_bmp(
     out.extend_from_slice(&0_u32.to_le_bytes());
 
     for row in 0..height {
-        let source = (height - 1 - row) as usize * padded_row_bytes as usize;
+        let source = (height - 1 - row) as usize * width as usize * 4;
         for column in 0..width as usize {
             let pixel = source + column * 4;
             out.push(rgba[pixel + 2]);

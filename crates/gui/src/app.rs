@@ -476,7 +476,15 @@ impl App {
 
         let wood = WoodTexture::load_wood()?;
         let glyphs = GlyphTexture::load_glyphs()?;
-        let renderer = Renderer::new(&device, &queue, format, SAMPLES, &wood, &glyphs);
+        let renderer = Renderer::new(
+            &device,
+            &queue,
+            format,
+            SAMPLES,
+            &wood,
+            &glyphs,
+            &crate::render::STONE_SHAPE,
+        );
         let multisampled = create_multisampled(&device, &config);
 
         let egui = egui::Context::default();
@@ -611,7 +619,7 @@ pub fn stone_instances(game: &gomoku_core::Game) -> Vec<StoneInstance> {
                     material.albedo[2],
                     material.roughness,
                 ],
-                params: [seed, material.kind, 0.0, 0.0],
+                params: [seed, material.kind, material.cap, 0.0],
             }
         })
         .collect()

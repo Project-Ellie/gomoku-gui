@@ -92,6 +92,14 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
     let detail = mix(1.0, coarse, 0.8);
     let grain_detail = mix(1.0, fine, 0.85);
 
+    // The look dials of the stone's own material: how far the texture
+    // modulates the surface, and how the body is darkened.
+    let knobs = mix(g.slate_knobs, g.shell_knobs, vec4<f32>(kind));
+    let contrast = knobs.y;
+    // How dull the stone may go: where the highlight stops spreading. A low cap
+    // keeps a tight sparkle; a high one lets the light smear into a soft sheen.
+    let cap = select(0.45, in.params.z, in.params.z > 0.01);
+
     var albedo = in.colour.rgb;
     var roughness = in.colour.w;
     if (kind > 0.5) {
@@ -99,9 +107,9 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
         // has. The streaks vary the roughness, which is what breaks the highlight
         // into the wide soft band a polished stone shows.
         let streaks = height_shell(p);
-        albedo *= 0.88 + streaks * 0.22 * detail;
-        albedo *= 0.95 + fino_shell(p) * 0.10 * grain_detail;
-        roughness = clamp(roughness * (0.70 + streaks * 0.60 * detail), 0.05, 0.45);
+        albedo *= mix(1.0, 0.88 + streaks * 0.22 * detail, contrast);
+        albedo *= mix(1.0, 0.95 + fino_shell(p) * 0.10 * grain_detail, contrast);
+        roughness = clamp(roughness * mix(1.0, 0.70 + streaks * 0.60 * detail, contrast), 0.05, cap);
     } else {
         // Slate: coarse speckle over a darker body, with faint grey veining. The
         // veining is ridged noise, so it forms thin lines rather than blobs, and
@@ -109,11 +117,12 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
         // glitter rather than shine.
         let speckle = height_slate(p);
         let vein = 1.0 - abs(2.0 * fbm(p * 1.1, 3) - 1.0);
-        albedo *= 0.74 + speckle * 0.40 * detail;
-        albedo *= 0.96 + fino_slate(p) * 0.09 * grain_detail;
-        albedo *= 1.0 - vein * 0.16 * detail;
-        roughness = clamp(roughness * (0.62 + speckle * 0.85 * detail), 0.05, 0.45);
+        albedo *= mix(1.0, 0.74 + speckle * 0.40 * detail, contrast);
+        albedo *= mix(1.0, 0.96 + fino_slate(p) * 0.09 * grain_detail, contrast);
+        albedo *= mix(1.0, 1.0 - vein * 0.16 * detail, contrast);
+        roughness = clamp(roughness * mix(1.0, 0.62 + speckle * 0.85 * detail, contrast), 0.05, cap);
     }
+    albedo *= knobs.z;
 
     let v = vec3<f32>(0.0, 0.0, 1.0);
     let l = key_light();
@@ -135,12 +144,12 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
     // The gloss of the material decides how much of the light is reflected at
     // all. Slate scatters, so it takes a small share.
     let gloss = select(g.wood_b.x, g.wood_b.y, kind > 0.5);
-    var shine = vec3<f32>(tight * 1.55 + wide * 0.50) * gloss;
+    var shine = vec3<f32>(tight * 1.55 + wide * 0.50) * gloss * knobs.x;
 
     // The room, reflected. This is the term that makes a stone look glossy.
     let reflection = environment(reflect(-v, n), roughness);
     let weight = fresnel(n_dot_v, 0.05);
-    shine += reflection * weight * 0.80 * gloss;
+    shine += reflection * weight * 0.80 * gloss * knobs.w;
 
     if (kind > 0.5) {
         // Shell: light that has travelled through the stone and comes out at the

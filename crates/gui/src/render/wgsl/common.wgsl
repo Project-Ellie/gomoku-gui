@@ -31,6 +31,11 @@ struct Globals {
     last_move: vec4<f32>,
     // overlay toggles: .x = coordinate labels
     toggles: vec4<f32>,
+    // slate look dials: shine scale, texture contrast scale, albedo scale,
+    // room reflection scale
+    slate_knobs: vec4<f32>,
+    // shell look dials, in the same order
+    shell_knobs: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;

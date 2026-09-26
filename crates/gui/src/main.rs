@@ -12,6 +12,7 @@ mod render;
 mod session;
 mod sound;
 mod ui;
+mod variants;
 
 use std::path::PathBuf;
 
@@ -56,6 +57,7 @@ fn main() -> Result<()> {
     let mut pixels_per_cell: Option<f32> = None;
     let mut gain: Option<f32> = None;
     let mut centre: Option<[f32; 2]> = None;
+    let mut variation_sheets: Option<PathBuf> = None;
 
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -89,6 +91,11 @@ fn main() -> Result<()> {
             "--knock" => {
                 knock = Some(PathBuf::from(
                     arguments.next().context("--knock needs a directory")?,
+                ));
+            }
+            "--variants" => {
+                variation_sheets = Some(PathBuf::from(
+                    arguments.next().context("--variants needs a directory")?,
                 ));
             }
             "--preview-ui" => ui_preview = true,
@@ -137,6 +144,11 @@ fn main() -> Result<()> {
         return sound::audition(&directory);
     }
 
+    if let Some(directory) = variation_sheets {
+        // Render the stone and knock variation sheets and stop.
+        return variants::audition(&directory);
+    }
+
     let game = if demo { demo_game() } else { Game::new() };
 
     if let Some(mut preview) = preview {
@@ -181,6 +193,7 @@ fn print_help() {
   --preview-ui        include the interface in the preview
   --scale N           interface points per pixel, as a scaled display has
   --knock DIR         render every stone sound into DIR and stop
+  --variants DIR      render the stone and knock variation sheets into DIR and stop
   --size N            the window or preview size in pixels (default 1100)
   --pixels-per-cell N zoom for a preview (default: fit the board)
   --wood-gain F       a brightness multiplier on the wood photograph (default 1)
@@ -241,6 +254,7 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
         SAMPLES,
         &wood,
         &glyphs,
+        &render::STONE_SHAPE,
     );
     let board_size = [size, size];
     let mut camera = Camera::fit(camera::Viewport::window(board_size[0], board_size[1]));
