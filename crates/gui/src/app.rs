@@ -704,6 +704,12 @@ impl ApplicationHandler for App {
                         state.config.height = size.height;
                         state.surface.configure(&state.device, &state.config);
                         state.multisampled = create_multisampled(&state.device, &state.config);
+                        // The window's size is remembered, so the next sitting
+                        // opens the same window. The geometry is kept in
+                        // logical pixels, the size arrives in physical ones.
+                        let logical = size.to_logical::<f32>(state.window.scale_factor());
+                        self.geometry.width = logical.width;
+                        self.geometry.height = logical.height;
                         // The area for the board is not known here: the interface
                         // reports it in the next frame. `prepare_frame` keeps the
                         // view inside whatever area that is.
@@ -732,6 +738,8 @@ impl ApplicationHandler for App {
                     ];
                     if delta[0].abs() > CLICK_SLOP || delta[1].abs() > CLICK_SLOP {
                         self.press = None;
+                        // A hand on the view breaks the tie with the window.
+                        self.session.follows_window = false;
                         self.session.camera.pan(self.session.viewport, delta);
                         self.session.update_hover();
                     }
@@ -774,6 +782,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, lines) => lines * 0.15,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32 * 0.0015,
                 };
+                self.session.follows_window = false;
                 self.session.camera.zoom_about(
                     self.session.viewport,
                     self.session.pointer,
@@ -838,22 +847,28 @@ impl ApplicationHandler for App {
                                 'w' => {
                                     self.session.toggles.win_line = !self.session.toggles.win_line
                                 }
-                                '+' | '=' => self.session.camera.zoom_about(
-                                    self.session.viewport,
-                                    [
-                                        self.session.viewport.width * 0.5,
-                                        self.session.viewport.height * 0.5,
-                                    ],
-                                    1.15,
-                                ),
-                                '-' => self.session.camera.zoom_about(
-                                    self.session.viewport,
-                                    [
-                                        self.session.viewport.width * 0.5,
-                                        self.session.viewport.height * 0.5,
-                                    ],
-                                    1.0 / 1.15,
-                                ),
+                                '+' | '=' => {
+                                    self.session.follows_window = false;
+                                    self.session.camera.zoom_about(
+                                        self.session.viewport,
+                                        [
+                                            self.session.viewport.width * 0.5,
+                                            self.session.viewport.height * 0.5,
+                                        ],
+                                        1.15,
+                                    );
+                                }
+                                '-' => {
+                                    self.session.follows_window = false;
+                                    self.session.camera.zoom_about(
+                                        self.session.viewport,
+                                        [
+                                            self.session.viewport.width * 0.5,
+                                            self.session.viewport.height * 0.5,
+                                        ],
+                                        1.0 / 1.15,
+                                    );
+                                }
                                 _ => {}
                             }
                         }

@@ -140,6 +140,15 @@ impl Camera {
         *self = Camera::fit(viewport);
     }
 
+    /// Fit the whole board into the viewport again, keeping the side the board
+    /// is seen from. The view calls this while it follows the window: the
+    /// board grows and shrinks with the area it is drawn into.
+    pub fn refit(&mut self, viewport: Viewport) {
+        let flipped = self.flipped;
+        *self = Camera::fit(viewport);
+        self.flipped = flipped;
+    }
+
     /// Keep the board on screen, and centre it when the whole board fits.
     pub fn clamp(&mut self, viewport: Viewport) {
         let (low, high) = Camera::zoom_range(viewport);
@@ -268,6 +277,18 @@ mod tests {
             camera.zoom_about(viewport, [400.0, 400.0], 0.7);
         }
         assert!(close(camera.pixels_per_cell, low));
+    }
+
+    #[test]
+    fn refitting_keeps_the_side_the_board_is_seen_from() {
+        let viewport = panel_viewport();
+        let mut camera = Camera::fit(viewport);
+        camera.flipped = true;
+        camera.zoom_about(viewport, [400.0, 400.0], 6.0);
+        camera.refit(viewport);
+        assert!(close(camera.pixels_per_cell, Camera::fit_scale(viewport)));
+        assert!(close(camera.centre[0], 7.0) && close(camera.centre[1], 7.0));
+        assert!(camera.flipped, "the board still shows the other side");
     }
 
     #[test]

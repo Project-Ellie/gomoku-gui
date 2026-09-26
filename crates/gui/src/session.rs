@@ -130,6 +130,11 @@ pub struct Session {
     remembered: Option<gomoku_core::ViewSettings>,
     /// True once the view has been set with a known viewport.
     pub fitted: bool,
+    /// True while the board's size belongs to the window: the whole board is
+    /// fitted into the area it is drawn into, and follows that area as the
+    /// area grows and shrinks. Zooming or panning by hand breaks the tie;
+    /// fitting the board restores it.
+    pub follows_window: bool,
     /// The width of the side panel, in points.
     pub panel_width: f32,
     /// True when the side panel is folded away.
@@ -176,6 +181,7 @@ impl Session {
             viewport_points: [0.0, 28.0, 930.0, 922.0],
             remembered: Some(settings.view.clone()),
             fitted: false,
+            follows_window: true,
             panel_width: settings.panel.width,
             panel_collapsed: settings.panel.collapsed,
             pointer: [-1.0, -1.0],
@@ -189,6 +195,7 @@ impl Session {
     /// Fit the whole board into the viewport.
     pub fn fit(&mut self) {
         self.camera.reset(self.viewport);
+        self.follows_window = true;
         self.title_stale = true;
     }
 
@@ -550,7 +557,10 @@ impl Session {
                 maximized: window.maximized,
             },
             view: gomoku_core::ViewSettings {
-                pixels_per_cell: self.camera.pixels_per_cell,
+                // Zero means "fit the board at start-up". The board's size
+                // belongs to the window, so no zoom is remembered: whatever
+                // the camera happens to show, the next sitting starts fitted.
+                pixels_per_cell: 0.0,
                 center: self.camera.centre,
                 flipped: self.camera.flipped,
             },
@@ -584,17 +594,16 @@ impl Session {
     /// The area is not the window: the menu bar and the side panel take their
     /// space first, and the board must fit in what is left. So the first frame
     /// of the interface is what places the view.
+    ///
+    /// The board's size belongs to the window, so the view always starts
+    /// fitted, whatever zoom an earlier sitting stored. Only the side the
+    /// board is seen from is remembered.
     pub fn place_view(&mut self, viewport: crate::camera::Viewport) {
         self.fitted = true;
-        match self.remembered.take() {
-            Some(view) if view.pixels_per_cell > 0.0 => {
-                self.camera.centre = view.center;
-                self.camera.pixels_per_cell = view.pixels_per_cell;
-                self.camera.flipped = view.flipped;
-                self.camera.clamp(viewport);
-            }
-            // No view was remembered, so show the whole board.
-            _ => self.camera.reset(viewport),
+        self.follows_window = true;
+        self.camera.reset(viewport);
+        if let Some(view) = self.remembered.take() {
+            self.camera.flipped = view.flipped;
         }
     }
 }
@@ -911,6 +920,43 @@ mod tests {
     #[test]
     fn an_open_game_has_no_winning_line() {
         assert_eq!(winning_line(&game()), None);
+    }
+
+    #[test]
+    fn the_view_starts_fitted_whatever_zoom_was_stored() {
+        let mut settings = Settings::default();
+        settings.view.pixels_per_cell = 240.0;
+        settings.view.center = [3.0, 11.0];
+        let mut session = Session::new(&settings);
+        let viewport = crate::camera::Viewport::window(900, 872);
+        session.place_view(viewport);
+        assert!(
+            (session.camera.pixels_per_cell - Camera::fit_scale(viewport)).abs() < 1e-3,
+            "the stored zoom is not restored: {}",
+            session.camera.pixels_per_cell
+        );
+        assert!(session.follows_window, "the board follows the window");
+    }
+
+    #[test]
+    fn fitting_by_hand_reengages_the_window_tie() {
+        let settings = Settings::default();
+        let mut session = Session::new(&settings);
+        session.viewport = crate::camera::Viewport::window(900, 872);
+        session.follows_window = false;
+        session.fit();
+        assert!(session.follows_window);
+    }
+
+    #[test]
+    fn no_zoom_is_written_at_exit() {
+        let settings = Settings::default();
+        let session = Session::new(&settings);
+        let written = session.settings(&WindowGeometry::default());
+        assert_eq!(
+            written.view.pixels_per_cell, 0.0,
+            "zero means fit the board at start-up"
+        );
     }
 
     #[test]

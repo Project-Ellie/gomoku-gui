@@ -171,15 +171,23 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             // camera work in those.
             // The size of the whole surface is not known here; the application
             // fills that in. Only the area for the board is the interface's.
+            let width = rect.width() * scale;
+            let height = rect.height() * scale;
+            let area_changed = (session.viewport.width - width).abs() > 0.5
+                || (session.viewport.height - height).abs() > 0.5;
             session.viewport.x = rect.min.x * scale;
             session.viewport.y = rect.min.y * scale;
-            session.viewport.width = rect.width() * scale;
-            session.viewport.height = rect.height() * scale;
+            session.viewport.width = width;
+            session.viewport.height = height;
             session.pixels_per_point = scale;
             if !session.fitted {
                 // The first frame that knows the area is the one that places the
                 // view, so that the overlays below already use it.
                 session.place_view(session.viewport);
+            } else if area_changed && session.follows_window {
+                // The board's size belongs to the window: while the tie holds,
+                // the board grows and shrinks with the area it is drawn into.
+                session.camera.refit(session.viewport);
             }
             let painter = ui.painter().clone();
             overlays(&painter, session, scale);

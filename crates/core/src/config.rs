@@ -48,9 +48,12 @@ impl Default for WindowSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewSettings {
-    /// Pixels per board cell. Zero means "fit the board at start-up".
+    /// Pixels per board cell. The board's size belongs to the window, so no
+    /// zoom is remembered: this stays zero, which means "fit the board at
+    /// start-up". Older sittings stored their zoom here; it is not restored.
     pub pixels_per_cell: f32,
-    /// The board point at the centre of the view, in cells.
+    /// The board point at the centre of the view, in cells. Not restored;
+    /// kept so files written by older versions still load.
     pub center: [f32; 2],
     /// True when the board is shown from the other side.
     pub flipped: bool,

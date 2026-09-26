@@ -307,12 +307,17 @@ fn coordinate_labels(uv: vec2<f32>, texel: f32) -> vec2<f32> {
 
 /// A drilled dimple at each grid crossing.  Returns (darken, rim).
 fn dimple(uv: vec2<f32>, texel: f32) -> vec2<f32> {
-    let inside = step(0.0, uv.x) * step(uv.x, LINE_LAST) * step(0.0, uv.y) * step(uv.y, LINE_LAST);
     let cell = clamp(round(uv), vec2<f32>(0.0), vec2<f32>(LINE_LAST));
     let r = length(uv - cell);
     // A small drilling: a third of the first drilling's radius, so the dark
     // spot is a mark at the crossing rather than a blob that owns it.
     let radius = clamp(texel * 2.0, 0.053, 0.073);
+    // A drilling is whole even at the edge of the grid: the cup reaches past
+    // the outer line into the margin, where its sharp rim still cuts.
+    let inside = step(-radius, uv.x)
+        * step(uv.x, LINE_LAST + radius)
+        * step(-radius, uv.y)
+        * step(uv.y, LINE_LAST + radius);
     // A drilled hole has a sharp rim: the darkening keeps its strength all the
     // way out to the edge and is then cut within one pixel, rather than fading
     // away. One pixel of antialiasing, no more. `floor` is how dark the cup
