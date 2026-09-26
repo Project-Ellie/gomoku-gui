@@ -29,7 +29,9 @@ struct Globals {
     env_b: vec4<f32>,
     // last-placed stone: .xy cell col/row, .z enabled
     last_move: vec4<f32>,
-    // overlay toggles: .x = coordinate labels
+    // look dials: .x = coordinate labels, .y = the darkness of the drilled
+    // crossings at the rim, .z = the tooth of the stones, .w = the softness of
+    // their edges
     toggles: vec4<f32>,
     // slate look dials: shine scale, texture contrast scale, albedo scale,
     // room reflection scale

@@ -127,7 +127,21 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
     let v = vec3<f32>(0.0, 0.0, 1.0);
     let l = key_light();
     let strength = select(0.16, 0.08, kind > 0.5) * detail;
-    let n = perturb(normalize(in.normal), p, kind, strength);
+    var n = perturb(normalize(in.normal), p, kind, strength);
+
+    // The tooth of the surface: white noise at the pixel scale, one cell per
+    // screen pixel, so the stone is not glassy smooth. No structure is added
+    // that the eye could follow — the cells are too small to read — but the
+    // highlight and the sheen break up on the smallest scale, which is what a
+    // honed stone shows.
+    let grain = g.toggles.z;
+    if (grain > 0.001) {
+        let pixel = floor(in.local / texel + vec2<f32>(seed * 31.7, seed * 17.3));
+        let w1 = hash21(pixel);
+        let w2 = hash21(pixel + vec2<f32>(41.0, 13.0));
+        n = normalize(n + vec3<f32>(w1 - 0.5, w2 - 0.5, 0.0) * grain * 0.45);
+        roughness = clamp(roughness * mix(1.0, 0.72 + w1 * 0.56, grain), 0.05, cap);
+    }
 
     let n_dot_l = max(dot(n, l), 0.0);
     let n_dot_v = max(dot(n, v), 1e-4);
@@ -181,5 +195,18 @@ fn fs_stone(in: VsOut) -> @location(0) vec4<f32> {
         colour *= 1.0 - edge * 0.06;
     }
 
-    return vec4<f32>(encode(tone_map(colour)), 1.0);
+    // The soft edge. A thing that rounds away from the eye does not end in a
+    // hard line: the last sliver lets the board show through, as a photograph
+    // blurs the silhouette of a stone. The feather is measured in pixels, not
+    // in the turn of the surface: the lentil's rim is so steep that the turn
+    // runs its course within a pixel or two, and a turn-based feather would
+    // never be seen. 0.47 is the radius of the lens mesh at its widest.
+    let feather = texel * (0.5 + g.toggles.w * 5.0);
+    let alpha = select(
+        1.0,
+        smoothstep(0.47, 0.47 - feather, radius),
+        g.toggles.w > 0.001
+    );
+
+    return vec4<f32>(encode(tone_map(colour)), alpha);
 }

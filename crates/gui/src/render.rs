@@ -131,7 +131,9 @@ pub struct Globals {
     pub env_b: [f32; 4],
     /// The last-placed stone for the red glow: .xy = cell col/row, .z = enabled.
     pub last_move: [f32; 4],
-    /// Overlay toggles: .x = coordinate labels.
+    /// Look dials: .x = coordinate labels, .y = how dark the drilled crossings
+    /// still are at the rim (0 keeps the shader's own default), .z = the tooth
+    /// of the stones, .w = the softness of their edges.
     pub toggles: [f32; 4],
     /// Slate look dials: shine scale, texture contrast scale, albedo scale,
     /// room reflection scale.
@@ -280,6 +282,14 @@ pub struct StoneShape {
     /// The height where the dome begins, as a fraction of the height.
     pub dome: f32,
 }
+
+/// The slate look dials: the B10 take. A quarter of the shine, the glitter
+/// calmed, the body a touch lighter, and little of the room. Dry, not wet.
+pub const SLATE_KNOBS: [f32; 4] = [0.25, 0.60, 1.25, 0.12];
+
+/// The shell look dials: the W9 take. The streaks stand well out, and the body
+/// is a little darker to give them something to stand against.
+pub const SHELL_KNOBS: [f32; 4] = [1.0, 3.72, 0.874, 1.0];
 
 /// The shape the game plays with: a lentil, not a ball. Lower than a tenth of
 /// a cell taller than a real stone, with the widest point low and the dome
@@ -694,6 +704,15 @@ impl Renderer {
             cache: None,
         });
 
+        // The stones blend over the board and the shadows already drawn: the
+        // soft-edge dial feathers the rim to transparency, and the board must
+        // show through there. Everywhere else the alpha is one and the blend
+        // is a plain replace.
+        let stone_targets = [Some(wgpu::ColorTargetState {
+            format,
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
         let layouts = vertex_layouts();
         let stone_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("stone"),
@@ -715,7 +734,7 @@ impl Renderer {
                 module: &stone_module,
                 entry_point: Some("fs_stone"),
                 compilation_options: Default::default(),
-                targets: &targets,
+                targets: &stone_targets,
             }),
             multiview_mask: None,
             cache: None,
@@ -859,13 +878,12 @@ impl Renderer {
             env_a: [0.28, 0.31, 0.38, 0.28],
             env_b: [0.045, 0.040, 0.036, 1.05],
             last_move: [0.0; 4],
-            toggles: [0.0; 4],
-            // The B10 take: a quarter of the shine, the glitter calmed, the body
-            // a touch lighter, and little of the room. Dry, not wet.
-            slate_knobs: [0.25, 0.60, 1.25, 0.12],
-            // The W9 take: the streaks stand well out, and the body is a little
-            // darker to give them something to stand against.
-            shell_knobs: [1.0, 3.72, 0.874, 1.0],
+            // The BN10 / WN10 and BE10 / WE10 takes: the full tooth, and the
+            // edge feathered all the way. The drilled crossings keep the
+            // shader's default, so .y stays zero.
+            toggles: [0.0, 0.0, 1.0, 1.0],
+            slate_knobs: SLATE_KNOBS,
+            shell_knobs: SHELL_KNOBS,
         }
     }
 

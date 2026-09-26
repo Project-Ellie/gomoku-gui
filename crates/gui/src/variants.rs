@@ -53,6 +53,72 @@ struct StoneVariant {
     /// Shine scale, texture contrast scale, albedo scale, room reflection
     /// scale. Ones are the look the game ships with.
     knobs: [f32; 4],
+    /// The tooth of the surface: white noise at the pixel scale, from 0 to 1.
+    grain: f32,
+    /// The softness of the edge: how far the rim feathers, from 0 to 1.
+    soft: f32,
+}
+
+/// The stone of one colour as the game plays it now, the base the surface
+/// sheets move away from.
+fn base_stone(black: bool) -> StoneVariant {
+    let material = if black { render::SLATE } else { render::SHELL };
+    StoneVariant {
+        name: String::new(),
+        intent: String::new(),
+        shape: render::STONE_SHAPE,
+        roughness: material.roughness,
+        cap: material.cap,
+        knobs: if black {
+            render::SLATE_KNOBS
+        } else {
+            render::SHELL_KNOBS
+        },
+        grain: 0.0,
+        soft: 0.0,
+    }
+}
+
+/// Ten takes on the tooth of the surface, for one colour, with the stone as it
+/// plays now for reference.
+fn grain_variants(black: bool) -> Vec<StoneVariant> {
+    let colour = if black { "B" } else { "W" };
+    let mut takes = vec![StoneVariant {
+        name: format!("{colour}N0"),
+        intent: "the stone as it plays now, for reference".to_string(),
+        ..base_stone(black)
+    }];
+    for index in 0..10 {
+        let grain = (index + 1) as f32 / 10.0;
+        takes.push(StoneVariant {
+            name: format!("{colour}N{}", index + 1),
+            intent: format!("grain at {:.0}%", grain * 100.0),
+            grain,
+            ..base_stone(black)
+        });
+    }
+    takes
+}
+
+/// Ten takes on the softness of the edge, for one colour, with the stone as it
+/// plays now for reference.
+fn edge_variants(black: bool) -> Vec<StoneVariant> {
+    let colour = if black { "B" } else { "W" };
+    let mut takes = vec![StoneVariant {
+        name: format!("{colour}E0"),
+        intent: "the stone as it plays now, for reference".to_string(),
+        ..base_stone(black)
+    }];
+    for index in 0..10 {
+        let soft = (index + 1) as f32 / 10.0;
+        takes.push(StoneVariant {
+            name: format!("{colour}E{}", index + 1),
+            intent: format!("the rim feathers at {:.0}%", soft * 100.0),
+            soft,
+            ..base_stone(black)
+        });
+    }
+    takes
 }
 
 /// One take on the drilled crossings: how dark the cup still is at the rim,
@@ -190,6 +256,8 @@ fn slate_variants() -> Vec<StoneVariant> {
                 roughness,
                 cap,
                 knobs: [shine, glitter, albedo, env],
+                grain: 0.0,
+                soft: 0.0,
             }
         })
         .collect()
@@ -220,6 +288,8 @@ fn shell_variants() -> Vec<StoneVariant> {
                 roughness: SHELL.roughness,
                 cap: 0.45 + 0.25 * t,
                 knobs: [1.0, contrast, albedo, 1.0],
+                grain: 0.0,
+                soft: 0.0,
             }
         })
         .collect()
@@ -349,6 +419,7 @@ fn render_take(
         globals.view = [7.0, 7.0, pixels_per_cell, 0.0];
         globals.slate_knobs = take.knobs;
         globals.shell_knobs = take.knobs;
+        globals.toggles = [0.0, 0.0, take.grain, take.soft];
         renderer.set_globals(&gpu.queue, &globals);
 
         let pixels = gpu.read_frame(IMAGE, IMAGE, &renderer)?;
@@ -445,6 +516,8 @@ pub fn audition(directory: &Path) -> Result<()> {
         roughness: 0.58,
         cap: 0.0,
         knobs: [1.0, 1.0, 1.0, 1.0],
+        grain: 0.0,
+        soft: 0.0,
     };
     let shell_now = StoneVariant {
         name: "W0".to_string(),
@@ -453,6 +526,8 @@ pub fn audition(directory: &Path) -> Result<()> {
         roughness: SHELL.roughness,
         cap: 0.0,
         knobs: [1.0, 1.0, 1.0, 1.0],
+        grain: 0.0,
+        soft: 0.0,
     };
 
     let mut slate = vec![render_take(&gpu, &wood, &glyphs, 0.0, &slate_now, directory)?];
@@ -472,6 +547,29 @@ pub fn audition(directory: &Path) -> Result<()> {
         log::info!("dimple {} rendered", take.name);
     }
 
+    // The surface sheets: grain and a soft edge, each on both colours, each
+    // moving away from the stone as it plays now.
+    let mut grain_black = Vec::new();
+    for take in grain_variants(true) {
+        grain_black.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
+        log::info!("grain {} rendered", take.name);
+    }
+    let mut grain_white = Vec::new();
+    for take in grain_variants(false) {
+        grain_white.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
+        log::info!("grain {} rendered", take.name);
+    }
+    let mut edge_black = Vec::new();
+    for take in edge_variants(true) {
+        edge_black.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
+        log::info!("edge {} rendered", take.name);
+    }
+    let mut edge_white = Vec::new();
+    for take in edge_variants(false) {
+        edge_white.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
+        log::info!("edge {} rendered", take.name);
+    }
+
     let knock_now = KnockVariant {
         name: "K0".to_string(),
         intent: "the sound before the choice".to_string(),
@@ -483,8 +581,18 @@ pub fn audition(directory: &Path) -> Result<()> {
         log::info!("knock {} rendered", take.name);
     }
 
+    let sheets = Sheets {
+        slate: &slate,
+        shell: &shell,
+        dimples: &dimples,
+        grain_black: &grain_black,
+        grain_white: &grain_white,
+        edge_black: &edge_black,
+        edge_white: &edge_white,
+        knocks: &knocks,
+    };
     let page = directory.join("index.html");
-    std::fs::write(&page, html(&slate, &shell, &dimples, &knocks))
+    std::fs::write(&page, html(&sheets))
         .with_context(|| format!("cannot write {}", page.display()))?;
 
     println!("{}", table(&knocks));
@@ -513,8 +621,30 @@ fn table(knocks: &[KnockRow]) -> String {
     text
 }
 
+/// All the sheets of the page.
+struct Sheets<'a> {
+    slate: &'a [SheetRow],
+    shell: &'a [SheetRow],
+    dimples: &'a [SheetRow],
+    grain_black: &'a [SheetRow],
+    grain_white: &'a [SheetRow],
+    edge_black: &'a [SheetRow],
+    edge_white: &'a [SheetRow],
+    knocks: &'a [KnockRow],
+}
+
 /// The page that shows and plays the sheets.
-fn html(slate: &[SheetRow], shell: &[SheetRow], dimples: &[SheetRow], knocks: &[KnockRow]) -> String {
+fn html(sheets: &Sheets) -> String {
+    let Sheets {
+        slate,
+        shell,
+        dimples,
+        grain_black,
+        grain_white,
+        edge_black,
+        edge_white,
+        knocks,
+    } = *sheets;
     let mut page = String::from(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <title>Gomoku: stone and knock variations</title>\n<style>\n\
@@ -558,6 +688,37 @@ fn html(slate: &[SheetRow], shell: &[SheetRow], dimples: &[SheetRow], knocks: &[
         }
     };
 
+    section(
+        "Black stones: the tooth of the surface",
+        "White noise at the pixel scale, BN1 to BN10 more and more. No new structure: the \
+         cells are a pixel each, too small to read. But the sheen and the highlight break up \
+         on the smallest scale, which is what a honed stone shows and a rendered one lacks. \
+         BN0 is the stone as it plays now.",
+        grain_black,
+        &mut page,
+    );
+    section(
+        "White stones: the tooth of the surface",
+        "The same grain on the shell stone, WN1 to WN10 more and more. WN0 is the stone as \
+         it plays now.",
+        grain_white,
+        &mut page,
+    );
+    section(
+        "Black stones: a softer edge",
+        "A thing that rounds away from the eye does not end in a hard line: from BE1 to BE10 \
+         the rim feathers more and more, letting the board show through the last sliver. \
+         BE0 is the stone as it plays now.",
+        edge_black,
+        &mut page,
+    );
+    section(
+        "White stones: a softer edge",
+        "The same feather on the shell stone, WE1 to WE10 more and more. WE0 is the stone \
+         as it plays now.",
+        edge_white,
+        &mut page,
+    );
     section(
         "Black stones: flatter, and dry rather than wet",
         "The bright spot and the reflected room are what reads as wet, so they fall from B1 to \
