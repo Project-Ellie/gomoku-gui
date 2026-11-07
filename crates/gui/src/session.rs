@@ -69,19 +69,47 @@ pub struct BeforePuzzle {
     pub(crate) revision: u64,
     /// The revision that was last written to a file.
     pub(crate) saved_revision: u64,
+    /// Seats, options, and running intent; never generation or outstanding work.
+    automation: crate::ai::AutomationIntent,
+}
+
+impl From<&Session> for BeforePuzzle {
+    fn from(session: &Session) -> Self {
+        Self {
+            game: session.game.clone(),
+            path: session.path.clone(),
+            puzzle_cursor: session.puzzle_cursor,
+            revision: session.revision,
+            saved_revision: session.saved_revision,
+            automation: session.ai.intent(),
+        }
+    }
 }
 
 /// What an unsaved-changes answer should do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum After {
     /// Start a new game.
     NewGame,
     /// Open a game from a file.
     Open,
+    /// Open a recently used game, after the same unsaved check as Open.
+    OpenRecent(PathBuf),
     /// Open a puzzle from a file.
     OpenPuzzle,
     /// Close the application.
     Quit,
+}
+
+/// The result of a complete save attempt, including native-picker cancellation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// The current revision reached disk.
+    Saved,
+    /// No destination was selected.
+    Cancelled,
+    /// The write failed; a message explains why.
+    Failed,
 }
 
 /// Which overlays are shown.
@@ -227,9 +255,10 @@ impl Session {
 
     /// Install startup/demo content before delivery is connected.
     pub(crate) fn install_game(&mut self, game: Game) {
+        self.dismiss_dialog();
         self.game = game;
         self.ai.invalidate();
-        self.hover = None;
+        self.clear_board_effects();
         self.title_stale = true;
     }
 
@@ -244,12 +273,13 @@ impl Session {
     pub fn begin_native_dialog(&mut self) {
         self.ai.invalidate();
         self.native_dialog_open = true;
-        self.hover = None;
+        self.clear_board_effects();
     }
     /// End a native picker, including its cancellation path.
     pub fn end_native_dialog(&mut self) {
         self.ai.invalidate();
         self.native_dialog_open = false;
+        self.clear_board_effects();
     }
     /// Read the current application modal without exposing mutable game state.
     pub fn dialog(&self) -> Option<&Dialog> {
@@ -260,25 +290,40 @@ impl Session {
         self.dismiss_dialog();
         self.ai.invalidate();
         self.dialog = Some(dialog);
-        self.hover = None;
+        self.clear_board_effects();
     }
+    /// Start the same unsaved transaction for menus, recents, and window close.
+    pub fn attempt(&mut self, action: After) {
+        self.dismiss_dialog();
+        if self.changed() {
+            self.set_dialog(Dialog::Unsaved { then: action });
+        } else {
+            self.defer_action(action);
+        }
+    }
+
     /// Block automatic turns until the confirmed action has been consumed.
     pub fn defer_action(&mut self, action: After) {
         self.ai.invalidate();
+        self.clear_board_effects();
         self.perform = Some(action);
     }
     /// Block automatic turns while an action awaits its save transaction.
     pub fn defer_after_save(&mut self, action: After) {
         self.ai.invalidate();
+        self.clear_board_effects();
         self.after_save = Some(action);
     }
     /// Hand one confirmed action to the application.
     pub fn take_action(&mut self) -> Option<After> {
         self.perform.take()
     }
-    /// Hand the save-dependent action to the application's save transaction.
-    pub fn take_after_save(&mut self) -> Option<After> {
-        self.after_save.take()
+    /// Finish a save transaction. Failure and cancellation consume, but never
+    /// execute, its continuation. A successful action can be returned only once.
+    pub fn complete_save(&mut self, outcome: SaveOutcome) -> Option<After> {
+        self.after_save
+            .take()
+            .filter(|_| outcome == SaveOutcome::Saved)
     }
 
     /// Who currently controls a color.
@@ -327,10 +372,14 @@ impl Session {
         self.ai.running = true;
         self.notice = None;
     }
+    fn clear_board_effects(&mut self) {
+        self.knock = None;
+        self.hover = None;
+    }
     fn pause_automation(&mut self) {
         self.ai.invalidate();
         self.ai.running = false;
-        self.hover = None;
+        self.clear_board_effects();
     }
     fn unblocked(&self) -> bool {
         !self.native_dialog_open
@@ -435,30 +484,48 @@ impl Session {
 
     /// Continue the autosaved game.
     pub fn resume_autosave(&mut self) {
-        match autosave_path().map(|path| gomoku_core::load(&path)) {
-            Ok(Ok(game)) => {
+        match autosave_path() {
+            Ok(path) => self.resume_autosave_from(&path, read_autosave_source()),
+            Err(error) => self.fail("The autosaved game could not be found", &error),
+        }
+    }
+
+    /// Recover from an explicit autosave location, without touching global files.
+    /// A read failure preserves the sitting and replaces its modal with an error.
+    pub fn resume_autosave_from(&mut self, path: &Path, source: Option<PathBuf>) {
+        match gomoku_core::load(path) {
+            Ok(game) => {
+                self.dismiss_dialog();
                 self.pause_automation();
                 self.game = game;
-                self.path = read_autosave_source();
+                self.path = source;
+                self.puzzle_cursor = None;
                 self.revision += 1;
                 self.notice = Some("continued the autosaved game".to_string());
                 self.title_stale = true;
             }
-            Ok(Err(error)) => {
-                self.fail("The autosaved game could not be read", &error);
-            }
-            Err(error) => {
-                self.fail("The autosaved game could not be found", &error);
-            }
+            Err(error) => self.fail("The autosaved game could not be read", &error),
         }
+    }
+
+    /// An untouched, ongoing empty game has nothing to recover. A zero-move
+    /// resignation (or an imported root) is not such a game.
+    pub fn is_fresh_game(&self) -> bool {
+        fresh_game(&self.game)
     }
 
     /// Throw the autosave away.
     pub fn discard_autosave(&mut self) {
-        for path in [autosave_path(), autosave_state_path()]
-            .into_iter()
-            .flatten()
-        {
+        self.discard_autosave_from(
+            [autosave_path(), autosave_state_path()]
+                .into_iter()
+                .flatten(),
+        );
+    }
+
+    /// Remove recovery files at explicit filesystem locations.
+    pub(crate) fn discard_autosave_from(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 // There is usually nothing to throw away, which is not a problem.
@@ -473,19 +540,22 @@ impl Session {
 
     /// Write the game in progress, so that it survives a crash or a quit.
     pub fn autosave(&mut self) {
-        let Ok(path) = autosave_path() else {
+        let (Ok(path), Ok(state_path)) = (autosave_path(), autosave_state_path()) else {
             return;
         };
-        if let Err(error) = gomoku_core::save(&path, &self.game) {
+        self.autosave_to(&path, &state_path);
+    }
+
+    /// Write recovery files at explicit locations (also usable by headless hosts).
+    pub fn autosave_to(&mut self, path: &Path, state_path: &Path) {
+        if let Err(error) = gomoku_core::save(path, &self.game) {
             log::warn!("the game could not be autosaved: {error}");
             // A puzzle position cannot be saved as a moves-only record. Throw
             // any older autosave away so the next launch does not offer a stale
             // normal-game autosave in place of the lost puzzle game.
             if matches!(error, gomoku_core::RecordError::FromPosition) {
-                let _ = std::fs::remove_file(&path);
-                if let Ok(state_path) = autosave_state_path() {
-                    let _ = std::fs::remove_file(&state_path);
-                }
+                let _ = std::fs::remove_file(path);
+                let _ = std::fs::remove_file(state_path);
                 log::trace!("discarded stale autosave after FromPosition error");
             }
             return;
@@ -498,18 +568,19 @@ impl Session {
             },
             self.game.cursor()
         );
-        if let Ok(state_path) = autosave_state_path() {
-            if let Err(error) = gomoku_core::write_atomic(&state_path, &state) {
-                log::warn!("the autosave state could not be written: {error}");
-            }
+        if let Err(error) = gomoku_core::write_atomic(state_path, &state) {
+            log::warn!("the autosave state could not be written: {error}");
         }
     }
 
     /// An autosave that is worth offering to continue, if there is one.
     pub fn autosave_to_offer(&self) -> Option<Option<PathBuf>> {
-        let path = autosave_path().ok()?;
-        let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
-        let source = read_autosave_source();
+        Self::autosave_to_offer_from(&autosave_path().ok()?, read_autosave_source())
+    }
+
+    /// Inspect an explicit recovery file using the same startup-offer policy.
+    pub fn autosave_to_offer_from(path: &Path, source: Option<PathBuf>) -> Option<Option<PathBuf>> {
+        let modified = std::fs::metadata(path).ok()?.modified().ok()?;
         if let Some(source) = &source {
             // Only offer it when the autosave is newer than the file it came from.
             if let Ok(saved) = std::fs::metadata(source).and_then(|meta| meta.modified()) {
@@ -519,8 +590,8 @@ impl Session {
                 }
             }
         }
-        let game = gomoku_core::load(&path).ok()?;
-        if game.is_empty() {
+        let game = gomoku_core::load(path).ok()?;
+        if fresh_game(&game) {
             log::trace!("autosave is empty; not offering");
             return None;
         }
@@ -538,8 +609,7 @@ impl Session {
             return;
         }
         if self.game.pending_truncation() > 0 {
-            self.ai.invalidate();
-            self.dialog = Some(Dialog::Truncate {
+            self.set_dialog(Dialog::Truncate {
                 count: self.game.pending_truncation(),
                 point,
             });
@@ -619,9 +689,10 @@ impl Session {
 
     /// A new, empty game. The player names are kept.
     pub fn new_game(&mut self) {
+        self.dismiss_dialog();
         self.ai.invalidate();
         self.ai.running = true;
-        self.hover = None;
+        self.clear_board_effects();
         let created = self.game.meta().created;
         let black = self.game.meta().black.clone();
         let white = self.game.meta().white.clone();
@@ -644,19 +715,28 @@ impl Session {
 
     // --- files ------------------------------------------------------------
 
-    /// Save to the open file, or ask for one when there is none.
-    pub fn save(&mut self) -> bool {
+    /// Save to the open file, asking the supplied picker only for an untitled
+    /// game. The picker boundary is injectable so headless tests never open UI.
+    pub fn save(&mut self, pick: impl FnOnce() -> Option<PathBuf>) -> SaveOutcome {
         match self.path.clone() {
-            Some(path) => {
-                self.save_to(&path);
-                false
-            }
-            None => true,
+            Some(path) => self.save_to(&path),
+            None => self.save_as(pick),
         }
     }
 
-    /// Save to a given file.
-    pub fn save_to(&mut self, path: &Path) {
+    /// Save to a chosen destination, bracketing even picker cancellation.
+    pub fn save_as(&mut self, pick: impl FnOnce() -> Option<PathBuf>) -> SaveOutcome {
+        self.begin_native_dialog();
+        let path = pick();
+        self.end_native_dialog();
+        match path {
+            Some(path) => self.save_to(&path),
+            None => SaveOutcome::Cancelled,
+        }
+    }
+
+    /// Save to a given file and report whether the write actually succeeded.
+    pub fn save_to(&mut self, path: &Path) -> SaveOutcome {
         match gomoku_core::save(path, &self.game) {
             Ok(()) => {
                 self.saved_revision = self.revision;
@@ -664,8 +744,12 @@ impl Session {
                 self.remember(path);
                 self.notice = Some(format!("saved to {}", name_of(path)));
                 self.title_stale = true;
+                SaveOutcome::Saved
             }
-            Err(error) => self.fail("The game could not be saved", &error),
+            Err(error) => {
+                self.fail("The game could not be saved", &error);
+                SaveOutcome::Failed
+            }
         }
     }
 
@@ -673,6 +757,7 @@ impl Session {
     pub fn open(&mut self, path: &Path) {
         match gomoku_core::load(path) {
             Ok(game) => {
+                self.dismiss_dialog();
                 self.pause_automation();
                 self.game = game;
                 self.path = Some(path.to_path_buf());
@@ -702,13 +787,8 @@ impl Session {
                 }
             }
             Ok(puzzles) => {
-                let before = Box::new(BeforePuzzle {
-                    game: self.game.clone(),
-                    path: self.path.clone(),
-                    puzzle_cursor: self.puzzle_cursor,
-                    revision: self.revision,
-                    saved_revision: self.saved_revision,
-                });
+                self.dismiss_dialog();
+                let before = Box::new(BeforePuzzle::from(&*self));
                 // Show the first puzzle right away: the picker chooses with
                 // the eyes, not with an index.
                 self.preview_puzzle(&puzzles[0]);
@@ -746,7 +826,7 @@ impl Session {
     /// Show a puzzle position on the board while the picker is open, without
     /// committing to it. `cancel_puzzle_picker` undoes the preview;
     /// `load_puzzle` commits it.
-    pub fn preview_puzzle(&mut self, puzzle: &Puzzle) {
+    fn preview_puzzle(&mut self, puzzle: &Puzzle) {
         if let Ok(game) =
             Game::from_position(puzzle.black.clone(), puzzle.white.clone(), puzzle.to_move)
         {
@@ -781,7 +861,9 @@ impl Session {
 
     /// Bring back the game as it was before the puzzle picker opened.
     fn restore_before(&mut self, before: BeforePuzzle) {
-        self.pause_automation();
+        self.ai.restore_intent(before.automation);
+        self.knock = None;
+        self.hover = None;
         self.game = before.game;
         self.path = before.path;
         self.puzzle_cursor = before.puzzle_cursor;
@@ -799,6 +881,7 @@ impl Session {
     pub fn load_puzzle(&mut self, puzzle: &Puzzle) -> Result<(), PositionError> {
         match Game::from_position(puzzle.black.clone(), puzzle.white.clone(), puzzle.to_move) {
             Ok(game) => {
+                self.dismiss_dialog();
                 self.pause_automation();
                 self.ai.set_owner(Color::Black, SeatOwner::Human);
                 self.ai.set_owner(Color::White, SeatOwner::Human);
@@ -835,9 +918,7 @@ impl Session {
     /// Show a failure to the user, with the detail.
     pub fn fail(&mut self, title: &str, error: &dyn std::fmt::Display) {
         log::error!("{title}: {error}");
-        self.ai.invalidate();
-        self.hover = None;
-        self.dialog = Some(Dialog::Message {
+        self.set_dialog(Dialog::Message {
             title: title.to_string(),
             body: format!("{error}"),
         });
@@ -953,6 +1034,10 @@ impl Default for WindowGeometry {
             maximized: false,
         }
     }
+}
+
+fn fresh_game(game: &Game) -> bool {
+    game.is_empty() && game.outcome() == Outcome::Ongoing && !game.is_from_position()
 }
 
 /// The file the autosave came from, if the sidecar names one.
@@ -1110,6 +1195,172 @@ mod tests {
             "the test file {} is removed",
             path.display()
         );
+    }
+
+    #[test]
+    fn save_first_only_releases_the_action_once_after_success() {
+        let path = scratch("save-first");
+        let mut session = Session::new(&Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        session.defer_after_save(After::NewGame);
+        assert_eq!(session.complete_save(SaveOutcome::Cancelled), None);
+        assert_eq!(session.complete_save(SaveOutcome::Saved), None);
+        session.defer_after_save(After::Quit);
+        let blocker = scratch("save-first-blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let outcome = session.save_to(&blocker.join("game.json"));
+        remove(&blocker);
+        assert_eq!(outcome, SaveOutcome::Failed);
+        assert_eq!(session.complete_save(outcome), None);
+        assert_eq!(session.complete_save(SaveOutcome::Saved), None);
+        assert!(session.changed());
+        assert!(matches!(session.dialog(), Some(Dialog::Message { .. })));
+        session.dismiss_dialog();
+        session.defer_after_save(After::NewGame);
+        let outcome = session.save_to(&path);
+        assert_eq!(outcome, SaveOutcome::Saved);
+        assert_eq!(session.complete_save(outcome), Some(After::NewGame));
+        assert_eq!(session.complete_save(outcome), None);
+        remove(&path);
+    }
+
+    #[test]
+    fn save_picker_cancellation_and_failure_never_leak_a_continuation() {
+        let mut session = Session::new(&Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        for action in [After::NewGame, After::Open, After::OpenPuzzle, After::Quit] {
+            session.defer_after_save(action);
+            let outcome = session.save(|| None);
+            assert_eq!(outcome, SaveOutcome::Cancelled);
+            assert_eq!(session.complete_save(outcome), None);
+            assert_eq!(session.complete_save(SaveOutcome::Saved), None);
+            assert!(session.automation_running());
+        }
+        let path = scratch("save-picker");
+        session.defer_after_save(After::NewGame);
+        let outcome = session.save(|| Some(path.clone()));
+        assert_eq!(session.complete_save(outcome), Some(After::NewGame));
+        assert_eq!(session.complete_save(outcome), None);
+        session.defer_after_save(After::Quit);
+        let outcome = session.save(|| panic!("existing path must not open picker"));
+        assert_eq!(session.complete_save(outcome), Some(After::Quit));
+        remove(&path);
+    }
+
+    #[test]
+    fn failure_replacing_a_picker_restores_the_real_game_and_keeps_the_error() {
+        let mut session = Session::new(&Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let expected = session.game().clone();
+        let puzzle = Puzzle {
+            name: "preview".into(),
+            black: vec![gomoku_core::point(3, 3).unwrap()],
+            white: vec![],
+            to_move: Color::White,
+            solution: None,
+            depth: None,
+        };
+        let before = Box::new(BeforePuzzle::from(&session));
+        session.set_dialog(Dialog::PickPuzzle {
+            puzzles: vec![puzzle.clone()],
+            index: 0,
+            before,
+        });
+        session.preview_puzzle(&puzzle);
+        let path = scratch("failed-picker-open");
+        std::fs::write(&path, "not a game").unwrap();
+        session.open(&path);
+        remove(&path);
+        assert_eq!(session.game(), &expected);
+        assert!(session.automation_running());
+        assert!(session.changed());
+        assert!(matches!(session.dialog(), Some(Dialog::Message { .. })));
+    }
+
+    #[test]
+    fn recent_open_uses_the_same_unsaved_transaction_as_the_picker() {
+        let mut session = Session::new(&Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let before = session.game().clone();
+        for action in [After::Open, After::OpenRecent(scratch("recent"))] {
+            session.attempt(action.clone());
+            assert_eq!(session.dialog(), Some(&Dialog::Unsaved { then: action }));
+            assert!(session.take_action().is_none());
+            assert_eq!(session.game(), &before);
+            session.dismiss_dialog();
+            assert!(session.automation_running());
+        }
+        session.new_game();
+        let action = After::OpenRecent(scratch("recent"));
+        session.attempt(action.clone());
+        assert_eq!(session.take_action(), Some(action));
+        assert_eq!(session.take_action(), None);
+    }
+
+    #[test]
+    fn zero_move_resignation_is_recoverable_not_a_fresh_game() {
+        let path = scratch("zero-move-autosave");
+        let state_path = scratch("zero-move-state");
+        let mut session = Session::new(&Settings::default());
+        assert!(session.is_fresh_game());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        assert!(
+            session.apply_ai_reply(request.reply(Ok(crate::ai::AiPlayerDecision {
+                action: DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                    candidates: 1
+                }),
+                search: None,
+                guard: None,
+            })))
+        );
+        assert!(session.game().is_empty());
+        assert!(!session.is_fresh_game());
+        session.autosave_to(&path, &state_path);
+        assert_eq!(Session::autosave_to_offer_from(&path, None), Some(None));
+        let mut reader = Session::new(&Settings::default());
+        reader.resume_autosave_from(&path, None);
+        assert_eq!(reader.game().outcome(), session.game().outcome());
+        assert!(!reader.automation_running());
+        assert!(!reader.is_fresh_game());
+        remove(&path);
+        remove(&state_path);
+    }
+
+    #[test]
+    fn failed_existing_path_and_save_as_preserve_game_and_cancel_the_action() {
+        let blocker = scratch("blocked-save-parent");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        for save_as in [false, true] {
+            let mut session = Session::new(&Settings::default());
+            session.place(gomoku_core::point(7, 7).unwrap());
+            let before = session.game().clone();
+            let failed_path = blocker.join("game.json");
+            if !save_as {
+                session.path = Some(failed_path.clone());
+            }
+            let original_path = session.path.clone();
+            session.defer_after_save(After::OpenRecent(scratch("never-opened")));
+            let outcome = if save_as {
+                session.save_as(|| Some(failed_path))
+            } else {
+                session.save(|| panic!("an existing path must not ask for a destination"))
+            };
+            assert_eq!(outcome, SaveOutcome::Failed);
+            assert_eq!(session.complete_save(outcome), None);
+            assert_eq!(session.complete_save(SaveOutcome::Saved), None);
+            assert_eq!(session.path, original_path);
+            assert_eq!(session.game(), &before);
+            assert!(session.changed());
+            assert!(matches!(session.dialog(), Some(Dialog::Message { .. })));
+            assert!(session.automation_running());
+            session.dismiss_dialog();
+            assert!(
+                session.next_ai_request().is_some(),
+                "failure must not leave an invisible blocker"
+            );
+        }
+        remove(&blocker);
     }
 
     #[test]
@@ -1478,13 +1729,7 @@ mod tests {
         session.save_to(&path);
         session.place_now(gomoku_core::point(8, 8).expect("inside"));
         session.rewind();
-        let before = BeforePuzzle {
-            game: session.game.clone(),
-            path: session.path.clone(),
-            puzzle_cursor: session.puzzle_cursor,
-            revision: session.revision,
-            saved_revision: session.saved_revision,
-        };
+        let before = BeforePuzzle::from(&session);
         let expected = before.clone();
         let puzzle = Puzzle {
             name: "preview".to_string(),
@@ -1527,13 +1772,7 @@ mod tests {
         let mut session = Session::new(&settings);
         let home = gomoku_core::point(7, 7).expect("inside the board");
         session.place(home);
-        let before = BeforePuzzle {
-            game: session.game.clone(),
-            path: session.path.clone(),
-            puzzle_cursor: session.puzzle_cursor,
-            revision: session.revision,
-            saved_revision: session.saved_revision,
-        };
+        let before = BeforePuzzle::from(&session);
         let puzzle = gomoku_core::Puzzle {
             name: "test puzzle".to_string(),
             black: vec![gomoku_core::point(3, 3).expect("inside the board")],

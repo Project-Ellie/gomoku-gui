@@ -4,6 +4,11 @@
 //! in the same surface, after the samples are resolved. Events go to egui first;
 //! the board only sees a pointer or a key that egui did not want.
 
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod tests;
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -24,6 +29,12 @@ use crate::ui::{self, Requests};
 const CLICK_SLOP: f32 = 4.0;
 /// The number of samples per pixel.
 const SAMPLES: u32 = 4;
+
+/// Whether saving may reuse the current destination.
+enum SaveMode {
+    CurrentOrPick,
+    Pick,
+}
 
 /// The application.
 pub struct App {
@@ -121,15 +132,24 @@ impl App {
         let event_loop = EventLoop::new().context("cannot open an event loop")?;
         event_loop.set_control_flow(ControlFlow::Wait);
         let result = event_loop.run_app(&mut self);
-        self.write_settings();
+        self.write_settings(
+            crate::session::settings_path(),
+            crate::session::autosave_path(),
+            crate::session::autosave_state_path(),
+        );
         result.context("the window loop failed")
     }
 
     /// Write the settings, and the game in progress, on the way out.
-    fn write_settings(&mut self) {
+    fn write_settings(
+        &mut self,
+        settings_path: Result<PathBuf>,
+        autosave_path: Result<PathBuf>,
+        autosave_state_path: Result<PathBuf>,
+    ) {
         // Frame-limited exits also need to save the real game, not a preview.
         self.session.dismiss_dialog();
-        match crate::session::settings_path() {
+        match settings_path {
             Ok(path) => {
                 let settings = self.session.settings(&self.geometry);
                 if let Err(error) = gomoku_core::save_settings(&path, &settings) {
@@ -139,9 +159,12 @@ impl App {
             Err(error) => log::warn!("the settings have no home: {error}"),
         }
         if self.session.changed() {
-            self.session.autosave();
-        } else if self.session.game().is_empty() {
-            self.session.discard_autosave();
+            if let (Ok(path), Ok(state_path)) = (autosave_path, autosave_state_path) {
+                self.session.autosave_to(&path, &state_path);
+            }
+        } else if self.session.is_fresh_game() {
+            self.session
+                .discard_autosave_from([autosave_path, autosave_state_path].into_iter().flatten());
         }
     }
 
@@ -157,27 +180,30 @@ impl App {
     }
 
     /// Perform an action that may lose unsaved changes.
-    fn attempt(&mut self, then: After, event_loop: &ActiveEventLoop) {
-        if self.session.changed() {
-            self.session.set_dialog(Dialog::Unsaved { then });
-            self.request_redraw();
-            return;
+    fn attempt(&mut self, then: After, exit: &mut impl FnMut()) {
+        self.session.attempt(then);
+        if let Some(action) = self.session.take_action() {
+            self.perform(action, exit);
         }
-        self.perform(then, event_loop);
+        self.request_redraw();
     }
 
     /// Perform an action, whatever the state of the game.
-    fn perform(&mut self, then: After, event_loop: &ActiveEventLoop) {
+    fn perform(&mut self, then: After, exit: &mut impl FnMut()) {
         match then {
             After::NewGame => {
                 self.session.new_game();
                 self.request_redraw();
             }
             After::Open => self.ask_to_open(),
+            After::OpenRecent(path) => {
+                self.session.open(&path);
+                self.request_redraw();
+            }
             After::OpenPuzzle => self.ask_to_open_puzzle(),
             After::Quit => {
                 self.closing = true;
-                event_loop.exit();
+                exit();
             }
         }
     }
@@ -195,8 +221,8 @@ impl App {
         self.session.end_native_dialog();
         if let Some(path) = path {
             self.session.open(&path);
-            self.request_redraw();
         }
+        self.request_redraw();
     }
 
     /// Ask for a puzzle file and load it.
@@ -212,58 +238,52 @@ impl App {
         self.session.end_native_dialog();
         if let Some(path) = path {
             self.session.open_puzzle(&path);
-            self.request_redraw();
         }
+        self.request_redraw();
     }
 
-    /// Ask for a file and save to it.
-    fn ask_to_save(&mut self) {
-        self.session.begin_native_dialog();
-        let mut dialog = rfd::FileDialog::new()
-            .add_filter("Gomoku game", &["json"])
-            .set_title("Save the game")
-            .set_file_name("gomoku.json");
-        if let Some(directory) = &self.session.last_directory {
-            dialog = dialog.set_directory(directory);
-        }
-        let path = dialog.save_file();
-        self.session.end_native_dialog();
-        if let Some(path) = path {
-            self.session.save_to(&path);
-            self.request_redraw();
-        }
-    }
-
-    /// Save, asking for a file when the game has no name yet.
-    fn save(&mut self, event_loop: &ActiveEventLoop) {
-        if self.session.save() {
-            self.ask_to_save();
-            return;
-        }
-        if let Some(after) = self.session.take_after_save() {
-            self.perform(after, event_loop);
+    /// Save using the same transaction for existing paths and Save As.
+    fn save(
+        &mut self,
+        mode: SaveMode,
+        pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+        exit: &mut impl FnMut(),
+    ) {
+        let directory = self.session.last_directory.clone();
+        let pick = || pick(directory.as_deref());
+        let outcome = match mode {
+            SaveMode::Pick => self.session.save_as(pick),
+            SaveMode::CurrentOrPick => self.session.save(pick),
+        };
+        if let Some(after) = self.session.complete_save(outcome) {
+            self.perform(after, exit);
         }
         self.request_redraw();
     }
 
     /// Act on what the interface asked for.
-    fn run_requests(&mut self, requests: Requests, event_loop: &ActiveEventLoop) {
+    fn run_requests(
+        &mut self,
+        requests: Requests,
+        pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+        exit: &mut impl FnMut(),
+    ) {
         if let Some(after) = self.session.take_action() {
-            self.perform(after, event_loop);
+            self.perform(after, exit);
             return;
         }
         if requests.quit {
-            self.attempt(After::Quit, event_loop);
+            self.attempt(After::Quit, exit);
         } else if requests.new_game {
-            self.attempt(After::NewGame, event_loop);
+            self.attempt(After::NewGame, exit);
         } else if requests.open {
-            self.attempt(After::Open, event_loop);
+            self.attempt(After::Open, exit);
         } else if requests.open_puzzle {
-            self.attempt(After::OpenPuzzle, event_loop);
+            self.attempt(After::OpenPuzzle, exit);
         } else if requests.save {
-            self.save(event_loop);
+            self.save(SaveMode::CurrentOrPick, pick, exit);
         } else if requests.save_as {
-            self.ask_to_save();
+            self.save(SaveMode::Pick, pick, exit);
         }
     }
 
@@ -423,7 +443,7 @@ impl App {
             self.session.title_stale = false;
         }
 
-        self.run_requests(requests, event_loop);
+        self.run_requests(requests, &mut pick_save_file, &mut || event_loop.exit());
 
         // A frame that consumed input is never allowed to be the last
         // frame; everything else (repaint_after, request_redraw) has
@@ -547,6 +567,18 @@ impl App {
             egui_renderer,
         })
     }
+}
+
+/// The native save-picker boundary; never reached by headless app tests.
+fn pick_save_file(directory: Option<&Path>) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new()
+        .add_filter("Gomoku game", &["json"])
+        .set_title("Save the game")
+        .set_file_name("gomoku.json");
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.save_file()
 }
 
 fn create_multisampled(
@@ -715,14 +747,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 // Cancel any uncommitted preview before replacing its dialog
                 // with a save prompt or writing an autosave at exit.
-                self.session.dismiss_dialog();
-                if self.session.changed() {
-                    self.session
-                        .set_dialog(Dialog::Unsaved { then: After::Quit });
-                    self.request_redraw();
-                } else {
-                    event_loop.exit();
-                }
+                self.attempt(After::Quit, &mut || event_loop.exit());
             }
             WindowEvent::Resized(size) => {
                 if let Some(state) = &mut self.state {
@@ -826,16 +851,7 @@ impl ApplicationHandler for App {
                 }
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
-                        if self.session.dialog().is_some() {
-                            self.session.dismiss_dialog();
-                            self.request_redraw();
-                        } else if self.session.changed() {
-                            self.session
-                                .set_dialog(Dialog::Unsaved { then: After::Quit });
-                            self.request_redraw();
-                        } else {
-                            event_loop.exit();
-                        }
+                        self.attempt(After::Quit, &mut || event_loop.exit());
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         self.session.rewind();

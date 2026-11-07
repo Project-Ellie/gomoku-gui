@@ -126,10 +126,17 @@ pub struct AiReply {
     pub(crate) result: Result<AiPlayerDecision, String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Seat {
     owner: SeatOwner,
     options: AiOptions,
+}
+
+/// Reversible user intent, deliberately excluding generation and flight state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AutomationIntent {
+    seats: [Seat; 2],
+    running: bool,
 }
 
 /// Bookkeeping only: the session supplies eligibility and commits decisions.
@@ -170,6 +177,17 @@ impl Default for Controller {
 }
 
 impl Controller {
+    pub fn intent(&self) -> AutomationIntent {
+        AutomationIntent {
+            seats: self.seats,
+            running: self.running,
+        }
+    }
+    pub fn restore_intent(&mut self, intent: AutomationIntent) {
+        self.invalidate();
+        self.seats = intent.seats;
+        self.running = intent.running;
+    }
     pub fn owner(&self, side: Color) -> SeatOwner {
         self.seats[index(side)].owner
     }
@@ -652,18 +670,235 @@ mod tests {
 
     #[test]
     fn native_modal_blocks_requests_and_invalidates_delayed_delivery_after_cancel() {
-        let mut session = white_turn();
-        let old = session.next_ai_request().unwrap();
-        session.begin_native_dialog();
-        assert!(session.next_ai_request().is_none());
-        assert!(!session.apply_ai_reply(play(&old, 7, 8)));
-        assert!(session.next_ai_request().is_none());
-        session.end_native_dialog();
-        let current = session.next_ai_request().unwrap();
-        session.begin_native_dialog();
-        session.end_native_dialog();
-        assert!(!session.apply_ai_reply(resign(&current)));
-        assert!(session.next_ai_request().is_some());
+        for paused in [false, true] {
+            for during in [false, true] {
+                for concession in [false, true] {
+                    let mut session = white_turn();
+                    let old = session.next_ai_request().unwrap();
+                    if paused {
+                        session.seek(usize::MAX);
+                    }
+                    let before = session.game().clone();
+                    let generation = session.generation();
+                    session.begin_native_dialog();
+                    assert!(session.generation() > generation);
+                    assert!(session.next_ai_request().is_none());
+                    if !during {
+                        session.end_native_dialog();
+                    }
+                    let reply = if concession {
+                        resign(&old)
+                    } else {
+                        play(&old, 7, 8)
+                    };
+                    assert!(!session.apply_ai_reply(reply));
+                    assert_eq!(session.game(), &before);
+                    if during {
+                        assert!(session.next_ai_request().is_none());
+                        let generation = session.generation();
+                        session.end_native_dialog();
+                        assert!(session.generation() > generation);
+                    }
+                    assert_eq!(session.automation_running(), !paused);
+                    assert_eq!(session.next_ai_request().is_some(), !paused);
+                    assert!(session.knock.is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn puzzle_preview_cancel_restores_intent_but_never_revives_a_flight() {
+        for (paused, concession, during) in [
+            (false, false, false),
+            (false, true, false),
+            (false, false, true),
+            (false, true, true),
+            (true, false, false),
+            (true, true, false),
+        ] {
+            let mut session = white_turn();
+            let saved_path = std::env::temp_dir().join(format!(
+                "gomoku-preview-before-{paused}-{concession}-{during}-{}.json",
+                std::process::id()
+            ));
+            session.save_to(&saved_path);
+            if concession {
+                session.set_players(Some("before".into()), None);
+            }
+            session.puzzle_cursor = Some(point(9, 9).unwrap());
+            let old = session.next_ai_request().unwrap();
+            if paused {
+                session.seek(0);
+            }
+            let path = std::env::temp_dir().join(format!(
+                "gomoku-preview-{paused}-{concession}-{during}-{}.json",
+                std::process::id()
+            ));
+            let parser = path.with_extension("parser");
+            std::fs::write(
+                &path,
+                r#"{"v":1,"count":2,"items":[
+                {"i":0,"a":"white","b":[[7,7]],"w":[],"l":[]},
+                {"i":1,"a":"white","b":[[7,7]],"w":[],"l":[]}
+            ]}"#,
+            )
+            .unwrap();
+            std::fs::write(&parser, "vcf-material-v1\n").unwrap();
+            let before = session.game().clone();
+            let changed = session.changed();
+            let generation = session.generation();
+            session.open_puzzle(&path);
+            assert!(matches!(
+                session.dialog(),
+                Some(crate::session::Dialog::PickPuzzle { .. })
+            ));
+            assert!(session.generation() > generation);
+            let generation = session.generation();
+            let coordinates = session.game().stones().collect::<Vec<_>>();
+            session.select_puzzle(1);
+            assert_eq!(session.game().stones().collect::<Vec<_>>(), coordinates);
+            assert!(
+                session.generation() > generation,
+                "same coordinates still invalidate"
+            );
+            assert!(session.next_ai_request().is_none());
+            let stale = if concession {
+                resign(&old)
+            } else {
+                play(&old, 7, 8)
+            };
+            if during {
+                assert!(!session.apply_ai_reply(stale.clone()));
+                assert!(session.next_ai_request().is_none());
+            }
+            // Even edits made while previewing are part of the cancelled preview.
+            session.take_seat(Color::White);
+            session
+                .set_ai_options(
+                    Color::White,
+                    AiOptions {
+                        simulations: 1,
+                        ..AiOptions::default()
+                    },
+                )
+                .unwrap();
+            let generation = session.generation();
+            session.dismiss_dialog();
+            assert!(
+                session.generation() > generation,
+                "cancel must never roll generation back"
+            );
+            assert_eq!(session.game(), &before);
+            assert_eq!(session.changed(), changed);
+            assert_eq!(session.path.as_ref(), Some(&saved_path));
+            assert_eq!(session.puzzle_cursor, Some(point(9, 9).unwrap()));
+            assert_eq!(session.owner(Color::White), SeatOwner::Ai);
+            assert_eq!(session.ai_options(Color::White), AiOptions::default());
+            assert_eq!(session.automation_running(), !paused);
+            assert!(session.generation() > old.generation);
+            if !during {
+                assert!(
+                    session.next_ai_request().is_none(),
+                    "old flight still owns slot"
+                );
+                assert!(!session.apply_ai_reply(stale));
+                assert_eq!(session.next_ai_request().is_some(), !paused);
+            } else {
+                assert_eq!(
+                    session.next_ai_request().is_some(),
+                    !paused,
+                    "cancel cannot resurrect retired work"
+                );
+                assert!(!session.apply_ai_reply(stale));
+                assert!(
+                    session.next_ai_request().is_none(),
+                    "duplicate cannot retire newer work"
+                );
+            }
+            assert!(session.knock.is_none());
+            assert!(session.hover.is_none());
+            session.save_to(&saved_path);
+            assert!(!session.changed());
+            std::fs::remove_file(saved_path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            std::fs::remove_file(parser).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_modal_rejects_play_and_resign_during_or_after_cancellation() {
+        use crate::session::{After, Dialog};
+        for dialog in [
+            Dialog::Message {
+                title: "test".into(),
+                body: "blocked".into(),
+            },
+            Dialog::Unsaved { then: After::Open },
+            Dialog::Resume { source: None },
+            Dialog::Truncate {
+                count: 1,
+                point: point(8, 8).unwrap(),
+            },
+        ] {
+            for paused in [false, true] {
+                for during in [false, true] {
+                    for concession in [false, true] {
+                        let mut session = white_turn();
+                        let old = session.next_ai_request().unwrap();
+                        if paused {
+                            session.seek(usize::MAX);
+                        }
+                        let before = session.game().clone();
+                        session.set_dialog(dialog.clone());
+                        assert!(session.next_ai_request().is_none());
+                        if !during {
+                            session.dismiss_dialog();
+                        }
+                        let reply = if concession {
+                            resign(&old)
+                        } else {
+                            play(&old, 7, 8)
+                        };
+                        assert!(!session.apply_ai_reply(reply));
+                        assert_eq!(session.game(), &before);
+                        assert!(session.knock.is_none());
+                        session.dismiss_dialog();
+                        assert_eq!(session.automation_running(), !paused);
+                        assert_eq!(session.next_ai_request().is_some(), !paused);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn navigation_and_board_replacement_drop_pending_board_effects() {
+        for change in [
+            Session::undo,
+            Session::rewind,
+            Session::forward,
+            |s: &mut Session| s.seek(0),
+            Session::new_game,
+            Session::begin_native_dialog,
+            |s: &mut Session| {
+                s.set_dialog(crate::session::Dialog::Message {
+                    title: "test".into(),
+                    body: "test".into(),
+                })
+            },
+        ] {
+            let mut session = Session::new(&Settings::default());
+            session.place(point(7, 7).unwrap());
+            assert!(session.knock.is_some());
+            session.hover = Some(point(8, 8).unwrap());
+            change(&mut session);
+            assert!(
+                session.knock.is_none(),
+                "no sound from replaced/reviewed state"
+            );
+            assert!(session.hover.is_none());
+        }
     }
 
     #[test]

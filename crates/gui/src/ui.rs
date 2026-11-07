@@ -200,7 +200,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             // and the application tests for it with `Session::on_board`.
         });
 
-    dialogs(ui.ctx(), session, &mut requests);
+    dialogs(ui.ctx(), session, &mut requests, Session::resume_autosave);
     requests
 }
 
@@ -359,7 +359,7 @@ fn recents(ui: &mut egui::Ui, session: &mut Session) {
         }
     }
     if let Some(path) = open {
-        session.open(&path);
+        session.attempt(After::OpenRecent(path));
     }
 }
 
@@ -437,12 +437,17 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
 }
 
 /// The dialogs that wait for an answer.
-fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) {
+fn dialogs(
+    ctx: &egui::Context,
+    session: &mut Session,
+    requests: &mut Requests,
+    resume: impl FnOnce(&mut Session),
+) {
     let Some(dialog) = session.dialog().cloned() else {
         return;
     };
     let mut close = false;
-    match dialog {
+    match &dialog {
         Dialog::Truncate { count, point: _ } => {
             let response = egui::Modal::new(egui::Id::new("truncate")).show(ctx, |ui| {
                 ui.set_max_width(360.0);
@@ -450,7 +455,7 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 ui.label(format!(
                     "You are looking at an earlier position. Playing here deletes {count} \
                      move{}. The move cannot be brought back.",
-                    if count == 1 { "" } else { "s" }
+                    if *count == 1 { "" } else { "s" }
                 ));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -473,19 +478,19 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 ui.heading("This game has changes that are not saved");
                 ui.label(match then {
                     After::NewGame => "Start a new game anyway?",
-                    After::Open => "Open another game anyway?",
+                    After::Open | After::OpenRecent(_) => "Open another game anyway?",
                     After::OpenPuzzle => "Load a puzzle anyway?",
                     After::Quit => "Quit anyway?",
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save first").clicked() {
-                        session.defer_after_save(then);
+                        session.defer_after_save(then.clone());
                         requests.save = true;
                         close = true;
                     }
                     if ui.button("Discard the changes").clicked() {
-                        session.defer_action(then);
+                        session.defer_action(then.clone());
                         close = true;
                     }
                 });
@@ -498,7 +503,7 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
             let response = egui::Modal::new(egui::Id::new("resume")).show(ctx, |ui| {
                 ui.set_max_width(380.0);
                 ui.heading("An unfinished game was found");
-                ui.label(match &source {
+                ui.label(match source {
                     Some(path) => format!(
                         "{} was not finished, and there is a newer autosave of it.",
                         name_of(path)
@@ -510,7 +515,7 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Continue it").clicked() {
-                        session.resume_autosave();
+                        resume(session);
                         close = true;
                     }
                     if ui.button("Start fresh").clicked() {
@@ -526,8 +531,8 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
         Dialog::Message { title, body } => {
             let response = egui::Modal::new(egui::Id::new("message")).show(ctx, |ui| {
                 ui.set_max_width(420.0);
-                ui.heading(title);
-                ui.label(body);
+                ui.heading(title.as_str());
+                ui.label(body.as_str());
                 ui.add_space(8.0);
                 if ui.button("OK").clicked() {
                     close = true;
@@ -537,12 +542,8 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 close = true;
             }
         }
-        Dialog::PickPuzzle {
-            puzzles,
-            index,
-            before,
-        } => {
-            let mut new_index = index;
+        Dialog::PickPuzzle { puzzles, index, .. } => {
+            let mut new_index = *index;
             let mut confirm = false;
             let mut cancel = false;
             // Twenty per row, as asked: a wall of super-mini boards, each just
@@ -677,7 +678,7 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 // message dialog takes over.
                 close = session.load_puzzle(&puzzles[new_index]).is_ok();
             } else if cancel {
-                session.cancel_puzzle_picker(*before);
+                session.dismiss_dialog();
                 close = true;
             } else {
                 // The board shows the selected puzzle right away; only a
@@ -686,7 +687,9 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
             }
         }
     }
-    if close {
+    // A command can replace the original dialog with an error. Only close the
+    // dialog that supplied this answer, never a newly created Message.
+    if close && session.dialog() == Some(&dialog) {
         session.dismiss_dialog();
     }
 }
@@ -794,6 +797,36 @@ mod tests {
         (requests, claim)
     }
 
+    /// Drive a real egui button/link by its visible label, never fixed pixels.
+    fn click_text(text: &str, mut frame: impl FnMut(Vec<egui::Event>) -> egui::FullOutput) {
+        frame(vec![]).textures_delta.clear();
+        let mut output = frame(vec![]);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => {
+                    Some(shape.pos + shape.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .expect("the requested action is drawn");
+        output.textures_delta.clear();
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ])
+            .textures_delta
+            .clear();
+        }
+    }
+
     /// What the interface says about the pointer, in the two ways it can say it.
     #[derive(Debug, Default)]
     struct Claim {
@@ -857,6 +890,75 @@ mod tests {
     }
 
     #[test]
+    fn continuing_an_unreadable_autosave_keeps_its_error_visible() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let before = session.game().clone();
+        session.set_dialog(Dialog::Resume { source: None });
+        let path =
+            std::env::temp_dir().join(format!("gomoku-failed-resume-{}.json", std::process::id()));
+        std::fs::write(&path, "not a game").unwrap();
+        let frame = |session: &mut Session, events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    dialogs(ui.ctx(), session, &mut Requests::default(), |session| {
+                        session.resume_autosave_from(&path, None);
+                    });
+                },
+            )
+        };
+        click_text("Continue it", |events| frame(&mut session, events));
+        assert!(
+            matches!(session.dialog(), Some(Dialog::Message { title, .. }) if title == "The autosaved game could not be read")
+        );
+        assert_eq!(session.game(), &before);
+        assert!(session.automation_running());
+        frame(&mut session, vec![]).textures_delta.clear();
+        assert!(matches!(session.dialog(), Some(Dialog::Message { .. })));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn clicking_a_recent_file_does_not_bypass_unsaved_confirmation() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let before = session.game().clone();
+        let path = PathBuf::from("recent-unsaved-game.json");
+        session.recent = vec![path.clone()];
+        click_text("recent-unsaved-game.json", |events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| recents(ui, &mut session),
+            )
+        });
+        assert_eq!(
+            session.dialog(),
+            Some(&Dialog::Unsaved {
+                then: After::OpenRecent(path)
+            })
+        );
+        assert_eq!(session.game(), &before);
+        assert!(session.take_action().is_none());
+    }
+
+    #[test]
     fn every_dialog_draws() {
         let point = gomoku_core::point(7, 7).expect("inside the board");
         let dialogs = [
@@ -880,13 +982,9 @@ mod tests {
                     depth: Some(3),
                 }],
                 index: 0,
-                before: Box::new(crate::session::BeforePuzzle {
-                    game: gomoku_core::Game::new(),
-                    path: None,
-                    puzzle_cursor: None,
-                    revision: 0,
-                    saved_revision: 0,
-                }),
+                before: Box::new(crate::session::BeforePuzzle::from(&Session::new(
+                    &gomoku_core::Settings::default(),
+                ))),
             },
         ];
         for dialog in dialogs {
@@ -914,13 +1012,7 @@ mod tests {
                 depth: None,
             }],
             index: 0,
-            before: Box::new(crate::session::BeforePuzzle {
-                game: session.game().clone(),
-                path: None,
-                puzzle_cursor: None,
-                revision: 0,
-                saved_revision: 0,
-            }),
+            before: Box::new(crate::session::BeforePuzzle::from(&session)),
         });
         let context = egui::Context::default();
         // Open File, then click its first action, well outside the picker.
