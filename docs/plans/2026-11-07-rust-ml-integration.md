@@ -279,3 +279,35 @@ Concrete deltas between the vendored snapshot and current
 | 2 | Planned: tactics + separately requested TSS proof overlays; completed-search heatmap | Not M1 scope; no streaming or proof line in `Decision` |
 | 3 | Planned: Swap2 opening flow on the typestate machine | Illegal opening sequences unrepresentable in UI |
 | 4 | Deferred: AI-aware record metadata beyond minimal v2 resignation | Old records still load; new fields optional |
+
+## 9. M1 verification (2026-11-08)
+
+Recorded acceptance evidence for the §8 milestone-1 gates. Automated and
+scripted results are verified as listed; the remaining manual items are
+explicitly **not** claimed.
+
+- **Locked workspace tests (normal):** 208 passed, 5 ignored (the opt-in
+  release acceptance tests).
+- **Genuine release acceptance:** explicit
+  `cargo test --release -p gomoku-gui --locked -- --ignored --nocapture --test-threads=1`
+  → 5 passed, driving the real App scheduler and worker with the genuine
+  pinned player (no fabricated decisions):
+  - seeded real 400-simulation automatic both-AI game: 40 stones, 41
+    decisions, ending in White resignation in ~30 s;
+  - four-turn human exchange (8 plies) through real egui input;
+  - real-search Take with stale-flight suppression plus undo/Resume;
+  - real 11-stone demo resignation with save/load/undo round trip.
+- **Standalone full release build:** from the pinned upstream engine rev
+  `158b611` (git dependency only, no sibling checkout) — confirmed.
+- **Native isolated demo:** `--demo --frames 240` applied the genuine White
+  resignation and auto-saved a v2 record after 11 stones.
+
+Run the release executable from this worktree with:
+
+```sh
+cargo run --release --locked -p gomoku-gui
+```
+
+**Still unverified (manual only, do not claim otherwise):** a full
+mouse-driven native game and true idle-window wake. Accessibility (AX) is
+not authorized, so native interaction could not be scripted.

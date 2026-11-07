@@ -2097,6 +2097,7 @@ dependencies = [
  "glam",
  "gomoku-core",
  "log",
+ "mcts",
  "naga",
  "player",
  "png",

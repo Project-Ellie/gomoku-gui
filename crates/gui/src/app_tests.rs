@@ -1,5 +1,7 @@
 //! Headless application tests: real egui requests and app dispatch, fake only
 //! the native save picker, event-loop exit, and filesystem destinations.
+//!
+//! `real_acceptance` adds opt-in release tests using the genuine pinned player.
 use super::*;
 use std::path::{Path, PathBuf};
 
@@ -635,4 +637,333 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
     assert!(!recovery.exists());
     assert!(!state.exists());
     assert_eq!(exits, 3);
+}
+
+/// Slow acceptance through the actual App scheduler and owned worker sink.
+/// Run: cargo test --release -p gomoku-gui --locked app::tests::real_acceptance \
+///     -- --ignored --nocapture --test-threads=1
+mod real_acceptance {
+    use super::*;
+    use crate::ai::{AiReply, AiRequest, DecisionAction};
+    use gomoku_core::{Color, Game, Outcome, WinMethod, point};
+    use rand::SeedableRng;
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::time::{Duration, Instant};
+
+    const REPLY_DEADLINE: Duration = Duration::from_secs(60);
+    const GAME_DEADLINE: Duration = Duration::from_secs(600);
+
+    struct EvaluationLatch {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    }
+
+    /// Delegates every evaluation unchanged. The one-shot handshake holds an
+    /// actual MCTS evaluation open, not a fabricated decision or completion.
+    struct Evaluator {
+        baseline: baseline::BaselineEvaluator,
+        latch: Option<EvaluationLatch>,
+    }
+
+    impl mcts::Evaluator for Evaluator {
+        fn evaluate(&mut self, request: mcts::EvalRequest) -> mcts::EvalResult {
+            let result = self.baseline.evaluate(request);
+            if let Some(latch) = self.latch.take() {
+                latch.entered.send(()).unwrap();
+                latch
+                    .release
+                    .recv_timeout(REPLY_DEADLINE)
+                    .expect("release the genuine evaluation before its deadline");
+            }
+            result
+        }
+    }
+
+    #[allow(
+        clippy::assertions_on_constants,
+        reason = "ignored tests must compile in debug but execute only in release"
+    )]
+    fn real_app(seed: u64, game: Game, latch: Option<EvaluationLatch>) -> (App, Receiver<AiReply>) {
+        assert!(!cfg!(debug_assertions), "run acceptance with --release");
+        let mut app = App::new(Settings::default(), game, None, None);
+        let (tx, replies) = mpsc::channel();
+        let origin = std::thread::current().id();
+        app.worker = Some(Ok(Worker::spawn(
+            move || {
+                assert_ne!(origin, std::thread::current().id());
+                // All non-Send evaluator/player/RNG state originates on worker.
+                let evaluator = Evaluator {
+                    baseline: baseline::BaselineEvaluator::new(baseline::Device::flex()),
+                    latch,
+                };
+                let mut player = player::AiPlayer::new(Box::new(evaluator));
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+                Ok(move |request: &AiRequest| {
+                    assert_eq!(request.options.simulations, 400);
+                    assert_eq!(request.options.temperature, 0.0);
+                    assert_eq!(request.options.noise_epsilon, 0.0);
+                    assert_eq!(request.options.own, player::OwnTssConfig::baseline());
+                    assert_eq!(request.options.guard, player::GuardConfig::baseline());
+                    assert!(request.options.resign);
+                    player
+                        .decide(&request.board, &request.options, &mut rng)
+                        .map_err(|error| error.to_string())
+                })
+            },
+            move |reply| tx.send(reply).is_ok(),
+        )
+        .unwrap()));
+        (app, replies)
+    }
+
+    fn receive<T>(receiver: &Receiver<T>) -> T {
+        receiver
+            .recv_timeout(REPLY_DEADLINE)
+            .expect("worker deadline")
+    }
+
+    fn check_search(reply: &AiReply, side: Color) -> bool {
+        let decision = reply.result.as_ref().expect("genuine player succeeded");
+        if let Some(search) = &decision.search {
+            assert_eq!(search.side_to_move, side);
+            assert_eq!(search.visits.iter().map(|(_, n)| n).sum::<u32>(), 400);
+            true
+        } else {
+            assert!(matches!(decision.action, DecisionAction::Play(_)));
+            assert!(matches!(
+                decision.guard.as_ref().unwrap().outcome,
+                player::GuardOutcome::ProvenWin
+            ));
+            false
+        }
+    }
+
+    /// No Step, direct Worker::submit, or Session::apply_ai_reply shortcuts.
+    fn automatic_turn(app: &mut App, replies: &Receiver<AiReply>) -> bool {
+        let before = app.session.game().clone();
+        assert_eq!(before.outcome(), Outcome::Ongoing);
+        app.session.knock.take();
+        app.dirty = false;
+        app.prepare_wait();
+        assert!(app.session.next_ai_request().is_none(), "one flight only");
+        assert_eq!(app.session.game(), &before, "search owns a detached board");
+        let reply = receive(replies);
+        let searched = check_search(&reply, before.to_move());
+        let mut expected = before;
+        let knock = match reply.result.as_ref().unwrap().action {
+            DecisionAction::Play(mv) => {
+                assert!(expected.board_snapshot().is_legal(mv));
+                expected.play(mv).expect("every actual move is legal");
+                Some(crate::session::neighbours(&expected, mv))
+            }
+            DecisionAction::Resign(_) => {
+                expected.resign().unwrap();
+                None
+            }
+        };
+        app.handle_app_event(AppEvent::AiCompleted(reply));
+        assert_eq!(app.session.game(), &expected, "one exact action committed");
+        assert_eq!(app.session.knock.take(), knock);
+        assert!(app.dirty, "completion wakes the App without pointer input");
+        assert!(app.session.notice.is_none());
+        searched
+    }
+
+    fn stopped(app: &mut App, replies: &Receiver<AiReply>) {
+        assert_ne!(app.session.game().outcome(), Outcome::Ongoing);
+        let terminal = app.session.game().clone();
+        for _ in 0..3 {
+            app.prepare_wait();
+            assert!(app.session.next_ai_request().is_none());
+            assert_eq!(app.session.game(), &terminal);
+            assert!(matches!(replies.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        }
+    }
+
+    fn roundtrip(app: &mut App, files: &Files) -> std::path::PathBuf {
+        let expected = app.session.game().clone();
+        assert!(
+            !expected.is_from_position(),
+            "a playable record, not a puzzle"
+        );
+        let path = files.path("terminal.json");
+        app.session.save_to(&path);
+        assert!(!app.session.changed());
+        assert_eq!(gomoku_core::load(&path).unwrap(), expected);
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(json["version"], 2);
+        // Independently replay the entire history, rejecting any illegal move.
+        let mut replay = Game::started_at(expected.meta().created);
+        for &mv in expected.moves() {
+            replay.play(mv).expect("legal full history replay");
+        }
+        if matches!(
+            expected.outcome(),
+            Outcome::Won {
+                method: WinMethod::Resignation,
+                ..
+            }
+        ) {
+            replay.resign().unwrap();
+        }
+        assert_eq!(replay, expected);
+        path
+    }
+
+    #[test]
+    #[ignore = "release acceptance: full seeded Flex default-400 game"]
+    fn both_ai_default_400_finish_automatically_and_roundtrip() {
+        let files = Files::new("real-both-ai");
+        let start = Instant::now();
+        let (mut app, replies) = real_app(0x6006_1a00, Game::new(), None);
+        app.session.release_seat(Color::Black);
+        let mut decisions = 0;
+        let mut searches = 0;
+        while app.session.game().outcome() == Outcome::Ongoing {
+            assert!(start.elapsed() < GAME_DEADLINE, "whole-game deadline");
+            assert!(decisions < 226, "225 stones plus optional resignation");
+            searches += usize::from(automatic_turn(&mut app, &replies));
+            decisions += 1;
+            assert!(app.session.game().len() <= 225);
+        }
+        assert!(searches > 0, "a genuine 400-simulation search ran");
+        stopped(&mut app, &replies);
+        roundtrip(&mut app, &files);
+        eprintln!(
+            "both-AI: elapsed={:?}, plies={}, decisions={decisions}, searches={searches}, outcome={:?}",
+            start.elapsed(),
+            app.session.game().len(),
+            app.session.game().outcome()
+        );
+        app.close_worker();
+    }
+
+    #[test]
+    #[ignore = "release acceptance: scripted human versus real Flex default-400"]
+    fn scripted_human_exchange_uses_session_and_app_dispatch() {
+        let start = Instant::now();
+        let (mut app, replies) = real_app(0x6006_1a01, Game::new(), None);
+        // Widely separated human moves avoid manufacturing a tactical puzzle.
+        for (turn, (row, col)) in [(7, 7), (2, 2), (12, 12), (2, 12)].into_iter().enumerate() {
+            let mv = point(row, col).unwrap();
+            assert_eq!(app.session.game().to_move(), Color::Black);
+            assert!(app.session.game().board_snapshot().is_legal(mv));
+            app.session.place(mv);
+            assert_eq!(app.session.game().len(), turn * 2 + 1);
+            automatic_turn(&mut app, &replies);
+            assert_eq!(app.session.game().len(), (turn + 1) * 2);
+            assert_eq!(app.session.game().outcome(), Outcome::Ongoing);
+            app.prepare_wait();
+            assert!(app.session.next_ai_request().is_none(), "human owns Black");
+        }
+        eprintln!(
+            "human/AI: elapsed={:?}, plies={}, outcome={:?}",
+            start.elapsed(),
+            app.session.game().len(),
+            app.session.game().outcome()
+        );
+        app.close_worker();
+    }
+
+    #[test]
+    #[ignore = "release acceptance: Take inside real evaluation, stale discard, undo/Resume"]
+    fn take_during_real_search_discards_silently_then_undo_resume_searches() {
+        let start = Instant::now();
+        let (entered, evaluating) = mpsc::channel();
+        let (release, latch) = mpsc::channel();
+        let (mut app, replies) = real_app(
+            0x6006_1a02,
+            Game::new(),
+            Some(EvaluationLatch {
+                entered,
+                release: latch,
+            }),
+        );
+        app.session.place(point(7, 7).unwrap());
+        app.session.knock.take();
+        app.prepare_wait();
+        receive(&evaluating); // A genuine Flex evaluation is inside MCTS now.
+        app.session.take_seat(Color::White);
+        let human = point(0, 0).unwrap();
+        app.session.place(human); // Take acts before the old search can finish.
+        assert_eq!(app.session.game().len(), 2);
+        app.session.knock.take();
+        let taken = app.session.game().clone();
+        app.prepare_wait();
+        assert!(app.session.next_ai_request().is_none());
+        release.send(()).unwrap();
+        let stale = receive(&replies);
+        assert!(check_search(&stale, Color::White));
+        app.handle_app_event(AppEvent::AiCompleted(stale));
+        assert_eq!(app.session.game(), &taken);
+        assert!(app.session.knock.is_none(), "stale work makes no sound");
+        assert!(app.session.notice.is_none());
+
+        // White is non-current: Release does not start another flight. Undo
+        // returns to its turn and pauses, despite White now being AI-owned.
+        app.session.release_seat(Color::White);
+        app.session.undo();
+        assert_eq!(app.session.game().len(), 1);
+        assert!(!app.session.automation_running());
+        app.prepare_wait();
+        assert!(app.session.next_ai_request().is_none());
+        assert!(matches!(replies.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        app.session.resume_automation();
+        assert!(automatic_turn(&mut app, &replies));
+        assert_eq!(app.session.game().len(), 2);
+        assert_eq!(app.session.game().outcome(), Outcome::Ongoing);
+        eprintln!(
+            "Take/stale/undo/Resume: elapsed={:?}, plies={}, outcome={:?}",
+            start.elapsed(),
+            app.session.game().len(),
+            app.session.game().outcome()
+        );
+        app.close_worker();
+    }
+
+    #[test]
+    #[ignore = "release acceptance: playable demo real resignation, v2 save/load, result-only undo"]
+    fn real_resignation_replayed_game_saves_loads_and_undo_keeps_stones() {
+        let files = Files::new("real-resignation");
+        let start = Instant::now();
+        // Exactly the native --demo history, using its normal legal Game::play
+        // construction rather than the unsavable imported-position fixture.
+        let demo = crate::demo_game();
+        assert_eq!(demo.len(), 11);
+        assert_eq!(demo.outcome(), Outcome::Ongoing);
+        assert_eq!(demo.to_move(), Color::White);
+        let stones = demo.stones().collect::<Vec<_>>();
+        let (mut app, replies) = real_app(0x6006_1a03, demo.clone(), None);
+        assert!(automatic_turn(&mut app, &replies));
+        assert_eq!(app.session.game().moves(), demo.moves());
+        assert_eq!(app.session.game().stones().collect::<Vec<_>>(), stones);
+        assert_eq!(
+            app.session.game().outcome(),
+            Outcome::Won {
+                winner: Color::Black,
+                method: WinMethod::Resignation
+            }
+        );
+        stopped(&mut app, &replies);
+        let path = roundtrip(&mut app, &files);
+        app.session.open(&path);
+        assert!(!app.session.automation_running());
+        stopped(&mut app, &replies);
+        app.session.undo();
+        assert_eq!(app.session.game(), &demo, "undo clears only the result");
+        assert_eq!(app.session.game().stones().collect::<Vec<_>>(), stones);
+        assert!(!app.session.automation_running());
+        assert!(app.session.changed());
+        assert!(app.session.knock.is_none());
+        app.prepare_wait();
+        assert!(app.session.next_ai_request().is_none());
+        eprintln!(
+            "real resignation/save/load/undo: elapsed={:?}, plies={}, terminal=Black/Resignation, after_undo={:?}",
+            start.elapsed(),
+            app.session.game().len(),
+            app.session.game().outcome()
+        );
+        app.close_worker();
+    }
 }
