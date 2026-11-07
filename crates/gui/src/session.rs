@@ -555,8 +555,8 @@ impl Session {
     /// cursor.
     ///
     /// Returns `Ok(())` when the puzzle was loaded, or `Err` when the
-    /// position was rejected. On error a message dialog has already been
-    /// opened.
+    /// position was rejected with a core-owned [`PositionError`]. On error a
+    /// message dialog has already been opened; the current game is unchanged.
     pub fn load_puzzle(&mut self, puzzle: &Puzzle) -> Result<(), PositionError> {
         match Game::from_position(puzzle.black.clone(), puzzle.white.clone(), puzzle.to_move) {
             Ok(game) => {
@@ -1166,6 +1166,44 @@ mod tests {
         assert_eq!(session.puzzle_cursor, Some(first_solution));
         assert!(session.path.is_none());
         assert!(session.dialog.is_none());
+    }
+
+    #[test]
+    fn rejected_puzzles_report_core_errors_without_replacing_the_game() {
+        let a = gomoku_core::point(3, 3).expect("inside");
+        let b = gomoku_core::point(4, 3).expect("inside");
+        let mut session = Session::new(&Settings::default());
+        session.place_now(gomoku_core::point(7, 7).expect("inside"));
+        session.path = Some(PathBuf::from("existing.json"));
+        session.puzzle_cursor = Some(b);
+        let before = session.game.clone();
+        let revision = session.revision;
+        let saved_revision = session.saved_revision;
+        for (black, white, expected) in [
+            (vec![a, a], vec![b], PositionError::DuplicateStone),
+            (vec![a], vec![a], PositionError::OverlappingColors),
+            (vec![a, b], vec![], PositionError::InvalidCounts),
+        ] {
+            let puzzle = Puzzle {
+                name: "invalid".into(),
+                black,
+                white,
+                to_move: Color::Black,
+                solution: None,
+                depth: None,
+            };
+            let message = expected.to_string();
+            assert_eq!(session.load_puzzle(&puzzle), Err(expected));
+            assert_eq!(session.game, before);
+            assert_eq!(session.path, Some(PathBuf::from("existing.json")));
+            assert_eq!(session.puzzle_cursor, Some(b));
+            assert_eq!(session.revision, revision);
+            assert_eq!(session.saved_revision, saved_revision);
+            assert!(matches!(
+                &session.dialog,
+                Some(Dialog::Message { body, .. }) if body == &message
+            ));
+        }
     }
 
     #[test]

@@ -18,8 +18,8 @@ pub use config::{
     MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, Settings, StoneSettings,
     ViewSettings, WindowSettings, load_settings, save_settings,
 };
-pub use engine::{Color, Move, PositionError, Status};
-pub use error::{ConfigError, GameError, RecordError};
+pub use engine::{Color, Move, Status};
+pub use error::{ConfigError, GameError, PositionError, RecordError};
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;
 pub use puzzle::{Puzzle, PuzzleError, load_puzzles};

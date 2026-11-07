@@ -1,6 +1,8 @@
 # Plan: gomoku-gui on the live rust-ml implementation
 
-Date: 2026-11-07. Status: owner decisions made (§7), ready for Tier 0.
+Date: 2026-11-07. Status: M0 implemented, pending independent review;
+AI milestones remain planned. API notes below checked against live owner code
+at `158b6114029d8708fe5d55394b2930f5e4fd1d8c`, not tutorial solutions.
 
 ## 1. Goal and constraint
 
@@ -21,15 +23,16 @@ change, that need is reported to the owner, not implemented here
 
 ### gomoku-gui
 
-- `crates/engine` is a **copy** of the rust-ml engine (ADR-008),
-  taken so a clone builds on its own.
-- `crates/core` calls the engine from exactly one module,
-  `core/src/game.rs`, behind the `Game` facade (ADR-002). The rest of
-  the program — rendering, audio, records, puzzles, settings — never
-  names an engine type except the re-exported `Color`, `Move`,
-  `Status`, `PositionError`.
-- The GUI consumes: `Board::{new, play, undo, moves, status, to_move,
-  stone_at}`, `Move::new`, `Color`, `Status`, `PositionError`.
+- M0 removes the former `crates/engine` copy (ADR-008, now superseded)
+  in favor of the pinned upstream git crate; a clone needs no sibling checkout.
+- `crates/core/src/game.rs` owns the engine `Board` operations behind the
+  `Game` facade (ADR-002). Core modules also use engine value types and map
+  upstream errors; GUI callers use the core re-exports `Color`, `Move`, and
+  `Status`. `PositionError` is now core-owned; `Game::board_snapshot` returns
+  a detached upstream `Board` for future analysis.
+- The facade consumes `Board::{new, from_position, play, undo, moves, status,
+  to_move, stone_at, clone}`, `Color`, `Move`, and `Status`; coordinate creation
+  uses `Move::new`. Upstream position errors are mapped at the core boundary.
 
 ### rust-ml/gomoku (the "current implementation")
 
@@ -41,15 +44,17 @@ change, that need is reported to the owner, not implemented here
 | `baseline` | **no — Burn** | hand-written threat-map + gravity evaluator behind the `mcts::Evaluator` seam |
 | `patterns`, `train` | **no — Burn** | threat network, training pipeline (future trained-net opponent) |
 
-The vendored snapshot in gomoku-gui predates the current engine.
-Drift that touches the facade (§5).
+The former vendored snapshot predates the pinned engine.
+Facade adaptations are listed in §5.
 
 ## 3. The experience this unlocks
 
 1. **Play against the machine.** `player::AiPlayer` decides a move
-   from a `Board`. Certified forced wins are played immediately with
-   the proof line available; otherwise PUCT search with a
-   configurable simulation budget = difficulty knob.
+   from a `Board`. Certified own forced wins return their first move without
+   search statistics; `Decision` does not carry the proof line. Otherwise PUCT
+   search uses a configurable simulation budget = difficulty knob.
+   At the pin, `DecisionAction` also supports opt-in heuristic resignation;
+   applying or persisting resignation is not part of M0.
 2. **Live analysis overlays.** The engine's tactics functions mark
    immediate wins, forced blocks, and double threats on the wooden
    board; `prove_forced_win` + `verify_line` draw certified winning
@@ -102,26 +107,30 @@ first AI milestone, no feature gates needed.
 
 **Tier 0 — swap the engine source.**
 Remove `crates/engine`; depend on the rust-ml `engine` crate
-(§4.4). Adapt the facade to drift (§5). The GUI behaves exactly as
-today. Gate: full GUI test suite green, `cargo check` without the
-vendored crate.
+(§4.4). Adapt the facade to drift (§5), preserving duplicate rejection and
+fixing the imported-root draw regression through upstream behavior. No AI is
+added. Gate: locked workspace tests, clippy, formatting and standalone build
+without the vendored crate or any sibling path dependency.
 
 **Tier 1 — play vs AI (the dream milestone).**
 Depend on `mcts` + `player` + `baseline`. The AI worker (§4.3) owns
 an `AiPlayer` backed by `BaselineEvaluator` — the full threat-map +
 gravity policy from the start, no stub phase. Difficulty knob:
-simulation count in `SearchConfig`. Delivers: play-vs-AI on the
-wooden board, certified-win shortcut via `OwnTssConfig`, guard
-diagnostics in the log. Burn device auto-select at startup; the
-Burn/wgpu version alignment check (§7, resolved) happens here.
+simulation count in `PlayerOptions` (mapped internally to `SearchConfig`).
+Delivers: play-vs-AI on the wooden board, certified-win shortcut via
+`OwnTssConfig`, guard diagnostics in the log. Start with Burn's genuine Flex
+CPU backend, `Device::flex()`; GPU selection or graphics-resource sharing is
+not required. See §7 for version coexistence.
 Later: a net trained by `train` drops in at the same `Evaluator`
 seam without touching the GUI.
 
 **Tier 2 — analysis overlays.**
 Engine-only additions: tactics markers and TSS proof lines as
-optional render layers; search heatmap from `SearchOutcome` shown
-while the AI thinks. Pure presentation work in `render/`, fed by
-pure engine calls.
+optional render layers; search heatmap from `Decision::search` (`SearchStats`) shown
+after a decision completes. The pinned player has no streaming search API;
+live progress would require a separate design. Proof overlays need a separate
+engine prover call because `Decision` carries no proof line. Pure presentation
+work in `render/`, fed by engine calls and completed decision statistics.
 
 ### 4.3 Concurrency: one AI worker, message-passing only
 
@@ -132,15 +141,17 @@ that and puts the one search thread *outside* the render loop:
 winit event loop (render + egui)          AI worker thread
 ────────────────────────────────          ─────────────────────────────
 user clicks "let AI move"        ─────►   Request { board, gen, cfg }
-(render never blocks)                     AiPlayer::decide(board, ...)
+(render never blocks)                     AiPlayer::decide(&board, &options, &mut rng)
                                           …search runs (ms–s)…
-poll channel each frame        ◄─────   Reply { gen, mv, proof?, stats }
-if gen == current_gen: Game::play(mv)
+poll channel each frame        ◄─────   Reply { gen, decision }
+if gen == current_gen: handle DecisionAction (Play / Resign)
 ```
 
-- The worker owns the `AiPlayer` (evaluator reuse across moves, per
-  its design). It receives a **cloned `Board`**; no shared mutable
-  state, no locks.
+- Construct `AiPlayer` and its evaluator **inside** the worker thread.
+  `AiPlayer` holds `Box<dyn Evaluator>` without a `Send` bound and is non-Send;
+  moving a player constructed on the UI thread into the worker will not work.
+  The worker reuses its evaluator and receives a **cloned `Board`** via
+  `Game::board_snapshot()`; no shared mutable game state, no locks.
 - **Generation counter**: new game, undo, rewind, or seek increments
   `gen`; stale replies are dropped. That is the entire cancellation
   story — no thread kills mid-search.
@@ -158,17 +169,18 @@ premise is now reversed: tracking the live implementation *is* the
 point. The owner has chosen a **pinned git dependency**:
 
 ```toml
-engine   = { git = "https://github.com/Project-Ellie/rust-ml", rev = "<pinned>" }
-mcts     = { git = "https://github.com/Project-Ellie/rust-ml", rev = "<pinned>" }
-player   = { git = "https://github.com/Project-Ellie/rust-ml", rev = "<pinned>" }
-baseline = { git = "https://github.com/Project-Ellie/rust-ml", rev = "<pinned>" }
+engine   = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
+mcts     = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
+player   = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
+baseline = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
 ```
 
 ADR-008 verified that Cargo resolves crates inside the nested
 `gomoku/` workspace from a git dependency, so one `rev` pin covers
-all four. The repository builds standalone again (Cargo fetches the
-dependency), and tracking the live implementation is an explicit,
-deliberate act: bump the rev, adapt the facade if the API moved,
+all four. M0 declares all four at workspace level but consumes only `engine`;
+the others do not enter the lockfile until used. The repository builds
+standalone again (Cargo fetches the dependency). Tracking the live
+implementation is an explicit, deliberate act: bump the rev, adapt the facade if the API moved,
 run the gates. That bump ritual replaces the old re-vendoring
 ritual — same cost, but now the update is *visible* in one diff
 line instead of a 4,000-line snapshot copy.
@@ -185,14 +197,15 @@ Concrete deltas between the vendored snapshot and current
 `rust-ml/gomoku/crates/engine`, and what the facade does about each:
 
 1. **`PositionError::DuplicateStone` no longer exists upstream.**
-   `Game::from_position` currently returns it from its own duplicate
-   pre-check. Adaptation: the duplicate check maps to
-   `GameError` (GUI's own error enum) instead, then delegates to the
-   engine's `Board::from_position` validation (overlap, count parity,
-   Zobrist recomputed). Net effect: *less* validation code in the
-   facade, error taxonomy moves one variant from engine to core.
-2. **Draw detection** now uses `empty_moves()` instead of a hardcoded
-   225. Behavior identical; no action.
+   `Game::from_position` retains its same-color duplicate pre-check and returns
+   core-owned `PositionError::DuplicateStone`. Upstream overlap and count
+   errors map exhaustively to `PositionError::{OverlappingColors, InvalidCounts}`.
+   Each color is checked separately so overlap is not mislabeled a duplicate.
+   `GameError` remains the placement error type.
+2. **Draw detection on play** now uses occupied cells via `empty_moves()`
+   instead of the played-history length. This fixes the imported 224-stone
+   puzzle root: the final placement draws even though history has one move.
+   Regression coverage includes rewind/forward and destructive undo/replay.
 3. **serde on `Move`/`Color`** is now available upstream. The record
    format stays GUI-owned and versioned (ADR-003 unchanged) — but
    `StoredColor`/`StoredMethod` mapping code may optionally simplify.
@@ -202,9 +215,11 @@ Concrete deltas between the vendored snapshot and current
    the shape of the future opening dialog (§3.4).
 5. **`utils` feature** exists upstream, off by default. The GUI does
    not enable it.
-6. **`Board::from_position` upstream signature** should be diffed
-   against the facade's expectations during Tier 0; the facade
-   already routes through it conceptually.
+6. **`Board::from_position`** takes `&[Move]`, `&[Move]`, `Color` and returns
+   `Result<Board, engine::PositionError>`. It computes root status and Zobrist
+   with empty move history. `Game` continues to preserve the imported root.
+7. **Immutable snapshot access** is `Game::board_snapshot(&self) -> Board`,
+   an owned clone at the review cursor, not mutable access to the live board.
 
 ## 6. What rust-ml must not become
 
@@ -225,11 +240,11 @@ Concrete deltas between the vendored snapshot and current
    engine updates arrive as deliberate rev bumps. See §4.4.
 2. **Burn — welcome.** No Burn-free constraint and no feature
    gates; `baseline` is a direct dependency from Tier 1 on. One
-   technical check remains for Tier 1: Burn's wgpu backend version
-   must coexist with the GUI's wgpu 30 (two wgpu majors in one
-   binary do not link together). If they clash, options are a CPU
-   Burn backend for the evaluator, or aligning the GUI's wgpu —
-   decided when Tier 1 starts, not before.
+   implementation choice for Tier 1 is the genuine Burn Flex CPU backend,
+   already used by the upstream baseline. Multiple wgpu versions CAN coexist
+   in one binary; their types are distinct. Only sharing GPU resources between
+   Burn and the GUI would require compatible APIs. No GPU alignment or fake
+   evaluator is necessary to begin baseline play.
 3. **First experience — play vs AI.** Tier 1 is the dream
    milestone: a worthy opponent on the wooden board. Analysis
    overlays (Tier 2) follow after.
@@ -245,8 +260,8 @@ Concrete deltas between the vendored snapshot and current
 
 | # | Milestone | Gate |
 |---|---|---|
-| 0 | ADR-008 superseded; vendored engine removed; pinned git deps wired; facade adapted (§5) | GUI test suite green; `cargo check` with no `crates/engine` and no sibling checkout |
+| 0 | ADR-008 superseded; vendored engine removed; pinned git declarations wired (only engine consumed); facade adapted (§5) | Locked workspace tests/clippy, fmt check, standalone build; exactly one git engine and no sibling path dependency |
 | 1 | AI worker + `AiPlayer`/`BaselineEvaluator`; egui "AI move" affordance; Burn/wgpu coexistence verified | play a full game vs the machine on the wooden board; undo/seek during search drops stale replies |
-| 2 | Tactics + TSS proof overlays; search heatmap while the AI thinks | overlays render from pure engine calls; no `Game` changes |
+| 2 | Tactics + separately requested TSS proof overlays; completed-search heatmap | overlays render from engine calls/completed statistics; no streaming or proof line in `Decision` |
 | 3 | Swap2 opening flow on the typestate machine | illegal opening sequences unrepresentable in UI |
 | 4 | (optional) AI-aware record metadata, versioned format extension | old records still load; new fields optional |

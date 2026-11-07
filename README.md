@@ -15,9 +15,11 @@ overlays. Games are saved and loaded, and the game in progress survives a crash.
 
 - `gomoku-core` — game state, undo and rewind history, notation, the versioned
   record format, and the settings schema. Complete.
-- `gomoku-engine` — the rules engine. A copy of the engine from
-  `Project-Ellie/rust-ml`, so that this repository builds on its own. See
-  [ADR-008](docs/decisions/ADR-008-engine-vendored.md).
+- `engine` — the rules engine from `Project-Ellie/rust-ml`, pinned to git
+  revision `158b6114029d8708fe5d55394b2930f5e4fd1d8c`. Cargo fetches it;
+  no sibling checkout is needed. See the
+  [integration plan](docs/plans/2026-11-07-rust-ml-integration.md).
+  M0 replaces the vendored engine; AI play is not implemented yet.
 - `gomoku-gui` — the window, the board and stone shaders, the stone knock, and
   the interface. Complete.
 - Puzzle loading (File → Load puzzle...) for `vcf-material-v1` files with a
@@ -32,14 +34,14 @@ overlays. Games are saved and loaded, and the game in progress survives a crash.
 
 - Rust 1.85 or later (edition 2024). Verified with 1.98.1.
 - macOS with Metal. Verified on an M1 Max, macOS 26.6.2.
-- Nothing else. The rules engine is part of this repository, so a clone builds
-  on its own.
+- Network access for Cargo's initial dependency fetch (including the pinned
+  rules engine). A clone builds on its own; no local rust-ml checkout is used.
 
 ```
 gomoku-gui/
-├── crates/engine      the rules engine
 ├── crates/core        game state, history, records, settings
-└── crates/gui         the window and the interface
+├── crates/gui         the window and the interface
+└── tools/generate-glyph-atlas
 ```
 
 ## Build and run
@@ -49,8 +51,8 @@ gomoku-gui/
 cargo run --release -p gomoku-gui -- --demo
 
 # Build everything, and run the test suite.
-cargo build
-cargo test
+cargo build --workspace --locked
+cargo test --workspace --locked
 ```
 
 ### Check the look without a window
@@ -73,9 +75,10 @@ cargo run -p gomoku-gui -- --demo --preview artifacts/ui.bmp --size 1100 \
 Run these before every commit. All three must pass.
 
 ```bash
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all
+cargo fmt --all -- --check
 ```
 
 ## Controls
@@ -126,6 +129,6 @@ cost are recorded in [ADR-003](docs/decisions/ADR-003-record-format.md).
 
 Apache-2.0, the same as `rust-ml` and `DeepGomoku`.
 
-The rules engine in `crates/engine` comes from `Project-Ellie/rust-ml` and keeps
-its licence and its authorship. See
-[ADR-008](docs/decisions/ADR-008-engine-vendored.md).
+The rules engine is a pinned git dependency from `Project-Ellie/rust-ml` and
+keeps its licence and its authorship. [ADR-008](docs/decisions/ADR-008-engine-vendored.md)
+records the superseded vendoring decision.

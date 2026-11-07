@@ -2,8 +2,17 @@
 
 ## Status
 
-Accepted (owner-approved, 2026-09-22). Supersedes
-[ADR-002](ADR-002-engine-reuse.md).
+Superseded (owner-approved, 2026-11-07) by the pinned git dependency decision
+in the [rust-ml integration plan, §4.4](../plans/2026-11-07-rust-ml-integration.md#44-dependency-mechanism-pinned-git-revision-owner-decision).
+The historical decision below superseded [ADR-002](ADR-002-engine-reuse.md)'s
+sibling path dependency; its facade and one-way boundary remain in force.
+
+M0 removes `crates/engine` and uses upstream revision
+`158b6114029d8708fe5d55394b2930f5e4fd1d8c`. Cargo fetches the engine, so a
+standalone clone still builds without a sibling checkout. Upstream development
+is now intentionally tracked through reviewed pin bumps, not local copies.
+The GUI keeps position-list duplicate validation and its record format in core.
+Upstream engine tests/benchmarks remain upstream rather than workspace targets.
 
 ## Context
 

@@ -5,6 +5,32 @@ use std::path::PathBuf;
 use engine::PlayError;
 use thiserror::Error;
 
+/// Errors returned when importing a game position.
+///
+/// Duplicate entries within a color are rejected before the engine validates
+/// overlap and counts. The record format has its own validation errors.
+#[derive(Debug, PartialEq, Eq, Error)]
+pub enum PositionError {
+    /// The same cell appears more than once in one color's stone list.
+    #[error("The same cell appears twice for one color.")]
+    DuplicateStone,
+    /// A cell appears in both the black and white lists.
+    #[error("Black and white stones overlap on the same cell.")]
+    OverlappingColors,
+    /// Stone counts are inconsistent with the side to move.
+    #[error("Stone counts are inconsistent with the side to move.")]
+    InvalidCounts,
+}
+
+impl From<engine::PositionError> for PositionError {
+    fn from(err: engine::PositionError) -> Self {
+        match err {
+            engine::PositionError::OverlappingColors => Self::OverlappingColors,
+            engine::PositionError::InvalidCounts => Self::InvalidCounts,
+        }
+    }
+}
+
 /// Errors returned by the game operations.
 #[derive(Debug, PartialEq, Eq, Error)]
 pub enum GameError {

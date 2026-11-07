@@ -1,14 +1,14 @@
 //! The game aggregate: one move list, one board, one review cursor.
 //!
-//! `moves` is the only truth about the game. `board` is always the position
-//! after `moves[..cursor]`, and `cursor <= moves.len()` always holds.
+//! The imported root plus `moves` describe the game. `board` is always the
+//! root with `moves[..cursor]` applied, and `cursor <= moves.len()` holds.
 //! Every change goes through the methods of `Game`, so both facts hold by
 //! construction.
 
 use engine::{Board, Color, Move, Status};
 use time::OffsetDateTime;
 
-use crate::error::GameError;
+use crate::error::{GameError, PositionError};
 
 /// How a game was won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,21 +104,19 @@ impl Game {
     /// stop at the loaded position rather than at an empty board.
     ///
     /// # Errors
-    /// `engine::PositionError` if the stone lists are inconsistent.
+    /// [`PositionError`] if either color repeats a cell, the colors overlap,
+    /// or the counts disagree with the side to move.
     pub fn from_position(
         black: Vec<Move>,
         white: Vec<Move>,
         to_move: Color,
-    ) -> Result<Game, engine::PositionError> {
-        let mut seen = std::collections::HashSet::new();
-        for mv in &black {
-            if !seen.insert(mv.index()) {
-                return Err(engine::PositionError::DuplicateStone);
-            }
-        }
-        for mv in &white {
-            if !seen.insert(mv.index()) {
-                return Err(engine::PositionError::DuplicateStone);
+    ) -> Result<Game, PositionError> {
+        for stones in [&black, &white] {
+            let mut seen = std::collections::HashSet::new();
+            for mv in stones {
+                if !seen.insert(mv.index()) {
+                    return Err(PositionError::DuplicateStone);
+                }
             }
         }
         let board = Board::from_position(&black, &white, to_move)?;
@@ -160,6 +158,14 @@ impl Game {
             (mv, color)
         });
         initial.chain(played)
+    }
+
+    /// Clone the board at the review cursor, including any imported root.
+    ///
+    /// The detached snapshot shares no mutable state with this game. A worker
+    /// can analyze or play on its own copy without changing the game or record.
+    pub fn board_snapshot(&self) -> Board {
+        self.board.clone()
     }
 
     /// The status of the board at the review cursor.
@@ -359,7 +365,6 @@ fn color_of(index: usize, initial_to_move: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::PositionError;
     use time::macros::datetime;
 
     fn point(row: u8, col: u8) -> Move {

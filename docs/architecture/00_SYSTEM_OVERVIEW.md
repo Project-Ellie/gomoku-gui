@@ -34,7 +34,7 @@ with stone pieces. It has no server and no network use.
                             │ calls
                             ▼
         ┌──────────────────────────────────────────────┐
-        │  ../rust-ml/gomoku/crates/engine (external)  │
+        │  rust-ml engine (pinned git dependency)      │
         │  Board, Move, Color, Status — rules only     │
         └──────────────────────────────────────────────┘
 ```
@@ -60,12 +60,16 @@ about a box above it.
 | `bytemuck` | Vertex and uniform casts | 1 |
 | `glam` | Vector and matrix maths | 0.33 |
 | `directories` | App data and config paths | 6 |
-| `engine` | Gomoku rules | path `../rust-ml/gomoku/crates/engine` |
+| `engine` | Gomoku rules | git `Project-Ellie/rust-ml`, rev `158b6114029d8708fe5d55394b2930f5e4fd1d8c` |
 | `proptest` | Property tests (dev) | 1 |
 
 Rule: a new dependency needs a reason in the pull request description.
 Rule: check for duplicate versions with `cargo tree -d` after a bump, because
-`egui-wgpu` and our renderer must share one `wgpu` type.
+`egui-wgpu` and our renderer must share one `wgpu` type. Multiple `wgpu`
+versions can coexist in a binary; types from different versions are not
+interchangeable. The future baseline evaluator uses genuine Burn computation
+on the Flex CPU backend (`Device::flex()`), not a fake evaluator or a required
+shared graphics device.
 
 ## Module map
 
@@ -79,7 +83,7 @@ Rule: check for duplicate versions with `cargo tree -d` after a bump, because
 | `storage.rs` | Atomic write, read, path handling |
 | `config.rs` | `Settings`, serde form, defaults |
 | `notation.rs` | Display labels and the inverse |
-| `error.rs` | `GameError`, `RecordError`, `ConfigError` |
+| `error.rs` | `GameError`, core-owned `PositionError`, `RecordError`, `ConfigError` |
 
 ### `crates/gui`
 
@@ -136,25 +140,26 @@ mouse click
 ## Build and run
 
 ```bash
-# Build both crates
-cargo build
+# Build the standalone workspace (Cargo fetches the pinned engine)
+cargo build --workspace --locked
 
 # Run the application
 cargo run --release -p gomoku-gui
 
 # Tests, lints, formatting
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all
+cargo fmt --all -- --check
 ```
 
-The path dependency needs the sibling checkout:
-
-```
-workspace/
-├── gomoku-gui/          this repository
-└── rust-ml/gomoku/crates/engine
-```
+No sibling checkout or vendored engine is required. `Cargo.lock` records the
+full git source revision. `mcts`, `player`, and `baseline` share the same pin in
+`[workspace.dependencies]` for the next milestone, but no crate consumes them
+yet, so M0 does not add Burn or an AI worker to the resolved dependency graph.
+The dependency direction is only gomoku-gui → rust-ml. See the
+[integration plan](../plans/2026-11-07-rust-ml-integration.md); ADR-008's
+vendoring decision is superseded.
 
 ## Position in the ecosystem
 

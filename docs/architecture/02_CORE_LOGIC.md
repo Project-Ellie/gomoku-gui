@@ -10,6 +10,8 @@ Engine calls used:
 | Our operation | Engine call |
 |---|---|
 | Create an empty game | `Board::new()` |
+| Import a puzzle root | `Board::from_position(black, white, to_move)` |
+| Detached analysis snapshot | `Board::clone()` through `Game::board_snapshot(&self)` |
 | Apply a move | `Board::play(mv)` |
 | Remove the last move | `Board::undo()` |
 | Read a cell | `Board::stone_at(mv) -> Option<Color>`, an O(1) bitboard probe |
@@ -17,22 +19,22 @@ Engine calls used:
 | Game state | `Board::status()` |
 | Side to move | `Board::to_move()` |
 
-`Game` keeps no duplicate of the position. A per-cell lookup delegates to
-`Board::stone_at`, and the render instance list comes from `Board::moves()`,
-which is already the position at the review cursor. Colours follow the play
-order, because freestyle hotseat play alternates strictly and Black moves
-first:
+A per-cell lookup delegates to `Board::stone_at`. `Game::stones()` lists the
+imported root stones (empty for a normal game), then `Board::moves()` at the
+review cursor. Played colors alternate from the root's `initial_to_move`,
+which is Black for a normal empty game. The root plus `moves[..cursor]` is the
+visible position; the root is not an engine move history and cannot be undone.
 
-```rust
-pub fn stones(&self) -> impl Iterator<Item = (Move, Color)> + '_ {
-    self.board.moves().iter().enumerate().map(|(i, &mv)| {
-        (mv, if i % 2 == 0 { Color::Black } else { Color::White })
-    })
-}
-```
+`Game::from_position` returns a core-owned `PositionError`: repeated cells
+within either color are `DuplicateStone`; upstream `OverlappingColors` and
+`InvalidCounts` map exhaustively to matching core variants. Duplicate checking
+runs first, then upstream validates overlap and counts. Cross-color overlap is
+not a same-color duplicate.
 
-Duplicating the board in a second array would need an invariant to keep the two
-in step. Delegating needs none.
+`Game::board_snapshot(&self) -> engine::Board` returns an owned clone, never a
+mutable reference to the live board. It preserves the imported root, cursor
+position, side to move, status, played history and Zobrist key. Future workers
+may mutate their copy without changing `Game`. No AI is implemented in M0.
 
 ## Operations
 
@@ -83,7 +85,7 @@ live():  seek(moves.len())
 ```
 
 Incremental stepping is used instead of a replay, so a cursor move is O(1)
-regardless of the game length. The board therefore always matches
+regardless of the game length. The board therefore always matches the imported root plus
 `moves[..cursor]`, and invariant I2 holds by construction.
 
 ### `set_players(black, white)`
