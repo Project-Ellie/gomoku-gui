@@ -5,6 +5,7 @@
 //! pipeline is exercised on a machine with no display.
 
 pub mod ai;
+mod ai_worker;
 mod app;
 mod audio;
 mod camera;

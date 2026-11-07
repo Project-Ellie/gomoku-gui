@@ -19,6 +19,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::ai::AiReply;
+use crate::ai_worker::Worker;
 use crate::audio::Audio;
 use crate::camera::Viewport;
 use crate::render::{Globals, GlyphTexture, Renderer, SHELL, SLATE, StoneInstance, WoodTexture};
@@ -36,8 +38,14 @@ enum SaveMode {
     Pick,
 }
 
+enum AppEvent {
+    AiCompleted(AiReply),
+}
+
 /// The application.
 pub struct App {
+    // None for previews and headless construction. Started only by run().
+    worker: Option<Result<Worker, String>>,
     session: Session,
     audio: Option<Audio>,
     state: Option<State>,
@@ -92,6 +100,7 @@ impl App {
         // A game can be handed in, which is how `--demo` puts stones on the board.
         session.install_game(game);
         App {
+            worker: None,
             session,
             audio,
             state: None,
@@ -129,9 +138,17 @@ impl App {
                 log::trace!("no autosave to offer");
             }
         }
-        let event_loop = EventLoop::new().context("cannot open an event loop")?;
+        let event_loop = EventLoop::<AppEvent>::with_user_event()
+            .build()
+            .context("cannot open an event loop")?;
+        let proxy = event_loop.create_proxy();
+        self.worker = Some(
+            Worker::baseline(move |reply| proxy.send_event(AppEvent::AiCompleted(reply)).is_ok())
+                .map_err(|error| error.to_string()),
+        );
         event_loop.set_control_flow(ControlFlow::Wait);
         let result = event_loop.run_app(&mut self);
+        self.close_worker();
         self.write_settings(
             crate::session::settings_path(),
             crate::session::autosave_path(),
@@ -165,6 +182,62 @@ impl App {
         } else if self.session.is_fresh_game() {
             self.session
                 .discard_autosave_from([autosave_path, autosave_state_path].into_iter().flatten());
+        }
+    }
+
+    fn close_worker(&mut self) {
+        self.closing = true;
+        if let Some(Ok(worker)) = &mut self.worker {
+            worker.close();
+        }
+    }
+
+    // Called after input/UI transactions have settled, even with a future wake_at.
+    fn reconcile_ai(&mut self) {
+        if self.closing {
+            return;
+        }
+        let Some(worker) = self.worker.as_ref() else {
+            return;
+        };
+        if let Some(request) = self.session.next_ai_request() {
+            let result = match worker {
+                Ok(worker) => worker.submit(request),
+                Err(error) => Err(Box::new(request.reply(Err(error.clone())))),
+            };
+            if let Err(reply) = result {
+                self.session.apply_ai_reply(*reply);
+                self.request_redraw();
+            }
+        }
+    }
+
+    fn prepare_wait(&mut self) -> ControlFlow {
+        self.reconcile_ai();
+        if let Some(wake) = self.wake_at {
+            if std::time::Instant::now() >= wake {
+                self.wake_at = None;
+                self.request_redraw();
+            } else {
+                return ControlFlow::WaitUntil(wake);
+            }
+        }
+        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
+            self.request_redraw();
+        }
+        ControlFlow::Wait
+    }
+
+    fn handle_app_event(&mut self, event: AppEvent) {
+        if self.closing {
+            return;
+        }
+        match event {
+            AppEvent::AiCompleted(reply) => {
+                self.session.apply_ai_reply(reply);
+                self.session.update_hover();
+                self.request_redraw();
+            }
         }
     }
 
@@ -202,7 +275,7 @@ impl App {
             }
             After::OpenPuzzle => self.ask_to_open_puzzle(),
             After::Quit => {
-                self.closing = true;
+                self.close_worker();
                 exit();
             }
         }
@@ -453,7 +526,7 @@ impl App {
         match self.frame_limit {
             Some(limit) if self.frames >= limit => {
                 log::info!("drew {limit} frames; exiting");
-                self.closing = true;
+                self.close_worker();
                 true
             }
             _ => false,
@@ -680,7 +753,11 @@ pub fn stone_instances(game: &gomoku_core::Game) -> Vec<StoneInstance> {
         .collect()
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        self.handle_app_event(event);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -941,23 +1018,11 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(wake) = self.wake_at {
-            if std::time::Instant::now() >= wake {
-                self.wake_at = None;
-                self.request_redraw();
-            } else {
-                // Sleeping past the deadline is fine; winit re-enters here.
-                event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
-                return;
-            }
-        }
-        event_loop.set_control_flow(ControlFlow::Wait);
-        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
-            self.request_redraw();
-        }
+        event_loop.set_control_flow(self.prepare_wait());
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.close_worker();
         log::info!("closing after {} frames", self.frames);
     }
 }

@@ -27,6 +27,185 @@ impl Drop for Files {
     }
 }
 
+#[test]
+fn idle_worker_completion_requests_redraw_without_pointer_input() {
+    use std::sync::mpsc;
+    let mut app = app();
+    let (tx, rx) = mpsc::channel();
+    app.worker = Some(Ok(crate::ai_worker::Worker::spawn(
+        || {
+            Ok(|_: &crate::ai::AiRequest| {
+                Ok(crate::ai::AiPlayerDecision {
+                    action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
+                    search: None,
+                    guard: None,
+                })
+            })
+        },
+        move |reply| tx.send(reply).is_ok(),
+    )
+    .unwrap()));
+    app.session.release_seat(gomoku_core::Color::White);
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.dirty = false;
+    // A future repaint deadline must not defer scheduling.
+    app.wake_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+    assert!(matches!(app.prepare_wait(), ControlFlow::WaitUntil(_)));
+    assert!(app.session.next_ai_request().is_none());
+    app.redraw_pending = true; // A completion must not churn an existing redraw.
+    app.handle_app_event(AppEvent::AiCompleted(
+        rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap(),
+    ));
+    assert_eq!(app.session.game().len(), 2);
+    assert!(app.dirty);
+    assert!(app.redraw_pending);
+    assert!(app.session.knock.is_some());
+}
+
+#[test]
+fn closing_ignores_already_queued_completion_and_never_schedules() {
+    let mut app = app();
+    app.session.release_seat(gomoku_core::Color::White);
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.session.knock.take();
+    let request = app.session.next_ai_request().unwrap();
+    let reply = request.reply(Ok(crate::ai::AiPlayerDecision {
+        action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
+        search: None,
+        guard: None,
+    }));
+    app.close_worker();
+    app.dirty = false;
+    app.handle_app_event(AppEvent::AiCompleted(reply));
+    assert_eq!(app.prepare_wait(), ControlFlow::Wait);
+    assert_eq!(app.session.game().len(), 1);
+    assert!(app.session.knock.is_none());
+    assert!(!app.dirty);
+}
+
+#[test]
+fn failed_thread_start_retires_reservation_and_pauses_without_retry() {
+    let mut app = app();
+    app.session.release_seat(gomoku_core::Color::White);
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.worker = Some(Err("thread unavailable".into()));
+    app.prepare_wait();
+    assert!(!app.session.automation_running());
+    assert!(
+        app.session
+            .notice
+            .as_ref()
+            .unwrap()
+            .contains("thread unavailable")
+    );
+    app.prepare_wait();
+    assert!(app.session.next_ai_request().is_none());
+    assert_eq!(app.session.game().len(), 1);
+}
+
+// Hold completion publication open to model preemption before worker cleanup.
+// The replacement must fail even though the failed worker has not exited yet.
+fn stale_terminal_failure_rejects_replacement(initialization: bool, panics: bool) {
+    use std::sync::mpsc;
+    let mut app = app();
+    let (tx, rx) = mpsc::channel();
+    let (release, latch) = mpsc::channel();
+    app.worker = Some(Ok(crate::ai_worker::Worker::spawn(
+        move || {
+            if initialization {
+                assert!(!panics, "initialization panic");
+                return Err("initialization failed".into());
+            }
+            Ok(move |_: &crate::ai::AiRequest| {
+                assert!(!panics, "decision panic");
+                Err("decision failed".into())
+            })
+        },
+        move |reply| {
+            let delivered = tx.send(reply).is_ok();
+            // Test-only blocking models preemption just after publication.
+            // Sender drop also releases this latch if an assertion unwinds.
+            let _ = latch.recv();
+            delivered
+        },
+    )
+    .unwrap()));
+    app.session.release_seat(gomoku_core::Color::White);
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.prepare_wait();
+    let reply = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    assert!(reply.result.is_err());
+    app.session
+        .set_ai_options(
+            gomoku_core::Color::White,
+            crate::ai::AiOptions {
+                simulations: 7,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(app.session.next_ai_request().is_none());
+    app.handle_app_event(AppEvent::AiCompleted(reply));
+    assert!(app.session.automation_running(), "stale failure is ignored");
+    assert!(app.session.notice.is_none());
+    app.dirty = false;
+
+    // Reconcile while the completion sink is still latched, not after exit.
+    app.prepare_wait();
+    assert!(
+        !app.session.automation_running(),
+        "terminal worker must reject rather than abandon the replacement"
+    );
+    assert!(
+        app.session
+            .notice
+            .as_ref()
+            .unwrap()
+            .starts_with("AI paused: worker disconnected")
+    );
+    assert!(
+        app.dirty,
+        "submission failure must be visible without input"
+    );
+    assert_eq!(app.session.game().len(), 1);
+    assert!(app.session.next_ai_request().is_none());
+    app.session.resume_automation();
+    assert!(
+        app.session.next_ai_request().is_some(),
+        "rejected replacement's reservation must have been retired"
+    );
+    release.send(()).unwrap();
+}
+
+#[test]
+fn stale_factory_error_rejects_replacement_before_worker_exit() {
+    stale_terminal_failure_rejects_replacement(true, false);
+}
+
+#[test]
+fn stale_factory_panic_rejects_replacement_before_worker_exit() {
+    stale_terminal_failure_rejects_replacement(true, true);
+}
+
+#[test]
+fn stale_decision_error_rejects_replacement_before_worker_exit() {
+    stale_terminal_failure_rejects_replacement(false, false);
+}
+
+#[test]
+fn stale_decision_panic_rejects_replacement_before_worker_exit() {
+    stale_terminal_failure_rejects_replacement(false, true);
+}
+
+#[test]
+fn headless_construction_does_not_start_worker_or_reserve_a_flight() {
+    let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.prepare_wait();
+    assert!(app.worker.is_none());
+    assert!(app.session.next_ai_request().is_some());
+}
+
 fn app() -> App {
     let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
     app.session.take_seat(gomoku_core::Color::White);
