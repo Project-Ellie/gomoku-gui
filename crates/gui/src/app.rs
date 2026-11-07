@@ -4,6 +4,11 @@
 //! in the same surface, after the samples are resolved. Events go to egui first;
 //! the board only sees a pointer or a key that egui did not want.
 
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod tests;
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -14,6 +19,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::ai::AiReply;
+use crate::ai_worker::Worker;
 use crate::audio::Audio;
 use crate::camera::Viewport;
 use crate::render::{Globals, GlyphTexture, Renderer, SHELL, SLATE, StoneInstance, WoodTexture};
@@ -25,8 +32,20 @@ const CLICK_SLOP: f32 = 4.0;
 /// The number of samples per pixel.
 const SAMPLES: u32 = 4;
 
+/// Whether saving may reuse the current destination.
+enum SaveMode {
+    CurrentOrPick,
+    Pick,
+}
+
+enum AppEvent {
+    AiCompleted(AiReply),
+}
+
 /// The application.
 pub struct App {
+    // None for previews and headless construction. Started only by run().
+    worker: Option<Result<Worker, String>>,
     session: Session,
     audio: Option<Audio>,
     state: Option<State>,
@@ -79,8 +98,9 @@ impl App {
         };
         let mut session = Session::new(&settings);
         // A game can be handed in, which is how `--demo` puts stones on the board.
-        session.game = game;
+        session.install_game(game);
         App {
+            worker: None,
             session,
             audio,
             state: None,
@@ -95,27 +115,58 @@ impl App {
         }
     }
 
+    /// Open a puzzle file before the window appears, as `--puzzle` asks.
+    pub fn open_puzzle(&mut self, path: &std::path::Path) {
+        self.session.open_puzzle(path);
+    }
+
     /// Open the window and run until it is closed.
     pub fn run(mut self) -> Result<()> {
-        match self.session.autosave_to_offer() {
+        // An explicit --puzzle already chose the startup content. Replacing
+        // its picker would also discard the game snapshot needed by Cancel.
+        let offer = if self.session.dialog().is_none() && !self.session.game().is_from_position() {
+            self.session.autosave_to_offer()
+        } else {
+            None
+        };
+        match offer {
             Some(offer) => {
                 log::trace!("offering autosave from {:?}", offer);
-                self.session.dialog = Some(Dialog::Resume { source: offer });
+                self.session.set_dialog(Dialog::Resume { source: offer });
             }
             None => {
                 log::trace!("no autosave to offer");
             }
         }
-        let event_loop = EventLoop::new().context("cannot open an event loop")?;
+        let event_loop = EventLoop::<AppEvent>::with_user_event()
+            .build()
+            .context("cannot open an event loop")?;
+        let proxy = event_loop.create_proxy();
+        self.worker = Some(
+            Worker::baseline(move |reply| proxy.send_event(AppEvent::AiCompleted(reply)).is_ok())
+                .map_err(|error| error.to_string()),
+        );
         event_loop.set_control_flow(ControlFlow::Wait);
         let result = event_loop.run_app(&mut self);
-        self.write_settings();
+        self.close_worker();
+        self.write_settings(
+            crate::session::settings_path(),
+            crate::session::autosave_path(),
+            crate::session::autosave_state_path(),
+        );
         result.context("the window loop failed")
     }
 
     /// Write the settings, and the game in progress, on the way out.
-    fn write_settings(&mut self) {
-        match crate::session::settings_path() {
+    fn write_settings(
+        &mut self,
+        settings_path: Result<PathBuf>,
+        autosave_path: Result<PathBuf>,
+        autosave_state_path: Result<PathBuf>,
+    ) {
+        // Frame-limited exits also need to save the real game, not a preview.
+        self.session.dismiss_dialog();
+        match settings_path {
             Ok(path) => {
                 let settings = self.session.settings(&self.geometry);
                 if let Err(error) = gomoku_core::save_settings(&path, &settings) {
@@ -125,9 +176,68 @@ impl App {
             Err(error) => log::warn!("the settings have no home: {error}"),
         }
         if self.session.changed() {
-            self.session.autosave();
-        } else if self.session.game.is_empty() {
-            self.session.discard_autosave();
+            if let (Ok(path), Ok(state_path)) = (autosave_path, autosave_state_path) {
+                self.session.autosave_to(&path, &state_path);
+            }
+        } else if self.session.is_fresh_game() {
+            self.session
+                .discard_autosave_from([autosave_path, autosave_state_path].into_iter().flatten());
+        }
+    }
+
+    fn close_worker(&mut self) {
+        self.closing = true;
+        if let Some(Ok(worker)) = &mut self.worker {
+            worker.close();
+        }
+    }
+
+    // Called after input/UI transactions have settled, even with a future wake_at.
+    fn reconcile_ai(&mut self) {
+        if self.closing {
+            return;
+        }
+        let Some(worker) = self.worker.as_ref() else {
+            return;
+        };
+        if let Some(request) = self.session.next_ai_request() {
+            let result = match worker {
+                Ok(worker) => worker.submit(request),
+                Err(error) => Err(Box::new(request.reply(Err(error.clone())))),
+            };
+            if let Err(reply) = result {
+                self.session.apply_ai_reply(*reply);
+                self.request_redraw();
+            }
+        }
+    }
+
+    fn prepare_wait(&mut self) -> ControlFlow {
+        self.reconcile_ai();
+        if let Some(wake) = self.wake_at {
+            if std::time::Instant::now() >= wake {
+                self.wake_at = None;
+                self.request_redraw();
+            } else {
+                return ControlFlow::WaitUntil(wake);
+            }
+        }
+        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
+            self.request_redraw();
+        }
+        ControlFlow::Wait
+    }
+
+    fn handle_app_event(&mut self, event: AppEvent) {
+        if self.closing {
+            return;
+        }
+        match event {
+            AppEvent::AiCompleted(reply) => {
+                self.session.apply_ai_reply(reply);
+                self.session.update_hover();
+                self.request_redraw();
+            }
         }
     }
 
@@ -143,104 +253,110 @@ impl App {
     }
 
     /// Perform an action that may lose unsaved changes.
-    fn attempt(&mut self, then: After, event_loop: &ActiveEventLoop) {
-        if self.session.changed() {
-            self.session.dialog = Some(Dialog::Unsaved { then });
-            self.request_redraw();
-            return;
+    fn attempt(&mut self, then: After, exit: &mut impl FnMut()) {
+        self.session.attempt(then);
+        if let Some(action) = self.session.take_action() {
+            self.perform(action, exit);
         }
-        self.perform(then, event_loop);
+        self.request_redraw();
     }
 
     /// Perform an action, whatever the state of the game.
-    fn perform(&mut self, then: After, event_loop: &ActiveEventLoop) {
+    fn perform(&mut self, then: After, exit: &mut impl FnMut()) {
         match then {
             After::NewGame => {
                 self.session.new_game();
                 self.request_redraw();
             }
             After::Open => self.ask_to_open(),
+            After::OpenRecent(path) => {
+                self.session.open(&path);
+                self.request_redraw();
+            }
             After::OpenPuzzle => self.ask_to_open_puzzle(),
             After::Quit => {
-                self.closing = true;
-                event_loop.exit();
+                self.close_worker();
+                exit();
             }
         }
     }
 
     /// Ask for a file and open it.
     fn ask_to_open(&mut self) {
+        self.session.begin_native_dialog();
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Gomoku game", &["json"])
             .set_title("Open a game");
         if let Some(directory) = &self.session.last_directory {
             dialog = dialog.set_directory(directory);
         }
-        if let Some(path) = dialog.pick_file() {
+        let path = dialog.pick_file();
+        self.session.end_native_dialog();
+        if let Some(path) = path {
             self.session.open(&path);
-            self.request_redraw();
         }
+        self.request_redraw();
     }
 
     /// Ask for a puzzle file and load it.
     fn ask_to_open_puzzle(&mut self) {
+        self.session.begin_native_dialog();
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Gomoku puzzle", &["json"])
             .set_title("Load a puzzle");
         if let Some(directory) = &self.session.last_directory {
             dialog = dialog.set_directory(directory);
         }
-        if let Some(path) = dialog.pick_file() {
+        let path = dialog.pick_file();
+        self.session.end_native_dialog();
+        if let Some(path) = path {
             self.session.open_puzzle(&path);
-            self.request_redraw();
         }
+        self.request_redraw();
     }
 
-    /// Ask for a file and save to it.
-    fn ask_to_save(&mut self) {
-        let mut dialog = rfd::FileDialog::new()
-            .add_filter("Gomoku game", &["json"])
-            .set_title("Save the game")
-            .set_file_name("gomoku.json");
-        if let Some(directory) = &self.session.last_directory {
-            dialog = dialog.set_directory(directory);
-        }
-        if let Some(path) = dialog.save_file() {
-            self.session.save_to(&path);
-            self.request_redraw();
-        }
-    }
-
-    /// Save, asking for a file when the game has no name yet.
-    fn save(&mut self, event_loop: &ActiveEventLoop) {
-        if self.session.save() {
-            self.ask_to_save();
-            return;
-        }
-        if let Some(after) = self.session.after_save.take() {
-            self.perform(after, event_loop);
+    /// Save using the same transaction for existing paths and Save As.
+    fn save(
+        &mut self,
+        mode: SaveMode,
+        pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+        exit: &mut impl FnMut(),
+    ) {
+        let directory = self.session.last_directory.clone();
+        let pick = || pick(directory.as_deref());
+        let outcome = match mode {
+            SaveMode::Pick => self.session.save_as(pick),
+            SaveMode::CurrentOrPick => self.session.save(pick),
+        };
+        if let Some(after) = self.session.complete_save(outcome) {
+            self.perform(after, exit);
         }
         self.request_redraw();
     }
 
     /// Act on what the interface asked for.
-    fn run_requests(&mut self, requests: Requests, event_loop: &ActiveEventLoop) {
-        if let Some(after) = self.session.perform.take() {
-            self.perform(after, event_loop);
+    fn run_requests(
+        &mut self,
+        requests: Requests,
+        pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+        exit: &mut impl FnMut(),
+    ) {
+        if let Some(after) = self.session.take_action() {
+            self.perform(after, exit);
             return;
         }
         if requests.quit {
-            self.attempt(After::Quit, event_loop);
+            self.attempt(After::Quit, exit);
         } else if requests.new_game {
-            self.attempt(After::NewGame, event_loop);
+            self.attempt(After::NewGame, exit);
         } else if requests.open {
-            self.attempt(After::Open, event_loop);
+            self.attempt(After::Open, exit);
         } else if requests.open_puzzle {
-            self.attempt(After::OpenPuzzle, event_loop);
+            self.attempt(After::OpenPuzzle, exit);
         } else if requests.save {
-            self.save(event_loop);
+            self.save(SaveMode::CurrentOrPick, pick, exit);
         } else if requests.save_as {
-            self.ask_to_save();
+            self.save(SaveMode::Pick, pick, exit);
         }
     }
 
@@ -400,7 +516,7 @@ impl App {
             self.session.title_stale = false;
         }
 
-        self.run_requests(requests, event_loop);
+        self.run_requests(requests, &mut pick_save_file, &mut || event_loop.exit());
 
         // A frame that consumed input is never allowed to be the last
         // frame; everything else (repaint_after, request_redraw) has
@@ -410,7 +526,7 @@ impl App {
         match self.frame_limit {
             Some(limit) if self.frames >= limit => {
                 log::info!("drew {limit} frames; exiting");
-                self.closing = true;
+                self.close_worker();
                 true
             }
             _ => false,
@@ -526,6 +642,18 @@ impl App {
     }
 }
 
+/// The native save-picker boundary; never reached by headless app tests.
+fn pick_save_file(directory: Option<&Path>) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new()
+        .add_filter("Gomoku game", &["json"])
+        .set_title("Save the game")
+        .set_file_name("gomoku.json");
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.save_file()
+}
+
 fn create_multisampled(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -562,7 +690,7 @@ pub fn prepare_frame(
     // placed the view for its first frame.
     session.camera.clamp(session.viewport);
     renderer.set_globals(queue, &globals_for(session));
-    renderer.set_stones(queue, &stone_instances(&session.game));
+    renderer.set_stones(queue, &stone_instances(session.game()));
 }
 
 /// The uniform block for a session: the view, the viewport, and the materials.
@@ -580,7 +708,7 @@ fn globals_for(session: &Session) -> Globals {
     ];
     globals.last_move = if session.toggles.last_move {
         session
-            .game
+            .game()
             .last_move()
             .map(|point| [point.col() as f32, point.row() as f32, 1.0, 0.0])
             .unwrap_or([0.0; 4])
@@ -625,7 +753,11 @@ pub fn stone_instances(game: &gomoku_core::Game) -> Vec<StoneInstance> {
         .collect()
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        self.handle_app_event(event);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -686,16 +818,13 @@ impl ApplicationHandler for App {
             .as_ref()
             .map(|state| state.egui.egui_wants_keyboard_input())
             .unwrap_or(false);
-        let modal = self.session.dialog.is_some();
+        let modal = self.session.dialog().is_some();
 
         match event {
             WindowEvent::CloseRequested => {
-                if self.session.changed() {
-                    self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });
-                    self.request_redraw();
-                } else {
-                    event_loop.exit();
-                }
+                // Cancel any uncommitted preview before replacing its dialog
+                // with a save prompt or writing an autosave at exit.
+                self.attempt(After::Quit, &mut || event_loop.exit());
             }
             WindowEvent::Resized(size) => {
                 if let Some(state) = &mut self.state {
@@ -792,20 +921,14 @@ impl ApplicationHandler for App {
                 self.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != ElementState::Pressed || wants_keyboard {
+                // A dialog owns the keyboard while it is open: the interface
+                // handles its keys, so that a shortcut cannot slip past it.
+                if event.state != ElementState::Pressed || wants_keyboard || modal {
                     return;
                 }
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
-                        if self.session.dialog.is_some() {
-                            self.session.dialog = None;
-                            self.request_redraw();
-                        } else if self.session.changed() {
-                            self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });
-                            self.request_redraw();
-                        } else {
-                            event_loop.exit();
-                        }
+                        self.attempt(After::Quit, &mut || event_loop.exit());
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         self.session.rewind();
@@ -895,23 +1018,11 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(wake) = self.wake_at {
-            if std::time::Instant::now() >= wake {
-                self.wake_at = None;
-                self.request_redraw();
-            } else {
-                // Sleeping past the deadline is fine; winit re-enters here.
-                event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
-                return;
-            }
-        }
-        event_loop.set_control_flow(ControlFlow::Wait);
-        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
-            self.request_redraw();
-        }
+        event_loop.set_control_flow(self.prepare_wait());
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.close_worker();
         log::info!("closing after {} frames", self.frames);
     }
 }

@@ -6,7 +6,8 @@
 //!    unrepresentable, because `Move::new` rejects it.
 //! I4 the board holds exactly `cursor` moves
 //! I5 the side to move follows the cursor parity
-//! I6 the outcome follows the board at the latest position
+//! I6 the outcome follows the board at the latest position, unless the side
+//!    to move there resigned on an ongoing board
 
 use engine::{Board, Color, Move, Status};
 use gomoku_core::{Game, GameError, Outcome};
@@ -16,6 +17,7 @@ use proptest::prelude::*;
 #[derive(Debug, Clone, Copy)]
 enum Step {
     Play(Move),
+    Resign,
     Undo,
     Rewind,
     Forward,
@@ -30,6 +32,7 @@ fn any_move() -> impl Strategy<Value = Move> {
 fn any_step() -> impl Strategy<Value = Step> {
     prop_oneof![
         6 => any_move().prop_map(Step::Play),
+        1 => Just(Step::Resign),
         1 => Just(Step::Undo),
         1 => Just(Step::Rewind),
         1 => Just(Step::Forward),
@@ -40,14 +43,25 @@ fn any_step() -> impl Strategy<Value = Step> {
 
 fn apply(game: &mut Game, step: Step) {
     match step {
-        Step::Play(point) => match game.play(point) {
-            // A random placement can be refused: the cell may hold a stone,
-            // or the board at the cursor may be finished. Both are valid.
-            Ok(())
-            | Err(GameError::Occupied)
-            | Err(GameError::GameOver)
-            | Err(GameError::Rejected(_)) => {}
-        },
+        Step::Play(point) => {
+            let before = game.clone();
+            match game.play(point) {
+                Ok(()) => {}
+                Err(GameError::Occupied | GameError::GameOver | GameError::Rejected(_)) => {
+                    assert_eq!(*game, before, "a rejected placement is transactional");
+                }
+                Err(GameError::NotLive) => panic!("placement can branch from review"),
+            }
+        }
+        Step::Resign => {
+            let before = game.clone();
+            let allowed = !game.is_rewound() && game.outcome() == Outcome::Ongoing;
+            let result = game.resign();
+            assert_eq!(result.is_ok(), allowed);
+            if result.is_err() {
+                assert_eq!(*game, before, "a rejected resignation is transactional");
+            }
+        }
         Step::Undo => {
             game.undo();
         }
@@ -121,11 +135,27 @@ fn check(game: &Game) {
         "I5: the side to move of the replay"
     );
 
-    // I6: the outcome describes the game, not the view.
+    // I6: the result describes the whole game, not the view. Resignation
+    // supplements an ongoing engine board without becoming a move.
+    if let Outcome::Won {
+        winner,
+        method: gomoku_core::WinMethod::Resignation,
+    } = game.outcome()
+    {
+        let tip = replay(game, game.len());
+        assert_eq!(
+            tip.status(),
+            Status::Ongoing,
+            "I6: no terminal-board resignation"
+        );
+        assert_eq!(winner, tip.to_move().other(), "I6: the resigning side lost");
+    } else {
+        assert_eq!(game.outcome(), expected_outcome(game), "I6: board result");
+    }
     assert_eq!(
-        game.outcome(),
-        expected_outcome(game),
-        "I6: the outcome of the game"
+        game.can_play(),
+        visible.status() == Status::Ongoing
+            && (game.is_rewound() || game.outcome() == Outcome::Ongoing)
     );
 
     // I3: the move list has no repeat.
@@ -173,7 +203,9 @@ proptest! {
             apply(&mut game, step);
         }
         let cursor = game.cursor();
-        let legal = game.stone_at(point).is_none() && game.status() == Status::Ongoing;
+        let legal = game.stone_at(point).is_none()
+            && game.status() == Status::Ongoing
+            && (game.is_rewound() || game.outcome() == Outcome::Ongoing);
         match game.play(point) {
             Ok(()) => {
                 prop_assert_eq!(game.len(), cursor + 1);

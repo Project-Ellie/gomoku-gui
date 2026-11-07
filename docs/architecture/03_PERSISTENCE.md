@@ -3,9 +3,15 @@
 Three files with three jobs. A game record travels with the game. A config
 file keeps the session. An autosave protects work in progress.
 
-## 1. Game record — version 1
+## 1. Game record — writes v2, reads v1 and v2
 
 Extension: `.json`. One JSON object, pretty-printed, with a trailing newline.
+New records use version 2, adding only a resignation result. The owner's explicit
+requirement for default-on AI resignation supersedes the earlier integration
+assumption of move-only endings and no format change (ADR-003/004). No AI
+configuration, player-type metadata or search statistics are stored.
+
+The frozen version 1 example remains readable:
 
 ```json
 {
@@ -43,8 +49,10 @@ Extension: `.json`. One JSON object, pretty-printed, with a trailing newline.
 ```
 
 The example above is the exact content of the committed fixture
-`crates/core/tests/golden/hotseat-v1.json`. A test compares the encoder's output
-against those bytes, so the example cannot drift from the code.
+`crates/core/tests/golden/hotseat-v1.json`. It remains a frozen reader fixture.
+The encoder is now pinned to `crates/core/tests/golden/resignation-v2.json`,
+generated from the same moves, names and timestamp with White winning by
+resignation. Both fixtures are loaded and validated in tests.
 
 `serde_json::to_string_pretty` writes every array element on its own line, so each
 move occupies five lines. The file is longer than a hand-written sample, and every
@@ -59,7 +67,7 @@ wire text.
 | Field | Type | Rule |
 |---|---|---|
 | `format` | string | Always `gomoku-gui/record`. Guard against opening a different JSON file. |
-| `version` | integer | 1. A higher value is refused with a clear message. |
+| `version` | integer | New writes: 2. Reads: 1 or 2; every other value is refused. |
 | `size` | integer | 15. Refused if different. |
 | `ruleset` | string | `freestyle`. |
 | `players.black` | string or absent | Free text, may be empty. |
@@ -73,15 +81,39 @@ wire text.
 ```json
 { "kind": "ongoing" }
 { "kind": "won", "winner": "black", "method": "five" }
+{ "kind": "won", "winner": "white", "method": "resignation" }
 { "kind": "draw" }
 ```
 
-`winner` is `black` or `white`. `method` is `five`. `method` is present because
-a later ruleset or an agent opponent may add a second way to win, and an enum
-absorbs that without a schema change.
+`winner` is `black` or `white`. `method` is `five` in either version, or
+`resignation` in version 2 only. The new meaning requires the version bump,
+even though it fits the existing result shape. Methods are lowercase strings.
+All new saves write v2, including ongoing/five/draw games originally read from
+v1; v1 is a read-compatibility format, not an encoder mode.
 
-`win_method` is serialised as a lowercase string, so the file stays readable
-and a rename in Rust cannot silently change the file format.
+The GUI presents resignation as “White resigned — Black wins” (or the inverse),
+including as a live result during history review. It adds no history row,
+stone number, winning line or knock. Editable player names remain ordinary saved
+metadata; Take/Release never changes them. Seat ownership and Sims/Temp settings
+are session-only intent, not record fields.
+
+### Validation and game restoration
+
+After JSON parsing, validation follows this order:
+
+1. Check format marker, supported version, board size, ruleset and move count.
+2. Replay every move from an empty board, checking bounds, repeated points and
+   legality in sequence. No moves may follow a board win or draw.
+3. Validate the result. Five/draw/ongoing must match the replayed board. A v2
+   resignation requires an ongoing replayed board and winner opposite its side
+   to move; v1 resignation, wrong winner or a terminal-board resignation returns
+   `ResultMismatch`. Apply valid resignation through `Game::resign`.
+
+Saving from a reviewed resignation writes **all** moves and the whole-game
+result, not the visible prefix. Loading restores that game finished at its live
+tip. Names and creation time are preserved. Resignation is not a move and
+changes neither the board nor turn. Games imported from puzzle positions remain
+rejected with `FromPosition`: neither version can encode their starting stones.
 
 ### Numeric points, not letters
 
@@ -91,9 +123,8 @@ centre, come from the same numeric pair.
 
 ### Forward compatibility
 
-Unknown fields are ignored on load. Therefore a version 1 file written by a
-later minor revision still opens in this revision. A new *meaning* needs
-`version: 2`, and the loader refuses it instead of guessing.
+Unknown fields are ignored on load. New result meanings require a version bump,
+not a guess. This build reads v1 and v2; an older v1 build refuses v2 records.
 
 ## 2. Config — TOML
 
@@ -223,12 +254,13 @@ pub enum RecordError {
     RepeatedPoint { index: usize },
     IllegalMove { index: usize },
     ResultMismatch,
+    FromPosition,
 }
 ```
 
 `Display` messages are written for the user, not for a log file. Examples:
 
-- "This file is a version 2 record. This version of Gomoku opens version 1."
+- "This file is a version 3 record. This version of Gomoku opens versions 1 and 2."
 - "Move 34 in this file is not legal. The file may be damaged."
 
 The binary adds the file path with `anyhow::Context` and shows a dialog. A
@@ -236,8 +268,11 @@ failed save leaves the previous file untouched.
 
 ## 6. Migration policy
 
-- Version 1 is the first release. There is nothing to migrate.
-- A version 2 loader must be able to read a version 1 file. The rule is: refuse
-  a newer version, upgrade an older version, never guess a field.
+- Version 1 is frozen and remains readable. Its result must still follow the
+  board, with no resignation claim.
+- Version 2 adds resignation only. New saves, including games loaded from v1,
+  use v2; player metadata, timestamp and moves retain their existing shape.
+- Only versions 1 and 2 are accepted. Refuse unsupported versions and invalid
+  results rather than guessing.
 - The format lives in one module, `record.rs`. A second format (SGF export, for
   example) is a new module plus a new entry in the File menu, not a rewrite.

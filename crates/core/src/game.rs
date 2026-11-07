@@ -1,20 +1,22 @@
 //! The game aggregate: one move list, one board, one review cursor.
 //!
-//! `moves` is the only truth about the game. `board` is always the position
-//! after `moves[..cursor]`, and `cursor <= moves.len()` always holds.
-//! Every change goes through the methods of `Game`, so both facts hold by
-//! construction.
+//! The imported root plus `moves` describe the stone history. `board` is
+//! always the root with `moves[..cursor]` applied, and `cursor <= moves.len()`
+//! holds. The whole-game outcome also records resignation without a move.
+//! Every change goes through the methods of `Game`.
 
 use engine::{Board, Color, Move, Status};
 use time::OffsetDateTime;
 
-use crate::error::GameError;
+use crate::error::{GameError, PositionError};
 
 /// How a game was won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WinMethod {
     /// Five or more stones in a line. Overlines win.
     Five,
+    /// The other player resigned at the live position.
+    Resignation,
 }
 
 /// The result of a game.
@@ -42,7 +44,7 @@ pub struct MetaData {
     pub white: Option<String>,
     /// When the game started, in UTC.
     pub created: OffsetDateTime,
-    /// The result of the game. `Game` keeps this in step with the board.
+    /// The result of the whole game, including a possible resignation.
     pub outcome: Outcome,
 }
 
@@ -104,21 +106,19 @@ impl Game {
     /// stop at the loaded position rather than at an empty board.
     ///
     /// # Errors
-    /// `engine::PositionError` if the stone lists are inconsistent.
+    /// [`PositionError`] if either color repeats a cell, the colors overlap,
+    /// or the counts disagree with the side to move.
     pub fn from_position(
         black: Vec<Move>,
         white: Vec<Move>,
         to_move: Color,
-    ) -> Result<Game, engine::PositionError> {
-        let mut seen = std::collections::HashSet::new();
-        for mv in &black {
-            if !seen.insert(mv.index()) {
-                return Err(engine::PositionError::DuplicateStone);
-            }
-        }
-        for mv in &white {
-            if !seen.insert(mv.index()) {
-                return Err(engine::PositionError::DuplicateStone);
+    ) -> Result<Game, PositionError> {
+        for stones in [&black, &white] {
+            let mut seen = std::collections::HashSet::new();
+            for mv in stones {
+                if !seen.insert(mv.index()) {
+                    return Err(PositionError::DuplicateStone);
+                }
             }
         }
         let board = Board::from_position(&black, &white, to_move)?;
@@ -162,6 +162,14 @@ impl Game {
         initial.chain(played)
     }
 
+    /// Clone the board at the review cursor, including any imported root.
+    ///
+    /// The detached snapshot shares no mutable state with this game. A worker
+    /// can analyze or play on its own copy without changing the game or record.
+    pub fn board_snapshot(&self) -> Board {
+        self.board.clone()
+    }
+
     /// The status of the board at the review cursor.
     pub fn status(&self) -> Status {
         self.board.status()
@@ -176,7 +184,7 @@ impl Game {
     }
 
     /// True when the game was built from an arbitrary position rather than an
-    /// empty board. Such games cannot be round-tripped through the v1 record
+    /// empty board. Such games cannot be round-tripped through the record
     /// format.
     pub fn is_from_position(&self) -> bool {
         self.from_position
@@ -232,21 +240,50 @@ impl Game {
         self.board.moves().last().copied()
     }
 
+    /// True when a stone can be played at an empty point in the visible view.
+    ///
+    /// A finished live game cannot continue, even if its board is ongoing
+    /// after resignation. An ongoing rewound board can start a new branch.
+    pub fn can_play(&self) -> bool {
+        self.status() == Status::Ongoing
+            && (self.is_rewound() || self.outcome() == Outcome::Ongoing)
+    }
+
+    /// Resign for the side to move, without placing a stone or changing turns.
+    ///
+    /// # Errors
+    /// `GameError::NotLive` if the view is rewound.
+    /// `GameError::GameOver` if the game is already finished.
+    pub fn resign(&mut self) -> Result<(), GameError> {
+        if self.is_rewound() {
+            return Err(GameError::NotLive);
+        }
+        if !self.can_play() {
+            return Err(GameError::GameOver);
+        }
+        self.meta.outcome = Outcome::Won {
+            winner: self.to_move().other(),
+            method: WinMethod::Resignation,
+        };
+        Ok(())
+    }
+
     /// Play a stone at `point`.
     ///
     /// When the view is rewound, the moves after the cursor are deleted as
-    /// part of the placement, so a rejected placement changes nothing. Read
-    /// `pending_truncation` before you call this, and confirm with the user
-    /// when it is not zero.
+    /// part of the placement, and any old resignation is discarded. A rejected
+    /// placement changes nothing. Read `pending_truncation` before calling,
+    /// and confirm with the user when it is not zero.
     ///
     /// # Errors
     /// `GameError::Occupied` if the point holds a stone.
-    /// `GameError::GameOver` if the board at the cursor is finished.
+    /// `GameError::GameOver` if the board at the cursor is finished or the
+    /// live game ended by resignation.
     pub fn play(&mut self, point: Move) -> Result<(), GameError> {
         if self.stone_at(point).is_some() {
             return Err(GameError::Occupied);
         }
-        if self.status() != Status::Ongoing {
+        if !self.can_play() {
             return Err(GameError::GameOver);
         }
         self.board.play(point).map_err(GameError::from)?;
@@ -257,10 +294,23 @@ impl Game {
         Ok(())
     }
 
-    /// Delete the last move of the game. The move is gone.
+    /// Clear a resignation, or otherwise delete the last move of the game.
     ///
-    /// Returns false when the game has no move.
+    /// Clearing resignation returns to live without removing a stone. A
+    /// subsequent undo removes a move, with no redo stack. Returns false
+    /// when there is neither a resignation nor a move to undo at this root.
     pub fn undo(&mut self) -> bool {
+        if matches!(
+            self.outcome(),
+            Outcome::Won {
+                method: WinMethod::Resignation,
+                ..
+            }
+        ) {
+            self.live();
+            self.meta.outcome = outcome_of(self.board.status());
+            return true;
+        }
         if self.moves.is_empty() {
             return false;
         }
@@ -359,7 +409,6 @@ fn color_of(index: usize, initial_to_move: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::PositionError;
     use time::macros::datetime;
 
     fn point(row: u8, col: u8) -> Move {
