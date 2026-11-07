@@ -42,6 +42,8 @@ struct Preview {
     gain: Option<f32>,
     /// Draw the interface as well as the board.
     with_ui: bool,
+    /// A puzzle file to open in the picker before the frame is drawn.
+    puzzle: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -54,6 +56,7 @@ fn main() -> Result<()> {
     let mut ui_preview = false;
     let mut scale = 1.0_f32;
     let mut knock: Option<PathBuf> = None;
+    let mut puzzle: Option<PathBuf> = None;
     let mut pixels_per_cell: Option<f32> = None;
     let mut gain: Option<f32> = None;
     let mut centre: Option<[f32; 2]> = None;
@@ -71,6 +74,7 @@ fn main() -> Result<()> {
                     centre: None,
                     gain: None,
                     with_ui: false,
+                    puzzle: None,
                 });
             }
             "--size" => {
@@ -96,6 +100,11 @@ fn main() -> Result<()> {
             "--variants" => {
                 variation_sheets = Some(PathBuf::from(
                     arguments.next().context("--variants needs a directory")?,
+                ));
+            }
+            "--puzzle" => {
+                puzzle = Some(PathBuf::from(
+                    arguments.next().context("--puzzle needs a file name")?,
                 ));
             }
             "--preview-ui" => ui_preview = true,
@@ -158,6 +167,7 @@ fn main() -> Result<()> {
         preview.centre = centre;
         preview.gain = gain;
         preview.with_ui = ui_preview;
+        preview.puzzle = puzzle;
         return write_preview(&preview, &game);
     }
 
@@ -179,7 +189,12 @@ fn main() -> Result<()> {
     if audio.is_none() {
         log::warn!("no audio output device was found, so the knock is off");
     }
-    app::App::new(settings, game, audio, frames).run()
+    let mut app = app::App::new(settings, game, audio, frames);
+    if let Some(path) = puzzle {
+        // Straight into the puzzle library, with the picker open.
+        app.open_puzzle(&path);
+    }
+    app.run()
 }
 
 fn print_help() {
@@ -193,6 +208,7 @@ fn print_help() {
   --preview-ui        include the interface in the preview
   --scale N           interface points per pixel, as a scaled display has
   --knock DIR         render every stone sound into DIR and stop
+  --puzzle FILE       open the puzzle picker on FILE at start-up
   --variants DIR      render the stone and knock variation sheets into DIR and stop
   --size N            the window or preview size in pixels (default 1100)
   --pixels-per-cell N zoom for a preview (default: fit the board)
@@ -243,6 +259,7 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
         centre,
         gain,
         with_ui,
+        ref puzzle,
     } = preview;
     let gpu = preview::HeadlessGpu::new()?;
     let wood = WoodTexture::load_wood()?;
@@ -286,6 +303,10 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
         session.gain = look.gain;
         session.viewport = viewport;
         session.pixels_per_point = 1.0;
+        if let Some(puzzle) = puzzle {
+            // Open the picker, so the frame shows how puzzles are chosen.
+            session.open_puzzle(puzzle);
+        }
         gpu.write_ui_frame(path, size, scale, &mut renderer, &mut session)?;
     } else {
         gpu.write_frame(path, size, size, &renderer)?;

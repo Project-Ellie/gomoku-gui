@@ -38,13 +38,34 @@ pub enum Dialog {
         /// The body text.
         body: String,
     },
-    /// More than one puzzle is in the file; pick one.
+    /// More than one puzzle is in the file; pick one. While the picker is
+    /// open the board previews the selected puzzle, so the game as it was is
+    /// kept, to be restored when the picker is cancelled.
     PickPuzzle {
         /// The loaded puzzles.
         puzzles: Vec<Puzzle>,
         /// The index the user has selected.
         index: usize,
+        /// The game as it was before the picker opened.
+        before: Box<BeforePuzzle>,
     },
+}
+
+/// The game as it was before the puzzle picker opened. While the picker is
+/// open the board shows the selected puzzle, and cancelling the picker must
+/// bring back what was there, with no trace in the revision counters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BeforePuzzle {
+    /// The game on the board.
+    pub(crate) game: Game,
+    /// The file the game came from.
+    pub(crate) path: Option<PathBuf>,
+    /// The puzzle-start cursor ring.
+    pub(crate) puzzle_cursor: Option<Move>,
+    /// The revision counters, so cancelling does not pretend unsaved changes.
+    pub(crate) revision: u64,
+    /// The revision that was last written to a file.
+    pub(crate) saved_revision: u64,
 }
 
 /// What an unsaved-changes answer should do next.
@@ -466,13 +487,68 @@ impl Session {
                 }
             }
             Ok(puzzles) => {
-                self.puzzle_cursor = None;
-                self.dialog = Some(Dialog::PickPuzzle { puzzles, index: 0 });
+                let before = Box::new(BeforePuzzle {
+                    game: self.game.clone(),
+                    path: self.path.clone(),
+                    puzzle_cursor: self.puzzle_cursor,
+                    revision: self.revision,
+                    saved_revision: self.saved_revision,
+                });
+                // Show the first puzzle right away: the picker chooses with
+                // the eyes, not with an index.
+                self.preview_puzzle(&puzzles[0]);
+                self.dialog = Some(Dialog::PickPuzzle {
+                    puzzles,
+                    index: 0,
+                    before,
+                });
                 self.title_stale = true;
                 self.remember(path);
             }
             Err(error) => self.fail("The puzzle could not be loaded", &error),
         }
+    }
+
+    /// Show a puzzle position on the board while the picker is open, without
+    /// committing to it. `cancel_puzzle_picker` undoes the preview;
+    /// `load_puzzle` commits it.
+    pub fn preview_puzzle(&mut self, puzzle: &Puzzle) {
+        if let Ok(game) =
+            Game::from_position(puzzle.black.clone(), puzzle.white.clone(), puzzle.to_move)
+        {
+            self.game = game;
+            self.puzzle_cursor = puzzle
+                .solution
+                .as_ref()
+                .and_then(|line| line.first())
+                .copied();
+            self.hover = None;
+        }
+    }
+
+    /// Close the puzzle picker without loading, restoring the game the picker
+    /// has been previewing over.
+    pub fn cancel_puzzle_picker(&mut self, before: BeforePuzzle) {
+        self.restore_before(before);
+        self.dialog = None;
+    }
+
+    /// Close the open dialog, whatever it is. The puzzle picker first
+    /// restores the game it has been previewing over.
+    pub fn dismiss_dialog(&mut self) {
+        if let Some(Dialog::PickPuzzle { before, .. }) = self.dialog.take() {
+            self.restore_before(*before);
+        }
+    }
+
+    /// Bring back the game as it was before the puzzle picker opened.
+    fn restore_before(&mut self, before: BeforePuzzle) {
+        self.game = before.game;
+        self.path = before.path;
+        self.puzzle_cursor = before.puzzle_cursor;
+        self.revision = before.revision;
+        self.saved_revision = before.saved_revision;
+        self.title_stale = true;
     }
 
     /// Build the game for the selected puzzle and clear any previous puzzle
@@ -1089,6 +1165,105 @@ mod tests {
         );
         assert_eq!(session.puzzle_cursor, Some(first_solution));
         assert!(session.path.is_none());
+        assert!(session.dialog.is_none());
+    }
+
+    #[test]
+    fn dismissing_a_picker_keeps_the_original_game_available_for_saving() {
+        let path = scratch("dismiss-picker");
+        let mut session = Session::new(&Settings::default());
+        session.place_now(gomoku_core::point(7, 7).expect("inside"));
+        session.save_to(&path);
+        session.place_now(gomoku_core::point(8, 8).expect("inside"));
+        session.rewind();
+        let before = BeforePuzzle {
+            game: session.game.clone(),
+            path: session.path.clone(),
+            puzzle_cursor: session.puzzle_cursor,
+            revision: session.revision,
+            saved_revision: session.saved_revision,
+        };
+        let expected = before.clone();
+        let puzzle = Puzzle {
+            name: "preview".to_string(),
+            black: vec![gomoku_core::point(3, 3).expect("inside")],
+            white: vec![],
+            to_move: Color::White,
+            solution: None,
+            depth: None,
+        };
+        session.preview_puzzle(&puzzle);
+        session.dialog = Some(Dialog::PickPuzzle {
+            puzzles: vec![puzzle],
+            index: 0,
+            before: Box::new(before),
+        });
+
+        // The window-close path must do this before opening a save prompt.
+        session.dismiss_dialog();
+        assert_eq!(session.game, expected.game);
+        assert_eq!(session.path, expected.path);
+        assert_eq!(session.puzzle_cursor, expected.puzzle_cursor);
+        assert_eq!(session.revision, expected.revision);
+        assert_eq!(session.saved_revision, expected.saved_revision);
+        assert!(session.changed());
+        assert!(session.dialog.is_none());
+        session.save_to(&path);
+        assert!(!session.changed());
+        assert_eq!(
+            gomoku_core::load(&path)
+                .expect("the real game is saved")
+                .len(),
+            2
+        );
+        remove(&path);
+    }
+
+    #[test]
+    fn a_cancelled_picker_restores_the_game_without_a_trace() {
+        let settings = Settings::default();
+        let mut session = Session::new(&settings);
+        let home = gomoku_core::point(7, 7).expect("inside the board");
+        session.place(home);
+        let before = BeforePuzzle {
+            game: session.game.clone(),
+            path: session.path.clone(),
+            puzzle_cursor: session.puzzle_cursor,
+            revision: session.revision,
+            saved_revision: session.saved_revision,
+        };
+        let puzzle = gomoku_core::Puzzle {
+            name: "test puzzle".to_string(),
+            black: vec![gomoku_core::point(3, 3).expect("inside the board")],
+            white: vec![],
+            to_move: gomoku_core::Color::White,
+            solution: None,
+            depth: None,
+        };
+        session.preview_puzzle(&puzzle);
+        assert_eq!(
+            session.game.stone_at(puzzle.black[0]),
+            Some(gomoku_core::Color::Black),
+            "the preview really replaced the game"
+        );
+        assert!(
+            session.game.stone_at(home).is_none(),
+            "the old game is gone while the preview shows"
+        );
+        session.cancel_puzzle_picker(before);
+        assert_eq!(
+            session.game.stone_at(home),
+            Some(gomoku_core::Color::Black),
+            "the old game is back, with its own stone"
+        );
+        assert!(
+            session.game.stone_at(puzzle.black[0]).is_none(),
+            "and the puzzle stone is gone again"
+        );
+        assert!(
+            session.changed(),
+            "the unsaved stone is still unsaved, no more and no less"
+        );
         assert!(session.dialog.is_none());
     }
 }

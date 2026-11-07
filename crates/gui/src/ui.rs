@@ -56,6 +56,11 @@ const SHELL_MARK: Color32 = Color32::from_rgb(246, 246, 250);
 /// board is drawn by the passes underneath everything that is left.
 pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
     let mut requests = Requests::default();
+    // Floating picker windows do not block the background as egui modals do.
+    // Keep menus, recents, and name fields inert until the dialog is answered.
+    if session.dialog.is_some() {
+        ui.disable();
+    }
 
     egui::Panel::top("bar").exact_size(28.0).show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
@@ -529,64 +534,225 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 close = true;
             }
         }
-        Dialog::PickPuzzle { puzzles, index } => {
+        Dialog::PickPuzzle {
+            puzzles,
+            index,
+            before,
+        } => {
             let mut new_index = index;
-            let mut input = index.to_string();
-            let response = egui::Modal::new(egui::Id::new("pick-puzzle")).show(ctx, |ui| {
-                ui.set_max_width(360.0);
-                ui.heading("Load a puzzle");
-                ui.label(format!("{} puzzles in this file", puzzles.len()));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_enabled(index > 0, egui::Button::new("← Prev"))
-                        .clicked()
-                        .then(|| new_index = index.saturating_sub(1));
-                    let puzzle = &puzzles[new_index];
-                    let depth = puzzle
-                        .depth
-                        .map(|d| format!("depth {d}"))
-                        .unwrap_or_else(|| "no depth".to_string());
-                    ui.label(format!("{} — {}", puzzle.name, depth));
-                    ui.add_enabled(index + 1 < puzzles.len(), egui::Button::new("Next →"))
-                        .clicked()
-                        .then(|| new_index = (index + 1).min(puzzles.len() - 1));
+            let mut confirm = false;
+            let mut cancel = false;
+            // Twenty per row, as asked: a wall of super-mini boards, each just
+            // recognizable, so the choice is made with the eyes.
+            let columns = 20;
+            let thumb = 44.0;
+            // An opaque frame: the board shows the preview behind the window,
+            // and the thumbnails must not compete with it.
+            let style = ctx.global_style();
+            let frame = egui::Frame::window(&style).fill(style.visuals.panel_fill);
+            egui::Window::new("Choose a puzzle")
+                .id(egui::Id::new("pick-puzzle"))
+                .collapsible(false)
+                .resizable(true)
+                .frame(frame)
+                .default_size([columns as f32 * (thumb + 7.0) + 44.0, 540.0])
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    // The selection line: what is selected, and a way to jump
+                    // straight to a number.
+                    let text_id = egui::Id::new("puzzle-number");
+                    ui.horizontal(|ui| {
+                        let puzzle = &puzzles[new_index];
+                        let depth = puzzle
+                            .depth
+                            .map(|d| format!("depth {d}"))
+                            .unwrap_or_else(|| "no depth".to_string());
+                        ui.strong(&puzzle.name);
+                        ui.label(format!(
+                            "— {depth} — {} of {}",
+                            new_index + 1,
+                            puzzles.len()
+                        ));
+                        ui.add_space(12.0);
+                        ui.label("Number:");
+                        let mut input: String = ui
+                            .data_mut(|d| d.get_temp(text_id))
+                            .unwrap_or_else(|| new_index.to_string());
+                        let edit = egui::TextEdit::singleline(&mut input)
+                            .desired_width(64.0)
+                            .char_limit(7);
+                        let response = ui.add(edit);
+                        if response.changed() {
+                            if let Some(parsed) = parse_puzzle_index(&input, puzzles.len()) {
+                                new_index = parsed;
+                            }
+                        } else if !response.has_focus() && input != new_index.to_string() {
+                            // The selection moved by click or key: the field follows.
+                            input = new_index.to_string();
+                        }
+                        ui.data_mut(|d| d.insert_temp(text_id, input));
+                    });
+                    ui.add_space(6.0);
+
+                    // The keyboard: the arrows walk the grid, Enter starts the
+                    // puzzle, Escape cancels. The application leaves every key
+                    // to the dialog while it is open.
+                    let mut scroll = false;
+                    ui.input(|input| {
+                        if input.key_pressed(egui::Key::ArrowLeft) {
+                            new_index = new_index.saturating_sub(1);
+                            scroll = true;
+                        }
+                        if input.key_pressed(egui::Key::ArrowRight) {
+                            new_index = (new_index + 1).min(puzzles.len() - 1);
+                            scroll = true;
+                        }
+                        if input.key_pressed(egui::Key::ArrowUp) {
+                            new_index = new_index.saturating_sub(columns);
+                            scroll = true;
+                        }
+                        if input.key_pressed(egui::Key::ArrowDown) {
+                            new_index = (new_index + columns).min(puzzles.len() - 1);
+                            scroll = true;
+                        }
+                        if input.key_pressed(egui::Key::Enter) {
+                            confirm = true;
+                        }
+                        if input.key_pressed(egui::Key::Escape) {
+                            cancel = true;
+                        }
+                    });
+
+                    // Shrink to the grid when it is small, scroll when it is
+                    // not, so the buttons sit right under the thumbnails.
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            egui::Grid::new("puzzle-grid")
+                                .num_columns(columns)
+                                .spacing([7.0, 7.0])
+                                .show(ui, |ui| {
+                                    for (i, puzzle) in puzzles.iter().enumerate() {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(thumb, thumb),
+                                            egui::Sense::click(),
+                                        );
+                                        paint_puzzle_thumbnail(
+                                            ui,
+                                            rect,
+                                            i,
+                                            puzzle,
+                                            i == new_index,
+                                            response.hovered(),
+                                        );
+                                        if response.clicked() {
+                                            new_index = i;
+                                        }
+                                        if scroll && i == new_index {
+                                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                        }
+                                        if (i + 1) % columns == 0 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        });
+
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Start solving").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
                 });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label("Index:");
-                    let edit = egui::TextEdit::singleline(&mut input)
-                        .desired_width(60.0)
-                        .char_limit(6);
-                    ui.add(edit);
-                });
-                if let Some(parsed) = parse_puzzle_index(&input, puzzles.len()) {
-                    new_index = parsed;
+
+            if confirm {
+                // On success the dialog is already closed; on failure the
+                // message dialog takes over.
+                close = session.load_puzzle(&puzzles[new_index]).is_ok();
+            } else if cancel {
+                session.cancel_puzzle_picker(*before);
+                close = true;
+            } else {
+                // The board shows the selected puzzle right away; only a
+                // confirmation turns the preview into a game.
+                if new_index != index {
+                    session.preview_puzzle(&puzzles[new_index]);
                 }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Load").clicked() {
-                        let _ = session.load_puzzle(&puzzles[new_index]);
-                        close = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
-            });
-            if !close {
                 session.dialog = Some(Dialog::PickPuzzle {
                     puzzles,
                     index: new_index,
+                    before,
                 });
-            }
-            if response.should_close() {
-                close = true;
             }
         }
     }
     if close {
         session.dialog = None;
     }
+}
+
+/// A puzzle position as a super-mini board: the stones as dots on wood, the
+/// side to move as a pip in the corner, and the index for the number field.
+fn paint_puzzle_thumbnail(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    index: usize,
+    puzzle: &gomoku_core::Puzzle,
+    selected: bool,
+    hovered: bool,
+) {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, egui::Color32::from_rgb(0xb0, 0x79, 0x48));
+    let cell = rect.width() / 15.0;
+    let at = |mv: &gomoku_core::Move| {
+        egui::pos2(
+            rect.min.x + (mv.col() as f32 + 0.5) * cell,
+            rect.min.y + (mv.row() as f32 + 0.5) * cell,
+        )
+    };
+    let radius = cell * 0.44;
+    for mv in &puzzle.black {
+        painter.circle_filled(at(mv), radius, egui::Color32::from_gray(0x14));
+    }
+    for mv in &puzzle.white {
+        painter.circle_filled(at(mv), radius, egui::Color32::from_gray(0xf2));
+    }
+    // Who moves first: a pip in the top right corner.
+    let pip = match puzzle.to_move {
+        gomoku_core::Color::Black => egui::Color32::from_gray(0x14),
+        gomoku_core::Color::White => egui::Color32::from_gray(0xf2),
+    };
+    painter.circle(
+        rect.right_top() + egui::vec2(-5.0, 5.0),
+        3.0,
+        pip,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(0x50)),
+    );
+    // The index, small, so a number can be typed as well as a picture clicked.
+    painter.text(
+        rect.left_bottom() + egui::vec2(2.0, -1.0),
+        egui::Align2::LEFT_BOTTOM,
+        index.to_string(),
+        egui::FontId::proportional(8.5),
+        egui::Color32::from_rgba_unmultiplied(0x26, 0x18, 0x0c, 220),
+    );
+    let (width, colour) = if selected {
+        (2.5, egui::Color32::from_rgb(0x7a, 0xb8, 0xff))
+    } else if hovered {
+        (1.5, egui::Color32::from_rgb(0xd8, 0xd8, 0xde))
+    } else {
+        (1.0, egui::Color32::from_black_alpha(90))
+    };
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(width, colour),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// Parse a puzzle index from user input, refusing values outside `0..len`.
@@ -703,6 +869,13 @@ mod tests {
                     depth: Some(3),
                 }],
                 index: 0,
+                before: Box::new(crate::session::BeforePuzzle {
+                    game: gomoku_core::Game::new(),
+                    path: None,
+                    puzzle_cursor: None,
+                    revision: 0,
+                    saved_revision: 0,
+                }),
             },
         ];
         for dialog in dialogs {
@@ -715,6 +888,117 @@ mod tests {
                 "a dialog takes the pointer while it is open"
             );
         }
+    }
+
+    #[test]
+    fn the_picker_blocks_background_menu_actions() {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.dialog = Some(Dialog::PickPuzzle {
+            puzzles: vec![gomoku_core::Puzzle {
+                name: "test".to_string(),
+                black: vec![],
+                white: vec![],
+                to_move: Color::Black,
+                solution: None,
+                depth: None,
+            }],
+            index: 0,
+            before: Box::new(crate::session::BeforePuzzle {
+                game: session.game.clone(),
+                path: None,
+                puzzle_cursor: None,
+                revision: 0,
+                saved_revision: 0,
+            }),
+        });
+        let context = egui::Context::default();
+        // Open File, then click its first action, well outside the picker.
+        for (position, pressed) in [
+            (egui::pos2(20.0, 14.0), None),
+            (egui::pos2(20.0, 14.0), Some(true)),
+            (egui::pos2(20.0, 14.0), Some(false)),
+            (egui::pos2(40.0, 40.0), None),
+            (egui::pos2(40.0, 40.0), Some(true)),
+            (egui::pos2(40.0, 40.0), Some(false)),
+        ] {
+            let mut events = vec![egui::Event::PointerMoved(position)];
+            if let Some(pressed) = pressed {
+                events.push(egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1600.0, 1000.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| assert_eq!(draw(ui, &mut session), Requests::default()),
+            );
+            output.textures_delta.clear();
+        }
+        assert!(matches!(session.dialog, Some(Dialog::PickPuzzle { .. })));
+        let picker = session.dialog.clone();
+        // Disabling the background must not disable the floating picker itself.
+        let mut output = context.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            },
+            |ui| {
+                let _ = draw(ui, &mut session);
+            },
+        );
+        output.textures_delta.clear();
+        assert!(session.dialog.is_none());
+
+        // Its pointer controls must remain active too, not just its keys.
+        session.dialog = picker;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = draw(ui, &mut session);
+        });
+        let start = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "Start solving" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        });
+        output.textures_delta.clear();
+        let start = start.expect("the picker draws its confirmation button");
+        for pressed in [true, false] {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::PointerMoved(start),
+                        egui::Event::PointerButton {
+                            pos: start,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = draw(ui, &mut session);
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert!(session.dialog.is_none());
+        assert!(session.game.is_from_position());
     }
 
     #[test]

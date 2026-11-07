@@ -95,9 +95,21 @@ impl App {
         }
     }
 
+    /// Open a puzzle file before the window appears, as `--puzzle` asks.
+    pub fn open_puzzle(&mut self, path: &std::path::Path) {
+        self.session.open_puzzle(path);
+    }
+
     /// Open the window and run until it is closed.
     pub fn run(mut self) -> Result<()> {
-        match self.session.autosave_to_offer() {
+        // An explicit --puzzle already chose the startup content. Replacing
+        // its picker would also discard the game snapshot needed by Cancel.
+        let offer = if self.session.dialog.is_none() && !self.session.game.is_from_position() {
+            self.session.autosave_to_offer()
+        } else {
+            None
+        };
+        match offer {
             Some(offer) => {
                 log::trace!("offering autosave from {:?}", offer);
                 self.session.dialog = Some(Dialog::Resume { source: offer });
@@ -115,6 +127,8 @@ impl App {
 
     /// Write the settings, and the game in progress, on the way out.
     fn write_settings(&mut self) {
+        // Frame-limited exits also need to save the real game, not a preview.
+        self.session.dismiss_dialog();
         match crate::session::settings_path() {
             Ok(path) => {
                 let settings = self.session.settings(&self.geometry);
@@ -690,6 +704,9 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                // Cancel any uncommitted preview before replacing its dialog
+                // with a save prompt or writing an autosave at exit.
+                self.session.dismiss_dialog();
                 if self.session.changed() {
                     self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });
                     self.request_redraw();
@@ -792,13 +809,15 @@ impl ApplicationHandler for App {
                 self.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state != ElementState::Pressed || wants_keyboard {
+                // A dialog owns the keyboard while it is open: the interface
+                // handles its keys, so that a shortcut cannot slip past it.
+                if event.state != ElementState::Pressed || wants_keyboard || modal {
                     return;
                 }
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
                         if self.session.dialog.is_some() {
-                            self.session.dialog = None;
+                            self.session.dismiss_dialog();
                             self.request_redraw();
                         } else if self.session.changed() {
                             self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });

@@ -242,13 +242,16 @@ impl HeadlessGpu {
             },
             ..Default::default()
         };
-        let mut requests = crate::ui::Requests::default();
-        let output = context.run_ui(input, |ui| {
-            requests = crate::ui::draw(ui, session);
+        // No animations: a window that fades in over several frames would be
+        // drawn half-transparent in a still.
+        context.global_style_mut(|style| style.animation_time = 0.0);
+        // Three warm-up passes let windows measure and place themselves;
+        // the following settled frame is the one that is drawn.
+        let output = settled_ui_output(&context, input, |ui| {
+            let _ = crate::ui::draw(ui, session);
         });
-        let _ = requests;
         let egui::FullOutput {
-            textures_delta,
+            mut textures_delta,
             shapes,
             pixels_per_point,
             ..
@@ -259,13 +262,12 @@ impl HeadlessGpu {
             &self.queue,
             &textures_delta,
         );
+        textures_delta.clear();
         let jobs = context.tessellate(shapes, pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [pixels, pixels],
             pixels_per_point,
         };
-        let mut textures_delta = textures_delta;
-        textures_delta.clear();
         // The same path as the window: the interface has reported the area, so the
         // camera and the renderer can be pointed at it.
         crate::app::prepare_frame(session, renderer, &self.queue, [pixels, pixels]);
@@ -294,6 +296,23 @@ impl HeadlessGpu {
             egui_renderer.render(&mut pass, &jobs, &screen);
         })
     }
+}
+
+/// Settle the layout while retaining every pass's texture updates for upload.
+fn settled_ui_output(
+    context: &egui::Context,
+    input: egui::RawInput,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    let mut textures = egui::TexturesDelta::default();
+    for _ in 0..3 {
+        let output = context.run_ui(input.clone(), &mut draw);
+        textures.append(output.textures_delta);
+    }
+    let mut output = context.run_ui(input, draw);
+    textures.append(std::mem::take(&mut output.textures_delta));
+    output.textures_delta = textures;
+    output
 }
 
 /// Write 24-bit BMP data, with the rows in the order a BMP expects: bottom up.
@@ -334,4 +353,34 @@ fn write_bmp(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
     }
 
     std::fs::write(path, out).with_context(|| format!("cannot write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warmup_retains_texture_updates_from_every_pass() {
+        let context = egui::Context::default();
+        let mut textures = Vec::new();
+        let mut output = settled_ui_output(&context, egui::RawInput::default(), |ui| {
+            // A distinct texture forces an upload on every warm-up pass.
+            textures.push(ui.ctx().load_texture(
+                format!("pass-{}", textures.len()),
+                egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+                egui::TextureOptions::NEAREST,
+            ));
+            ui.label("Puzzle preview");
+        });
+        let uploads: Vec<_> = output.textures_delta.set.keys().copied().collect();
+        output.textures_delta.clear();
+        assert_eq!(textures.len(), 4);
+        for texture in textures {
+            assert!(
+                uploads.contains(&texture.id()),
+                "every pass reaches the renderer"
+            );
+        }
+        assert!(!output.shapes.is_empty());
+    }
 }

@@ -406,8 +406,8 @@ fn lone_stone(kind: f32, roughness: f32, cap: f32, limb: f32) -> Vec<StoneInstan
 
 /// Write tightly packed RGBA as a PNG.
 fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
+    let file =
+        std::fs::File::create(path).with_context(|| format!("cannot create {}", path.display()))?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
@@ -444,11 +444,10 @@ fn render_take(
         glyphs,
         &take.shape,
     );
-    renderer
-        .set_stones(
-            &gpu.queue,
-            &lone_stone(kind, take.roughness, take.cap, take.limb),
-        );
+    renderer.set_stones(
+        &gpu.queue,
+        &lone_stone(kind, take.roughness, take.cap, take.limb),
+    );
 
     let mut files = Vec::new();
     for (label, pixels_per_cell) in ZOOMS {
@@ -570,12 +569,16 @@ pub fn audition(directory: &Path) -> Result<()> {
         limb: 0.0,
     };
 
-    let mut slate = vec![render_take(&gpu, &wood, &glyphs, 0.0, &slate_now, directory)?];
+    let mut slate = vec![render_take(
+        &gpu, &wood, &glyphs, 0.0, &slate_now, directory,
+    )?];
     for take in slate_variants() {
         slate.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
         log::info!("slate {} rendered", take.name);
     }
-    let mut shell = vec![render_take(&gpu, &wood, &glyphs, 1.0, &shell_now, directory)?];
+    let mut shell = vec![render_take(
+        &gpu, &wood, &glyphs, 1.0, &shell_now, directory,
+    )?];
     for take in shell_variants() {
         shell.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
         log::info!("shell {} rendered", take.name);
@@ -654,9 +657,8 @@ pub fn audition(directory: &Path) -> Result<()> {
 
 /// A table of the knock measurements, for the terminal.
 fn table(knocks: &[KnockRow]) -> String {
-    let mut text = String::from(
-        "  name  impact   rises  centroid    low    mid   high  to -20 dB\n",
-    );
+    let mut text =
+        String::from("  name  impact   rises  centroid    low    mid   high  to -20 dB\n");
     for knock in knocks {
         text.push_str(&format!(
             "  {:4} {:5.1} dB {:5.2} ms {:6.0} Hz {:4.0}% {:4.0}% {:4.0}%  {:5.0} ms\n",
