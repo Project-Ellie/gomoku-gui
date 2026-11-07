@@ -1,4 +1,4 @@
-//! The game record: schema version 1, stored as JSON.
+//! The game record: writes JSON schema v2, reads v1 and v2.
 
 use engine::{Color, Move};
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,8 @@ use crate::game::{Game, Outcome, WinMethod};
 
 /// The value of the `format` field of a record.
 pub const FORMAT_MARKER: &str = "gomoku-gui/record";
-/// The record schema version this build writes and reads.
-pub const FORMAT_VERSION: u32 = 1;
+/// The record schema version this build writes. It also reads v1.
+pub const FORMAT_VERSION: u32 = 2;
 /// The board size this application plays.
 pub const BOARD_SIZE: u32 = 15;
 /// The rule set this application plays.
@@ -45,6 +45,8 @@ pub enum StoredColor {
 pub enum StoredMethod {
     /// Five or more stones in a line.
     Five,
+    /// The other player resigned.
+    Resignation,
 }
 
 /// The result of a game in a record.
@@ -91,6 +93,7 @@ impl From<Outcome> for StoredOutcome {
                 winner: winner.into(),
                 method: match method {
                     WinMethod::Five => StoredMethod::Five,
+                    WinMethod::Resignation => StoredMethod::Resignation,
                 },
             },
         }
@@ -106,6 +109,7 @@ impl From<StoredOutcome> for Outcome {
                 winner: winner.into(),
                 method: match method {
                     StoredMethod::Five => WinMethod::Five,
+                    StoredMethod::Resignation => WinMethod::Resignation,
                 },
             },
         }
@@ -117,7 +121,7 @@ impl From<StoredOutcome> for Outcome {
 pub struct Record {
     /// The format marker. Always [`FORMAT_MARKER`].
     pub format: String,
-    /// The schema version. Always [`FORMAT_VERSION`].
+    /// The schema version: 1 or 2 on read; [`FORMAT_VERSION`] for new records.
     pub version: u32,
     /// The board size. Always [`BOARD_SIZE`].
     pub size: u32,
@@ -136,7 +140,7 @@ pub struct Record {
 }
 
 impl Record {
-    /// Build a record from a game.
+    /// Build a v2 record of the full history and result, even during review.
     ///
     /// # Errors
     /// `RecordError::FromPosition` if the game was loaded from a puzzle
@@ -200,6 +204,16 @@ impl Record {
             game.play(point)
                 .map_err(|_| RecordError::IllegalMove { index })?;
         }
+        if let StoredOutcome::Won {
+            winner,
+            method: StoredMethod::Resignation,
+        } = self.result
+        {
+            if self.version == 1 || Color::from(winner) != game.to_move().other() {
+                return Err(RecordError::ResultMismatch);
+            }
+            game.resign().map_err(|_| RecordError::ResultMismatch)?;
+        }
         if Outcome::from(self.result) != game.outcome() {
             return Err(RecordError::ResultMismatch);
         }
@@ -213,7 +227,7 @@ impl Record {
                 found: self.format.clone(),
             });
         }
-        if self.version > FORMAT_VERSION {
+        if !matches!(self.version, 1 | 2) {
             return Err(RecordError::UnsupportedVersion(self.version));
         }
         if self.size != BOARD_SIZE {
@@ -343,10 +357,10 @@ mod tests {
     #[test]
     fn a_record_refuses_a_newer_version() {
         let mut record = record();
-        record.version = 2;
+        record.version = FORMAT_VERSION + 1;
         assert!(matches!(
             record.into_game(),
-            Err(RecordError::UnsupportedVersion(2))
+            Err(RecordError::UnsupportedVersion(3))
         ));
     }
 

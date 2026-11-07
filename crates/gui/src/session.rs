@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use gomoku_core::{Color, Game, Move, Outcome, PositionError, Puzzle, Settings};
+use gomoku_core::{Color, Game, Move, Outcome, PositionError, Puzzle, Settings, WinMethod};
 
 use crate::camera::Camera;
 
@@ -744,11 +744,14 @@ pub fn neighbours(game: &Game, point: Move) -> usize {
     count
 }
 
-/// The winning line, if the game is won: the run of five or more stones that
-/// ends at the last move.
+/// The winning line for a five-in-a-row result: the run of five or more
+/// stones that ends at the last move. Resignation has no winning line.
 pub fn winning_line(game: &Game) -> Option<[Move; 2]> {
     let winner = match game.outcome() {
-        Outcome::Won { winner, .. } => winner,
+        Outcome::Won {
+            winner,
+            method: WinMethod::Five,
+        } => winner,
         _ => return None,
     };
     let last = game.last_move()?;
@@ -996,6 +999,15 @@ mod tests {
     #[test]
     fn an_open_game_has_no_winning_line() {
         assert_eq!(winning_line(&game()), None);
+    }
+
+    #[test]
+    fn resignation_has_no_winning_line_even_in_review() {
+        let mut game = game();
+        game.resign().unwrap();
+        assert_eq!(winning_line(&game), None);
+        game.rewind();
+        assert_eq!(winning_line(&game), None);
     }
 
     #[test]

@@ -40,6 +40,9 @@ pub enum GameError {
     /// The game is over.
     #[error("The game is over. Take the last move back or start a new game.")]
     GameOver,
+    /// Resignation requires the live position, not a reviewed move.
+    #[error("Return to the live position before resigning.")]
+    NotLive,
     /// The rules engine rejected the placement.
     #[error("The rules engine rejected the move: {0}")]
     Rejected(PlayError),
@@ -78,8 +81,8 @@ pub enum RecordError {
         /// The marker found in the file.
         found: String,
     },
-    /// The record is newer than this build can read.
-    #[error("This file is a version {0} record. This version of Gomoku opens version 1.")]
+    /// The record uses a schema version this build cannot read.
+    #[error("This file is a version {0} record. This version of Gomoku opens versions 1 and 2.")]
     UnsupportedVersion(u32),
     /// The record is for a board size this build does not play.
     #[error("This file is for a {0}x{0} board. This version of Gomoku plays 15x15.")]
@@ -111,8 +114,8 @@ pub enum RecordError {
         /// The 0-based index of the move in the file.
         index: usize,
     },
-    /// The stored result disagrees with the stored moves.
-    #[error("The result stored in this file does not match the moves it holds.")]
+    /// The stored result disagrees with the moves or is invalid for its version.
+    #[error("The result stored in this file is not valid for its moves or record version.")]
     ResultMismatch,
     /// The game was built from a puzzle position and cannot be saved as a
     /// moves-only record.

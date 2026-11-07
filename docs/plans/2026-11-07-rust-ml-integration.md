@@ -1,7 +1,8 @@
 # Plan: gomoku-gui on the live rust-ml implementation
 
-Date: 2026-11-07. Status: M0 implemented, pending independent review;
-AI milestones remain planned. API notes below checked against live owner code
+Date: 2026-11-07. Status: M0 approved at `9715a09`. M1 slice 1 adds core
+resignation and minimal v2 records, pending independent review; worker and UI
+controls remain planned. API notes below checked against live owner code
 at `158b6114029d8708fe5d55394b2930f5e4fd1d8c`, not tutorial solutions.
 
 ## 1. Goal and constraint
@@ -248,13 +249,15 @@ Concrete deltas between the vendored snapshot and current
 3. **First experience — play vs AI.** Tier 1 is the dream
    milestone: a worthy opponent on the wooden board. Analysis
    overlays (Tier 2) follow after.
-4. **Records of AI games — move-only for now.** The record format
-   (ADR-003) is untouched by this integration: an AI game is saved
-   like a human game, with the AI named as the player. Search
-   diagnostics go to the log. An optional, versioned format
-   extension carrying player-type/search-stats metadata remains
-   possible later, but play-vs-AI must not wait for a format
-   migration.
+4. **Resignation on by default; minimal result persistence.** The owner's
+   explicit requirement supersedes the earlier move-only/no-format-change
+   assumption for AI games. M1 slice 1 adds `Game::resign` and v2 records with
+   `method: "resignation"`, while retaining v1 reads (ADR-003/004). No worker
+   or AI/UI controls are in this slice; subsequent worker integration must
+   enable upstream resignation by default and handle `DecisionAction::Resign`.
+   AI games otherwise save like human games with the AI named as the player.
+   Player-type/search-stats metadata is still deferred; diagnostics go to the
+   log.
 
 ## 8. Milestones and gates
 

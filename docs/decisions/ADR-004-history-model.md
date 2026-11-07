@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (owner-approved, 2026-09-22)
+Accepted (owner-approved, 2026-09-22). Amended for M1 slice 1 (2026-11-07):
+the owner's explicit default-on AI resignation requirement supersedes the
+move-only ending assumption; resignation is a whole-game result, not a move.
 
 ## Context
 
@@ -24,20 +26,30 @@ move."
 
 `Game` holds one linear move list, one board, and one cursor.
 
-- **Undo** removes the last move from the list and destroys it. There is no
-  redo stack and no redo shortcut.
+- **Undo** first clears resignation without removing a stone, returning to
+  live. This also works with zero moves or at a puzzle root. The next undo
+  follows the ordinary rule: remove the last move and destroy it, stopping at
+  the imported root. There is no redo stack and no redo shortcut.
+- **Resignation** is accepted only at an ongoing live tip, for the side to
+  move. It awards the opposite side the win without changing stones, move
+  history, cursor or turn. Review, repeated resignation and terminal boards
+  reject it without mutation. A live resigned game rejects further play.
 - **Rewind** and **forward** move the cursor and step the board with
   `Board::undo` and `Board::play`. The move list does not change. `live()`
   returns to the latest position at any time.
 - **Placement while rewound** deletes every move after the cursor and then plays
   the new move, after one confirmation that names the count of deleted moves.
+  A successful branch also discards any old resignation; an illegal placement
+  changes neither history nor result. `can_play()` allows an ongoing review
+  board to branch, but blocks a finished live game even when its engine board
+  remains ongoing after resignation.
 - Core does not show dialogs. It exposes `pending_truncation()`, and the caller
   confirms. This keeps the core crate free of user-interface concerns.
 
 ## Consequences
 
 - One truth, one cursor. The board, the move list, the save file, and the
-  autosave cannot disagree, because every mutation goes through five methods.
+  autosave cannot disagree, because every mutation goes through `Game`.
 - A take-back is two different intents, and each has its own control. Undo is a
   decision about the game, rewind is a decision about the view. The move list
   and the review banner show which one the user is in.
@@ -48,5 +60,6 @@ move."
 - The outcome describes the game, not the view, so a rewind after a win still
   reports the win. The banner carries the review state, so the two are never
   confused.
-- An undo of a winning move reopens the game, because the outcome is recomputed
-  from the board after every change.
+- An undo of a winning move reopens the game. Board results are recomputed
+  after placement or ordinary undo; resignation is retained while reviewing
+  and cleared separately before any destructive move undo.

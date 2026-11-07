@@ -5,7 +5,7 @@
 //! they stay attached to the board at any zoom.
 
 use egui::{Align2, Color32, FontId, Frame, RichText, Stroke, Vec2};
-use gomoku_core::{Color, Outcome, label};
+use gomoku_core::{Color, Outcome, WinMethod, label};
 
 use crate::render::WOOD;
 use crate::session::{After, Dialog, Session, name_of, winning_line};
@@ -226,12 +226,15 @@ fn status_line(session: &Session) -> String {
             };
             format!("{side} to play — move {}{view}", session.game.len() + 1)
         }
-        Outcome::Won { winner, .. } => {
+        Outcome::Won { winner, method } => {
             let side = match winner {
                 Color::Black => "Black",
                 Color::White => "White",
             };
-            format!("{side} wins in {} moves", session.game.len())
+            match method {
+                WinMethod::Five => format!("{side} wins in {} moves", session.game.len()),
+                WinMethod::Resignation => format!("{side} wins by resignation"),
+            }
         }
         Outcome::Draw => "A draw".to_string(),
     }
@@ -812,6 +815,17 @@ mod tests {
     /// change to either one cannot quietly make the board unclickable.
     fn pointer_blocked(session: &Session, claim: &Claim) -> bool {
         claim.using || !session.on_board()
+    }
+
+    #[test]
+    fn a_resigned_game_names_the_win_method() {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session
+            .game
+            .play(gomoku_core::point(7, 7).unwrap())
+            .unwrap();
+        session.game.resign().unwrap();
+        assert_eq!(status_line(&session), "Black wins by resignation");
     }
 
     #[test]

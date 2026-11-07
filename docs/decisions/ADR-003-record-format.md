@@ -3,7 +3,9 @@
 ## Status
 
 Accepted (owner-approved, 2026-09-22). Supersedes the SGF recommendation that
-was made during design.
+was made during design. Amended for M1 slice 1 (2026-11-07): explicit owner
+requirement for default-on AI resignation supersedes the earlier integration
+assumption that records need no format change.
 
 ## Context
 
@@ -37,8 +39,16 @@ Game records are a versioned JSON document with the marker
 
 - Moves are stored as numeric `[column, row]` pairs with 0-based indices, so the
   file does not depend on the display notation.
-- The document carries `version`, and a loader refuses a version above 1 and
-  ignores unknown fields, so a later minor addition stays compatible.
+- New records carry `version: 2`; the loader accepts versions 1 and 2 only
+  and ignores unknown fields. The frozen v1 fixture remains readable.
+- Version 2 adds only `result.method: "resignation"`. The winner must be the
+  opposite of the replayed side to move on an ongoing board. Version 1 cannot
+  claim resignation. Player names, timestamps and numeric moves are unchanged;
+  no AI settings or search statistics are added.
+- Saving from review keeps the full move history and whole-game result;
+  loading returns to the live tip, including a finished resignation result.
+  Puzzle-root games remain unsavable because their initial stones are not in
+  this format.
 - Writes are atomic: temporary file, flush, rename.
 - The format lives in one module, `crates/core/src/record.rs`.
 
