@@ -79,7 +79,7 @@ impl App {
         };
         let mut session = Session::new(&settings);
         // A game can be handed in, which is how `--demo` puts stones on the board.
-        session.game = game;
+        session.install_game(game);
         App {
             session,
             audio,
@@ -104,7 +104,7 @@ impl App {
     pub fn run(mut self) -> Result<()> {
         // An explicit --puzzle already chose the startup content. Replacing
         // its picker would also discard the game snapshot needed by Cancel.
-        let offer = if self.session.dialog.is_none() && !self.session.game.is_from_position() {
+        let offer = if self.session.dialog().is_none() && !self.session.game().is_from_position() {
             self.session.autosave_to_offer()
         } else {
             None
@@ -112,7 +112,7 @@ impl App {
         match offer {
             Some(offer) => {
                 log::trace!("offering autosave from {:?}", offer);
-                self.session.dialog = Some(Dialog::Resume { source: offer });
+                self.session.set_dialog(Dialog::Resume { source: offer });
             }
             None => {
                 log::trace!("no autosave to offer");
@@ -140,7 +140,7 @@ impl App {
         }
         if self.session.changed() {
             self.session.autosave();
-        } else if self.session.game.is_empty() {
+        } else if self.session.game().is_empty() {
             self.session.discard_autosave();
         }
     }
@@ -159,7 +159,7 @@ impl App {
     /// Perform an action that may lose unsaved changes.
     fn attempt(&mut self, then: After, event_loop: &ActiveEventLoop) {
         if self.session.changed() {
-            self.session.dialog = Some(Dialog::Unsaved { then });
+            self.session.set_dialog(Dialog::Unsaved { then });
             self.request_redraw();
             return;
         }
@@ -184,13 +184,16 @@ impl App {
 
     /// Ask for a file and open it.
     fn ask_to_open(&mut self) {
+        self.session.begin_native_dialog();
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Gomoku game", &["json"])
             .set_title("Open a game");
         if let Some(directory) = &self.session.last_directory {
             dialog = dialog.set_directory(directory);
         }
-        if let Some(path) = dialog.pick_file() {
+        let path = dialog.pick_file();
+        self.session.end_native_dialog();
+        if let Some(path) = path {
             self.session.open(&path);
             self.request_redraw();
         }
@@ -198,13 +201,16 @@ impl App {
 
     /// Ask for a puzzle file and load it.
     fn ask_to_open_puzzle(&mut self) {
+        self.session.begin_native_dialog();
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Gomoku puzzle", &["json"])
             .set_title("Load a puzzle");
         if let Some(directory) = &self.session.last_directory {
             dialog = dialog.set_directory(directory);
         }
-        if let Some(path) = dialog.pick_file() {
+        let path = dialog.pick_file();
+        self.session.end_native_dialog();
+        if let Some(path) = path {
             self.session.open_puzzle(&path);
             self.request_redraw();
         }
@@ -212,6 +218,7 @@ impl App {
 
     /// Ask for a file and save to it.
     fn ask_to_save(&mut self) {
+        self.session.begin_native_dialog();
         let mut dialog = rfd::FileDialog::new()
             .add_filter("Gomoku game", &["json"])
             .set_title("Save the game")
@@ -219,7 +226,9 @@ impl App {
         if let Some(directory) = &self.session.last_directory {
             dialog = dialog.set_directory(directory);
         }
-        if let Some(path) = dialog.save_file() {
+        let path = dialog.save_file();
+        self.session.end_native_dialog();
+        if let Some(path) = path {
             self.session.save_to(&path);
             self.request_redraw();
         }
@@ -231,7 +240,7 @@ impl App {
             self.ask_to_save();
             return;
         }
-        if let Some(after) = self.session.after_save.take() {
+        if let Some(after) = self.session.take_after_save() {
             self.perform(after, event_loop);
         }
         self.request_redraw();
@@ -239,7 +248,7 @@ impl App {
 
     /// Act on what the interface asked for.
     fn run_requests(&mut self, requests: Requests, event_loop: &ActiveEventLoop) {
-        if let Some(after) = self.session.perform.take() {
+        if let Some(after) = self.session.take_action() {
             self.perform(after, event_loop);
             return;
         }
@@ -576,7 +585,7 @@ pub fn prepare_frame(
     // placed the view for its first frame.
     session.camera.clamp(session.viewport);
     renderer.set_globals(queue, &globals_for(session));
-    renderer.set_stones(queue, &stone_instances(&session.game));
+    renderer.set_stones(queue, &stone_instances(session.game()));
 }
 
 /// The uniform block for a session: the view, the viewport, and the materials.
@@ -594,7 +603,7 @@ fn globals_for(session: &Session) -> Globals {
     ];
     globals.last_move = if session.toggles.last_move {
         session
-            .game
+            .game()
             .last_move()
             .map(|point| [point.col() as f32, point.row() as f32, 1.0, 0.0])
             .unwrap_or([0.0; 4])
@@ -700,7 +709,7 @@ impl ApplicationHandler for App {
             .as_ref()
             .map(|state| state.egui.egui_wants_keyboard_input())
             .unwrap_or(false);
-        let modal = self.session.dialog.is_some();
+        let modal = self.session.dialog().is_some();
 
         match event {
             WindowEvent::CloseRequested => {
@@ -708,7 +717,8 @@ impl ApplicationHandler for App {
                 // with a save prompt or writing an autosave at exit.
                 self.session.dismiss_dialog();
                 if self.session.changed() {
-                    self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });
+                    self.session
+                        .set_dialog(Dialog::Unsaved { then: After::Quit });
                     self.request_redraw();
                 } else {
                     event_loop.exit();
@@ -816,11 +826,12 @@ impl ApplicationHandler for App {
                 }
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
-                        if self.session.dialog.is_some() {
+                        if self.session.dialog().is_some() {
                             self.session.dismiss_dialog();
                             self.request_redraw();
                         } else if self.session.changed() {
-                            self.session.dialog = Some(Dialog::Unsaved { then: After::Quit });
+                            self.session
+                                .set_dialog(Dialog::Unsaved { then: After::Quit });
                             self.request_redraw();
                         } else {
                             event_loop.exit();

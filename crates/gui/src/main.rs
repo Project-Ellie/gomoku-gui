@@ -4,12 +4,13 @@
 //! frame without a window, which is how the look is checked and how the
 //! pipeline is exercised on a machine with no display.
 
+pub mod ai;
 mod app;
 mod audio;
 mod camera;
 mod preview;
 mod render;
-mod session;
+pub mod session;
 mod sound;
 mod ui;
 mod variants;
@@ -298,7 +299,7 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
     if with_ui {
         let settings = gomoku_core::Settings::default();
         let mut session = session::Session::new(&settings);
-        session.game = game.clone();
+        session.install_game(game.clone());
         session.camera = camera;
         session.gain = look.gain;
         session.viewport = viewport;

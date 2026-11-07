@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use gomoku_core::{Color, Game, Move, Outcome, PositionError, Puzzle, Settings, WinMethod};
 
+use crate::ai::{
+    AiOptions, AiReply, AiRequest, Controller, DecisionAction, InvalidAiOptions, SeatOwner,
+};
 use crate::camera::Camera;
 
 /// A dialog waiting for an answer, or a message to show.
@@ -108,7 +111,9 @@ impl Default for Toggles {
 /// One sitting at the board.
 pub struct Session {
     /// The game.
-    pub game: Game,
+    game: Game,
+    ai: Controller,
+    native_dialog_open: bool,
     /// Where the view is looking.
     pub camera: Camera,
     /// The file the game came from or was saved to.
@@ -126,7 +131,7 @@ pub struct Session {
     /// The volume, from 0 to 1.
     pub volume: f32,
     /// The dialog that is waiting, if any.
-    pub dialog: Option<Dialog>,
+    dialog: Option<Dialog>,
     /// A short message for the status line.
     pub notice: Option<String>,
     /// The directory of the last open or save.
@@ -167,9 +172,9 @@ pub struct Session {
     /// The scale of the interface, as physical pixels per point.
     pub pixels_per_point: f32,
     /// An action the user has already confirmed, to perform without asking again.
-    pub perform: Option<After>,
+    perform: Option<After>,
     /// An action to perform once the game has been saved.
-    pub after_save: Option<After>,
+    after_save: Option<After>,
 }
 
 impl Session {
@@ -183,6 +188,8 @@ impl Session {
         };
         Session {
             game: Game::new(),
+            ai: Controller::default(),
+            native_dialog_open: false,
             camera: Camera::fit(crate::camera::Viewport::window(1180, 950)),
             path: None,
             revision: 0,
@@ -211,6 +218,175 @@ impl Session {
             perform: None,
             after_save: None,
         }
+    }
+
+    /// Read-only game access; all changes pass through the session.
+    pub fn game(&self) -> &Game {
+        &self.game
+    }
+
+    /// Install startup/demo content before delivery is connected.
+    pub(crate) fn install_game(&mut self, game: Game) {
+        self.game = game;
+        self.ai.invalidate();
+        self.hover = None;
+        self.title_stale = true;
+    }
+
+    /// Change record metadata through the same save-revision boundary as moves.
+    pub fn set_players(&mut self, black: Option<String>, white: Option<String>) {
+        self.game.set_players(black, white);
+        self.revision += 1;
+        self.title_stale = true;
+    }
+
+    /// Bracket synchronous native pickers; cancellation must also invalidate work.
+    pub fn begin_native_dialog(&mut self) {
+        self.ai.invalidate();
+        self.native_dialog_open = true;
+        self.hover = None;
+    }
+    /// End a native picker, including its cancellation path.
+    pub fn end_native_dialog(&mut self) {
+        self.ai.invalidate();
+        self.native_dialog_open = false;
+    }
+    /// Read the current application modal without exposing mutable game state.
+    pub fn dialog(&self) -> Option<&Dialog> {
+        self.dialog.as_ref()
+    }
+    /// Replace a modal, first restoring any uncommitted puzzle preview.
+    pub fn set_dialog(&mut self, dialog: Dialog) {
+        self.dismiss_dialog();
+        self.ai.invalidate();
+        self.dialog = Some(dialog);
+        self.hover = None;
+    }
+    /// Block automatic turns until the confirmed action has been consumed.
+    pub fn defer_action(&mut self, action: After) {
+        self.ai.invalidate();
+        self.perform = Some(action);
+    }
+    /// Block automatic turns while an action awaits its save transaction.
+    pub fn defer_after_save(&mut self, action: After) {
+        self.ai.invalidate();
+        self.after_save = Some(action);
+    }
+    /// Hand one confirmed action to the application.
+    pub fn take_action(&mut self) -> Option<After> {
+        self.perform.take()
+    }
+    /// Hand the save-dependent action to the application's save transaction.
+    pub fn take_after_save(&mut self) -> Option<After> {
+        self.after_save.take()
+    }
+
+    /// Who currently controls a color.
+    pub fn owner(&self, side: Color) -> SeatOwner {
+        self.ai.owner(side)
+    }
+    /// Retained AI settings, also available while the seat is human.
+    pub fn ai_options(&self, side: Color) -> AiOptions {
+        self.ai.options(side)
+    }
+    /// Replace one seat's settings without changing its ownership or save state.
+    ///
+    /// # Errors
+    /// Returns [`InvalidAiOptions`] without changing anything for invalid input.
+    pub fn set_ai_options(
+        &mut self,
+        side: Color,
+        options: AiOptions,
+    ) -> Result<(), InvalidAiOptions> {
+        self.ai.set_options(side, options)
+    }
+    /// Current invalidation generation, independent of saved-game revisions.
+    pub fn generation(&self) -> u64 {
+        self.ai.generation
+    }
+    /// Whether automatic turns are enabled (eligibility can still block them).
+    pub fn automation_running(&self) -> bool {
+        self.ai.running
+    }
+    /// Take a color immediately, retaining its AI settings and invalidating work.
+    pub fn take_seat(&mut self, side: Color) {
+        self.ai.set_owner(side, SeatOwner::Human);
+        self.update_hover();
+    }
+    /// Give a color to AI; releasing the current color also resumes automation.
+    pub fn release_seat(&mut self, side: Color) {
+        self.ai.set_owner(side, SeatOwner::Ai);
+        if side == self.game.to_move() {
+            self.resume_automation();
+        }
+        self.update_hover();
+    }
+    /// Explicitly resume after review or an error, without bypassing modals.
+    pub fn resume_automation(&mut self) {
+        self.ai.invalidate();
+        self.ai.running = true;
+        self.notice = None;
+    }
+    fn pause_automation(&mut self) {
+        self.ai.invalidate();
+        self.ai.running = false;
+        self.hover = None;
+    }
+    fn unblocked(&self) -> bool {
+        !self.native_dialog_open
+            && self.dialog.is_none()
+            && self.perform.is_none()
+            && self.after_save.is_none()
+    }
+    fn ai_eligible(&self) -> bool {
+        self.unblocked()
+            && self.ai.running
+            && !self.game.is_rewound()
+            && self.game.outcome() == Outcome::Ongoing
+            && self.game.can_play()
+            && self.owner(self.game.to_move()) == SeatOwner::Ai
+    }
+    /// Reserve one flight; stale work still occupies the slot until replied to.
+    pub fn next_ai_request(&mut self) -> Option<AiRequest> {
+        if !self.ai_eligible() {
+            return None;
+        }
+        self.ai.reserve(self.game.board_snapshot())
+    }
+    /// Retire only matching work, and commit only a still-current decision.
+    pub fn apply_ai_reply(&mut self, reply: AiReply) -> bool {
+        if !self.ai.retire(reply.flight)
+            || reply.flight.generation != self.ai.generation
+            || reply.flight.side != self.game.to_move()
+            || !self.ai_eligible()
+        {
+            return false;
+        }
+        let result = match reply.result {
+            Ok(decision) => match decision.action {
+                DecisionAction::Play(point) => self.commit_move(point),
+                DecisionAction::Resign(_) => self.game.resign().map(|()| {
+                    self.revision += 1;
+                    self.ai.invalidate();
+                    self.knock = None;
+                    self.hover = None;
+                    self.title_stale = true;
+                }),
+            },
+            Err(error) => {
+                self.ai_error(&error);
+                return false;
+            }
+        };
+        if let Err(error) = result {
+            self.ai_error(&error);
+            return false;
+        }
+        true
+    }
+    fn ai_error(&mut self, error: &dyn std::fmt::Display) {
+        self.pause_automation();
+        self.notice = Some(format!("AI paused: {error}"));
     }
 
     /// Fit the whole board into the viewport.
@@ -251,7 +427,9 @@ impl Session {
             .and_then(|cell| gomoku_core::point(cell[1], cell[0]))
             .filter(|point| {
                 self.game.stone_at(*point).is_none()
-                    && self.game.status() == gomoku_core::Status::Ongoing
+                    && self.game.can_play()
+                    && self.owner(self.game.to_move()) == SeatOwner::Human
+                    && self.unblocked()
             });
     }
 
@@ -259,6 +437,7 @@ impl Session {
     pub fn resume_autosave(&mut self) {
         match autosave_path().map(|path| gomoku_core::load(&path)) {
             Ok(Ok(game)) => {
+                self.pause_automation();
                 self.game = game;
                 self.path = read_autosave_source();
                 self.revision += 1;
@@ -355,7 +534,11 @@ impl Session {
     /// When the view is rewound this asks the user first, because the moves after
     /// the cursor would be lost.
     pub fn place(&mut self, point: Move) {
+        if !self.human_can_place(point) {
+            return;
+        }
         if self.game.pending_truncation() > 0 {
+            self.ai.invalidate();
             self.dialog = Some(Dialog::Truncate {
                 count: self.game.pending_truncation(),
                 point,
@@ -368,17 +551,41 @@ impl Session {
     /// Place a stone without asking, which is what the truncation dialog does
     /// once it is confirmed.
     pub fn place_now(&mut self, point: Move) {
-        if self.game.play(point).is_err() {
-            return;
+        if self.human_can_place(point) && self.commit_move(point).is_ok() {
+            self.ai.running = true;
+            self.notice = None;
         }
+    }
+
+    fn human_can_place(&self, point: Move) -> bool {
+        self.unblocked()
+            && self.owner(self.game.to_move()) == SeatOwner::Human
+            && self.game.can_play()
+            && self.game.stone_at(point).is_none()
+    }
+
+    /// Confirm only the pending placement, rechecking ownership at confirmation.
+    pub fn confirm_truncation(&mut self) {
+        if let Some(Dialog::Truncate { point, .. }) = self.dialog {
+            self.dismiss_dialog();
+            self.place_now(point);
+        }
+    }
+
+    fn commit_move(&mut self, point: Move) -> Result<(), gomoku_core::GameError> {
+        self.game.play(point)?;
+        self.ai.invalidate();
         self.revision += 1;
         self.knock = Some(neighbours(&self.game, point));
         self.puzzle_cursor = None;
+        self.hover = None;
         self.title_stale = true;
+        Ok(())
     }
 
     /// Take the last move back. The move is gone.
     pub fn undo(&mut self) {
+        self.pause_automation();
         if self.game.undo() {
             self.revision += 1;
             self.title_stale = true;
@@ -387,20 +594,24 @@ impl Session {
 
     /// Step the view back one move.
     pub fn rewind(&mut self) {
+        self.pause_automation();
         if self.game.rewind() {
             self.title_stale = true;
         }
     }
 
-    /// Step the view forward one move.
+    /// Step the view forward one move, keeping automation paused even at root.
     pub fn forward(&mut self) {
+        self.pause_automation();
         if self.game.forward() {
             self.title_stale = true;
         }
     }
 
     /// Jump to a move number, or to the latest move with `usize::MAX`.
+    /// Navigation always pauses; returning live is not a request to resume.
     pub fn seek(&mut self, index: usize) {
+        self.pause_automation();
         if self.game.seek(index) {
             self.title_stale = true;
         }
@@ -408,6 +619,9 @@ impl Session {
 
     /// A new, empty game. The player names are kept.
     pub fn new_game(&mut self) {
+        self.ai.invalidate();
+        self.ai.running = true;
+        self.hover = None;
         let created = self.game.meta().created;
         let black = self.game.meta().black.clone();
         let white = self.game.meta().white.clone();
@@ -459,6 +673,7 @@ impl Session {
     pub fn open(&mut self, path: &Path) {
         match gomoku_core::load(path) {
             Ok(game) => {
+                self.pause_automation();
                 self.game = game;
                 self.path = Some(path.to_path_buf());
                 self.puzzle_cursor = None;
@@ -509,6 +724,25 @@ impl Session {
         }
     }
 
+    /// Change the current picker selection without replacing its saved game.
+    pub fn select_puzzle(&mut self, index: usize) {
+        let puzzle = match self.dialog.as_mut() {
+            Some(Dialog::PickPuzzle {
+                puzzles,
+                index: selected,
+                ..
+            }) if index < puzzles.len() => {
+                if index == *selected {
+                    return;
+                }
+                *selected = index;
+                puzzles[index].clone()
+            }
+            _ => return,
+        };
+        self.preview_puzzle(&puzzle);
+    }
+
     /// Show a puzzle position on the board while the picker is open, without
     /// committing to it. `cancel_puzzle_picker` undoes the preview;
     /// `load_puzzle` commits it.
@@ -516,6 +750,7 @@ impl Session {
         if let Ok(game) =
             Game::from_position(puzzle.black.clone(), puzzle.white.clone(), puzzle.to_move)
         {
+            self.pause_automation();
             self.game = game;
             self.puzzle_cursor = puzzle
                 .solution
@@ -536,6 +771,9 @@ impl Session {
     /// Close the open dialog, whatever it is. The puzzle picker first
     /// restores the game it has been previewing over.
     pub fn dismiss_dialog(&mut self) {
+        if self.dialog.is_some() {
+            self.ai.invalidate();
+        }
         if let Some(Dialog::PickPuzzle { before, .. }) = self.dialog.take() {
             self.restore_before(*before);
         }
@@ -543,6 +781,7 @@ impl Session {
 
     /// Bring back the game as it was before the puzzle picker opened.
     fn restore_before(&mut self, before: BeforePuzzle) {
+        self.pause_automation();
         self.game = before.game;
         self.path = before.path;
         self.puzzle_cursor = before.puzzle_cursor;
@@ -560,6 +799,9 @@ impl Session {
     pub fn load_puzzle(&mut self, puzzle: &Puzzle) -> Result<(), PositionError> {
         match Game::from_position(puzzle.black.clone(), puzzle.white.clone(), puzzle.to_move) {
             Ok(game) => {
+                self.pause_automation();
+                self.ai.set_owner(Color::Black, SeatOwner::Human);
+                self.ai.set_owner(Color::White, SeatOwner::Human);
                 self.game = game;
                 self.path = None;
                 self.puzzle_cursor = puzzle
@@ -593,6 +835,8 @@ impl Session {
     /// Show a failure to the user, with the detail.
     pub fn fail(&mut self, title: &str, error: &dyn std::fmt::Display) {
         log::error!("{title}: {error}");
+        self.ai.invalidate();
+        self.hover = None;
         self.dialog = Some(Dialog::Message {
             title: title.to_string(),
             body: format!("{error}"),
@@ -873,6 +1117,8 @@ mod tests {
         let path = scratch("saving");
         let settings = Settings::default();
         let mut session = Session::new(&settings);
+        session.take_seat(Color::Black);
+        session.take_seat(Color::White);
         session.place_now(gomoku_core::point(7, 7).expect("inside"));
         assert!(session.changed(), "a new move is a change to save");
         session.save_to(&path);
@@ -1126,6 +1372,8 @@ mod tests {
     fn placing_a_stone_while_rewound_asks_first() {
         let settings = Settings::default();
         let mut session = Session::new(&settings);
+        session.take_seat(Color::Black);
+        session.take_seat(Color::White);
         for column in 0..3_u8 {
             session.place_now(gomoku_core::point(7, column).expect("inside"));
         }
@@ -1146,6 +1394,8 @@ mod tests {
     fn a_confirmed_truncation_deletes_the_tail() {
         let settings = Settings::default();
         let mut session = Session::new(&settings);
+        session.take_seat(Color::Black);
+        session.take_seat(Color::White);
         for column in 0..3_u8 {
             session.place_now(gomoku_core::point(7, column).expect("inside"));
         }
@@ -1222,6 +1472,8 @@ mod tests {
     fn dismissing_a_picker_keeps_the_original_game_available_for_saving() {
         let path = scratch("dismiss-picker");
         let mut session = Session::new(&Settings::default());
+        session.take_seat(Color::Black);
+        session.take_seat(Color::White);
         session.place_now(gomoku_core::point(7, 7).expect("inside"));
         session.save_to(&path);
         session.place_now(gomoku_core::point(8, 8).expect("inside"));

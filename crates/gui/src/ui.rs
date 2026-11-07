@@ -58,7 +58,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
     let mut requests = Requests::default();
     // Floating picker windows do not block the background as egui modals do.
     // Keep menus, recents, and name fields inert until the dialog is answered.
-    if session.dialog.is_some() {
+    if session.dialog().is_some() {
         ui.disable();
     }
 
@@ -209,22 +209,22 @@ fn status_line(session: &Session) -> String {
     if let Some(notice) = &session.notice {
         return notice.clone();
     }
-    match session.game.outcome() {
+    match session.game().outcome() {
         Outcome::Ongoing => {
-            let side = match session.game.to_move() {
+            let side = match session.game().to_move() {
                 Color::Black => "Black",
                 Color::White => "White",
             };
-            let view = if session.game.is_rewound() {
+            let view = if session.game().is_rewound() {
                 format!(
                     " — looking at move {} of {}",
-                    session.game.cursor(),
-                    session.game.len()
+                    session.game().cursor(),
+                    session.game().len()
                 )
             } else {
                 String::new()
             };
-            format!("{side} to play — move {}{view}", session.game.len() + 1)
+            format!("{side} to play — move {}{view}", session.game().len() + 1)
         }
         Outcome::Won { winner, method } => {
             let side = match winner {
@@ -232,7 +232,7 @@ fn status_line(session: &Session) -> String {
                 Color::White => "White",
             };
             match method {
-                WinMethod::Five => format!("{side} wins in {} moves", session.game.len()),
+                WinMethod::Five => format!("{side} wins in {} moves", session.game().len()),
                 WinMethod::Resignation => format!("{side} wins by resignation"),
             }
         }
@@ -242,8 +242,8 @@ fn status_line(session: &Session) -> String {
 
 /// The player names.
 fn names(ui: &mut egui::Ui, session: &mut Session) {
-    let mut black = session.game.meta().black.clone().unwrap_or_default();
-    let mut white = session.game.meta().white.clone().unwrap_or_default();
+    let mut black = session.game().meta().black.clone().unwrap_or_default();
+    let mut white = session.game().meta().white.clone().unwrap_or_default();
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Black").color(PANEL_INK));
@@ -268,18 +268,18 @@ fn names(ui: &mut egui::Ui, session: &mut Session) {
     if changed {
         let black = (!black.trim().is_empty()).then(|| black.trim().to_string());
         let white = (!white.trim().is_empty()).then(|| white.trim().to_string());
-        session.game.set_players(black, white);
+        session.set_players(black, white);
     }
 }
 
 /// The list of moves, one row each, with a click to look at that position.
 fn move_list(ui: &mut egui::Ui, session: &mut Session) {
     ui.label(RichText::new("Moves").color(PANEL_INK));
-    let cursor = session.game.cursor();
+    let cursor = session.game().cursor();
     let mut seek = None;
     // The whole game, so that the moves ahead of the cursor stay visible. They
     // are dimmed, because they are not on the board yet.
-    let record: Vec<(gomoku_core::Move, Color)> = session.game.record().collect();
+    let record: Vec<(gomoku_core::Move, Color)> = session.game().record().collect();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .max_height((ui.available_height() - 150.0).max(80.0))
@@ -373,7 +373,7 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     };
 
     if session.toggles.win_line {
-        if let Some([from, to]) = winning_line(&session.game) {
+        if let Some([from, to]) = winning_line(session.game()) {
             let start = to_screen([from.col() as f32, from.row() as f32]);
             let end = to_screen([to.col() as f32, to.row() as f32]);
             let width = (ppc * 0.10 / pixels_per_point).max(2.0);
@@ -396,7 +396,7 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     }
 
     if session.toggles.move_numbers {
-        for (index, (point, colour)) in session.game.stones().enumerate() {
+        for (index, (point, colour)) in session.game().stones().enumerate() {
             let centre = to_screen([point.col() as f32, point.row() as f32]);
             let ink = match colour {
                 Color::Black => Color32::from_rgb(235, 235, 240),
@@ -438,12 +438,12 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
 
 /// The dialogs that wait for an answer.
 fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) {
-    let Some(dialog) = session.dialog.clone() else {
+    let Some(dialog) = session.dialog().cloned() else {
         return;
     };
     let mut close = false;
     match dialog {
-        Dialog::Truncate { count, point } => {
+        Dialog::Truncate { count, point: _ } => {
             let response = egui::Modal::new(egui::Id::new("truncate")).show(ctx, |ui| {
                 ui.set_max_width(360.0);
                 ui.heading("Delete the moves after this one?");
@@ -455,7 +455,7 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Place, and delete them").clicked() {
-                        session.place_now(point);
+                        session.confirm_truncation();
                         close = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -480,12 +480,12 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save first").clicked() {
-                        session.after_save = Some(then);
+                        session.defer_after_save(then);
                         requests.save = true;
                         close = true;
                     }
                     if ui.button("Discard the changes").clicked() {
-                        session.perform = Some(then);
+                        session.defer_action(then);
                         close = true;
                     }
                 });
@@ -682,19 +682,12 @@ fn dialogs(ctx: &egui::Context, session: &mut Session, requests: &mut Requests) 
             } else {
                 // The board shows the selected puzzle right away; only a
                 // confirmation turns the preview into a game.
-                if new_index != index {
-                    session.preview_puzzle(&puzzles[new_index]);
-                }
-                session.dialog = Some(Dialog::PickPuzzle {
-                    puzzles,
-                    index: new_index,
-                    before,
-                });
+                session.select_puzzle(new_index);
             }
         }
     }
     if close {
-        session.dialog = None;
+        session.dismiss_dialog();
     }
 }
 
@@ -820,11 +813,15 @@ mod tests {
     #[test]
     fn a_resigned_game_names_the_win_method() {
         let mut session = Session::new(&gomoku_core::Settings::default());
-        session
-            .game
-            .play(gomoku_core::point(7, 7).unwrap())
-            .unwrap();
-        session.game.resign().unwrap();
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let request = session.next_ai_request().unwrap();
+        session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                candidates: 5,
+            }),
+            search: None,
+            guard: None,
+        })));
         assert_eq!(status_line(&session), "Black wins by resignation");
     }
 
@@ -894,7 +891,7 @@ mod tests {
         ];
         for dialog in dialogs {
             let mut session = Session::new(&gomoku_core::Settings::default());
-            session.dialog = Some(dialog);
+            session.set_dialog(dialog);
             // The interface must draw it without complaint, over the board.
             let (_, claim) = run(&mut session, egui::pos2(600.0, 450.0));
             assert!(
@@ -907,7 +904,7 @@ mod tests {
     #[test]
     fn the_picker_blocks_background_menu_actions() {
         let mut session = Session::new(&gomoku_core::Settings::default());
-        session.dialog = Some(Dialog::PickPuzzle {
+        session.set_dialog(Dialog::PickPuzzle {
             puzzles: vec![gomoku_core::Puzzle {
                 name: "test".to_string(),
                 black: vec![],
@@ -918,7 +915,7 @@ mod tests {
             }],
             index: 0,
             before: Box::new(crate::session::BeforePuzzle {
-                game: session.game.clone(),
+                game: session.game().clone(),
                 path: None,
                 puzzle_cursor: None,
                 revision: 0,
@@ -957,8 +954,8 @@ mod tests {
             );
             output.textures_delta.clear();
         }
-        assert!(matches!(session.dialog, Some(Dialog::PickPuzzle { .. })));
-        let picker = session.dialog.clone();
+        assert!(matches!(session.dialog(), Some(Dialog::PickPuzzle { .. })));
+        let picker = session.dialog().cloned();
         // Disabling the background must not disable the floating picker itself.
         let mut output = context.run_ui(
             egui::RawInput {
@@ -976,10 +973,10 @@ mod tests {
             },
         );
         output.textures_delta.clear();
-        assert!(session.dialog.is_none());
+        assert!(session.dialog().is_none());
 
         // Its pointer controls must remain active too, not just its keys.
-        session.dialog = picker;
+        session.set_dialog(picker.unwrap());
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             let _ = draw(ui, &mut session);
         });
@@ -1011,8 +1008,8 @@ mod tests {
             );
             output.textures_delta.clear();
         }
-        assert!(session.dialog.is_none());
-        assert!(session.game.is_from_position());
+        assert!(session.dialog().is_none());
+        assert!(session.game().is_from_position());
     }
 
     #[test]
