@@ -2,7 +2,7 @@
 
 ## What the program is
 
-A native desktop program for two players at one screen. It plays freestyle
+A native desktop program for human and baseline AI players at one screen. It plays freestyle
 Gomoku on a 15x15 board, records the game in a file, and shows a wooden board
 with stone pieces. It has no server and no network use.
 
@@ -60,14 +60,14 @@ about a box above it.
 | `bytemuck` | Vertex and uniform casts | 1 |
 | `glam` | Vector and matrix maths | 0.33 |
 | `directories` | App data and config paths | 6 |
-| `engine` | Gomoku rules | git `Project-Ellie/rust-ml`, rev `158b6114029d8708fe5d55394b2930f5e4fd1d8c` |
+| `engine`, `mcts`, `player`, `baseline` | Rules, search, decisions, Burn-backed evaluation | git `Project-Ellie/rust-ml`, rev `158b6114029d8708fe5d55394b2930f5e4fd1d8c` |
 | `proptest` | Property tests (dev) | 1 |
 
 Rule: a new dependency needs a reason in the pull request description.
 Rule: check for duplicate versions with `cargo tree -d` after a bump, because
 `egui-wgpu` and our renderer must share one `wgpu` type. Multiple `wgpu`
 versions can coexist in a binary; types from different versions are not
-interchangeable. The future baseline evaluator uses genuine Burn computation
+interchangeable. The baseline evaluator uses genuine Burn computation
 on the Flex CPU backend (`Device::flex()`), not a fake evaluator or a required
 shared graphics device.
 
@@ -92,21 +92,42 @@ shared graphics device.
 | `main.rs` | `main`, logging, `EventLoop`, error report to the user |
 | `app.rs` | `App` — winit `ApplicationHandler`, frame scheduling, state |
 | `camera.rs` | Board-space to screen-space transform, zoom and pan clamping |
-| `input.rs` | Event to action mapping, hit testing |
-| `config.rs` | Load and store `Settings` |
-| `render/context.rs` | Instance, adapter, device, queue, surface, MSAA targets |
-| `render/board.rs` | Background, slab, wood, grid pass |
-| `render/stones.rs` | Instanced stone pass |
-| `render/shadow.rs` | Instanced contact shadow pass |
-| `render/mesh.rs` | Lens mesh generation for a stone |
-| `render/pipeline.rs` | Pipeline and bind group construction |
-| `render/wgsl/` | `board.wgsl`, `stone.wgsl`, `shadow.wgsl`, `noise.wgsl` |
-| `ui/topbar.rs` | File, Edit, View, Go menus |
-| `ui/panel.rs` | Move list, player names, status |
-| `ui/overlays.rs` | Coordinates, move numbers, last-move ring, winning line |
-| `ui/dialogs.rs` | Truncate confirm, resume prompt, quit confirm |
-| `ui/materials.rs` | Material presets and the tuning panel |
+| `session.rs` | Game commands, metadata/save state, ownership, validated AI settings, generation/eligibility |
+| `ai.rs` | Seat options, detached request/reply protocol, flight bookkeeping |
+| `ai_worker.rs` | One thread owning the genuine baseline player, panic/error containment |
+| `render.rs` | Board, stone and shadow pipelines, textures and instance data |
+| `ui.rs` | Menus, per-color controls, history, markers and dialogs |
+| `preview.rs` | Native offscreen GPU previews, including the real egui interface |
 | `audio.rs` | Click synthesis, lock-free queue, cpal stream |
+
+## AI worker and controls
+
+Dependencies point **gomoku-gui → rust-ml**, never back. `gomoku-core` uses
+only the pinned engine; the GUI worker consumes `player`/`mcts`/`baseline` at
+the same revision. Burn CPU evaluation is real, not a mock or a Burn-free
+mode. Graphics and AI do not share GPU resources.
+
+`ui.rs` renders retained intent; Take/Release, validated numeric edits, Resume,
+and player-name edits call `Session` methods only. Repainting is not a config
+commit and cannot bump the generation. Names are saved metadata independent
+of ownership. Default seats are Human Black / AI White; either or both can be
+AI. Undo/review pauses automation until a live current AI turn is resumed.
+
+`App` reconciles eligible turns before waiting. `Session::next_ai_request`
+reserves one flight containing a cloned board, per-seat options, generation,
+side, and identity. The worker constructs and retains the non-Send `AiPlayer`
+inside its thread, using `BaselineEvaluator` on Burn `Device::flex()`.
+Completion wakes the winit loop through a user event; it is not frame polling.
+The session retires only the matching flight, then checks generation, turn,
+ownership, live position and dialog eligibility before committing Play/Resign.
+Taking a seat during search is immediate; stale work occupies the one slot
+until it replies, but cannot alter the game. Worker failures pause automation.
+
+Only committed stones enqueue a knock. Resignation sets a whole-game result
+(v2 writes, v1/v2 reads), with no phantom move or winning line; review shows
+the live result separately from the historical board. Renderer design is
+unchanged. Analysis/proof overlays, search heatmaps, Swap2 and trained networks
+are not part of M1.
 
 ## Frame flow
 
@@ -127,9 +148,9 @@ calls `request_redraw`. A hidden window and an idle game cost nothing.
 
 ```
 mouse click
-  └─ input.rs: screen point -> board point -> nearest intersection
-       └─ Game::pending_truncation()  (non-zero: ui/dialogs.rs asks first)
-            └─ Game::play(point)
+  └─ app.rs / Session: screen point -> board point -> nearest intersection
+       └─ Game::pending_truncation()  (non-zero: ui.rs asks first)
+            └─ Session::place -> Game::play(point)
                  ├─ engine Board::play
                  └─ moves.push
        └─ audio.rs: enqueue one click voice (neighbour-aware variant)
@@ -154,9 +175,8 @@ cargo fmt --all -- --check
 ```
 
 No sibling checkout or vendored engine is required. `Cargo.lock` records the
-full git source revision. `mcts`, `player`, and `baseline` share the same pin in
-`[workspace.dependencies]` for the next milestone, but no crate consumes them
-yet, so M0 does not add Burn or an AI worker to the resolved dependency graph.
+full git source revision. `mcts`, `player`, and `baseline` share the engine pin
+in `[workspace.dependencies]` and are consumed by the GUI's M1 worker.
 The dependency direction is only gomoku-gui → rust-ml. See the
 [integration plan](../plans/2026-11-07-rust-ml-integration.md); ADR-008's
 vendoring decision is superseded.
@@ -165,6 +185,6 @@ vendoring decision is superseded.
 
 `rust-ml` holds the AlphaZero-style agent and its terminal user interface.
 This repository holds the graphical user interface for the same rules engine.
-The core crate keeps the rules behind a facade, so an agent player can be
-added later as a second source of moves. The record format does not change
-when that happens.
+The core crate keeps the rules behind a facade; human clicks and validated AI
+replies are two sources of moves. Records now write v2 to preserve resignation
+without inventing a move; old v1 games remain readable.

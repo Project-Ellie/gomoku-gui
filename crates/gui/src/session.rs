@@ -475,7 +475,8 @@ impl Session {
         self.hover = cell
             .and_then(|cell| gomoku_core::point(cell[1], cell[0]))
             .filter(|point| {
-                self.game.stone_at(*point).is_none()
+                self.on_board()
+                    && self.game.stone_at(*point).is_none()
                     && self.game.can_play()
                     && self.owner(self.game.to_move()) == SeatOwner::Human
                     && self.unblocked()
@@ -937,6 +938,13 @@ impl Session {
             Outcome::Ongoing => match self.game.to_move() {
                 Color::Black => "Black to play",
                 Color::White => "White to play",
+            },
+            Outcome::Won {
+                winner,
+                method: gomoku_core::WinMethod::Resignation,
+            } => match winner {
+                Color::Black => "White resigned — Black wins",
+                Color::White => "Black resigned — White wins",
             },
             Outcome::Won { winner, .. } => match winner {
                 Color::Black => "Black wins",

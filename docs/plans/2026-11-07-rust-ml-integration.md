@@ -1,8 +1,9 @@
 # Plan: gomoku-gui on the live rust-ml implementation
 
-Date: 2026-11-07. Status: M0 approved at `9715a09`. M1 slice 1 adds core
-resignation and minimal v2 records, pending independent review; worker and UI
-controls remain planned. API notes below checked against live owner code
+Date: 2026-11-07. Status: M0 approved at `9715a09`. M1 core resignation,
+v2 records, Session controller, and genuine Burn worker are implemented and
+reviewed through `367541a`. The final visible per-color GUI control slice is
+implemented in the working tree; native full-game acceptance remains to run. API notes below checked against live owner code
 at `158b6114029d8708fe5d55394b2930f5e4fd1d8c`, not tutorial solutions.
 
 ## 1. Goal and constraint
@@ -55,7 +56,7 @@ Facade adaptations are listed in §5.
    search statistics; `Decision` does not carry the proof line. Otherwise PUCT
    search uses a configurable simulation budget = difficulty knob.
    At the pin, `DecisionAction` also supports opt-in heuristic resignation;
-   applying or persisting resignation is not part of M0.
+   M1 enables resignation by default and persists it without a move.
 2. **Live analysis overlays.** The engine's tactics functions mark
    immediate wins, forced blocks, and double threats on the wooden
    board; `prove_forced_win` + `verify_line` draw certified winning
@@ -92,7 +93,7 @@ Facade adaptations are listed in §5.
  │        │                      │      │        │                 │
  │ ai-worker thread (new, §4.3) ─┼──────┼────────┘                 │
  └───────────────────────────────┘      └──────────────────────────┘
-              direction of every dependency: ◄─── never the reverse
+              dependency direction: gomoku-gui → rust-ml, never reverse
 ```
 
 The facade stays a module, not a trait (ADR-002 reasoning unchanged:
@@ -141,11 +142,11 @@ that and puts the one search thread *outside* the render loop:
 ```
 winit event loop (render + egui)          AI worker thread
 ────────────────────────────────          ─────────────────────────────
-user clicks "let AI move"        ─────►   Request { board, gen, cfg }
+eligible live AI turn          ─────►   Request { board, gen, side, id, cfg }
 (render never blocks)                     AiPlayer::decide(&board, &options, &mut rng)
                                           …search runs (ms–s)…
-poll channel each frame        ◄─────   Reply { gen, decision }
-if gen == current_gen: handle DecisionAction (Play / Resign)
+winit user-event wake          ◄─────   Reply { flight, decision }
+retire matching flight, recheck eligibility + gen: commit Play / Resign
 ```
 
 - Construct `AiPlayer` and its evaluator **inside** the worker thread.
@@ -153,12 +154,19 @@ if gen == current_gen: handle DecisionAction (Play / Resign)
   moving a player constructed on the UI thread into the worker will not work.
   The worker reuses its evaluator and receives a **cloned `Board`** via
   `Game::board_snapshot()`; no shared mutable game state, no locks.
-- **Generation counter**: new game, undo, rewind, or seek increments
-  `gen`; stale replies are dropped. That is the entire cancellation
-  story — no thread kills mid-search.
-- Board render reads only `Game`; analysis overlays are computed
-  on-demand per frame from the engine's pure functions (cheap:
-  tactics are bitboard scans) or from the last `Reply`'s stats.
+- **Generation counter**: state transitions, ownership and committed settings
+  edits invalidate `gen`; paint does not. Stale replies are retired but never
+  applied. One outstanding flight prevents overlap, including during invalidated
+  searches—no thread kills mid-search. Undo/review pause automatic turns; Resume
+  is continuous and available only at a live current AI turn.
+- **Per-color commands are buttons**: Take gives human ownership immediately,
+  even during search; Release gives AI ownership (and resumes on the current
+  seat). Defaults: Human Black / AI White. Both may be AI. Per-seat Sims 400
+  (1–10,000), Temp 0 (0–2 by 0.1), resignation ON. Names remain independent saved
+  metadata and are never overwritten. There is no manual AI-move/Step command.
+- Board rendering reads only `Game` and presentation state. Future M2 analysis
+  overlays may use pure engine calls or completed reply statistics; none are
+  implemented in M1.
 - Audio (stone knock on AI move) triggers off `Game::play` as it does
   for human moves — the worker never touches audio or GPU.
 
@@ -255,16 +263,19 @@ Concrete deltas between the vendored snapshot and current
    `method: "resignation"`, while retaining v1 reads (ADR-003/004). No worker
    or AI/UI controls are in this slice; subsequent worker integration must
    enable upstream resignation by default and handle `DecisionAction::Resign`.
-   AI games otherwise save like human games with the AI named as the player.
+   AI games otherwise save like human games; editable player names are never
+   assigned or replaced by ownership changes.
    Player-type/search-stats metadata is still deferred; diagnostics go to the
    log.
 
 ## 8. Milestones and gates
 
-| # | Milestone | Gate |
+| # | Milestone / actual state | Gate |
 |---|---|---|
-| 0 | ADR-008 superseded; vendored engine removed; pinned git declarations wired (only engine consumed); facade adapted (§5) | Locked workspace tests/clippy, fmt check, standalone build; exactly one git engine and no sibling path dependency |
-| 1 | AI worker + `AiPlayer`/`BaselineEvaluator`; egui "AI move" affordance; Burn/wgpu coexistence verified | play a full game vs the machine on the wooden board; undo/seek during search drops stale replies |
-| 2 | Tactics + separately requested TSS proof overlays; completed-search heatmap | overlays render from engine calls/completed statistics; no streaming or proof line in `Decision` |
-| 3 | Swap2 opening flow on the typestate machine | illegal opening sequences unrepresentable in UI |
-| 4 | (optional) AI-aware record metadata, versioned format extension | old records still load; new fields optional |
+| 0 | Done: vendored engine removed, pinned git engine, facade adapted (§5) | Locked workspace tests/clippy, fmt check, standalone build; no sibling path dependency |
+| 1a | Done: core resignation, v2 writes / v1+v2 reads | Result validation, round trips, no phantom move; imported roots still not savable |
+| 1b | Done/reviewed: Session controller and genuine Burn Flex CPU worker | Automatic turn chain, stale-flight rejection, undo/review pauses, user-event wake, failure/close tests |
+| 1c | Implemented: visible Take/Release per color, Sims/Temp, Resume, Thinking/paused and live result | Real egui input tests, min/normal-width scale-2 native previews, locked tests/clippy/fmt/release build; **interactive full-game acceptance outstanding** |
+| 2 | Planned: tactics + separately requested TSS proof overlays; completed-search heatmap | Not M1 scope; no streaming or proof line in `Decision` |
+| 3 | Planned: Swap2 opening flow on the typestate machine | Illegal opening sequences unrepresentable in UI |
+| 4 | Deferred: AI-aware record metadata beyond minimal v2 resignation | Old records still load; new fields optional |

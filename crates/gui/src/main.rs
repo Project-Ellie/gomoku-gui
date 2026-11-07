@@ -46,6 +46,8 @@ struct Preview {
     with_ui: bool,
     /// A puzzle file to open in the picker before the frame is drawn.
     puzzle: Option<PathBuf>,
+    /// Side-panel width in points, for checking narrow layouts.
+    panel_width: Option<f32>,
 }
 
 fn main() -> Result<()> {
@@ -56,6 +58,7 @@ fn main() -> Result<()> {
     let mut frames: Option<u32> = None;
     let mut demo = false;
     let mut ui_preview = false;
+    let mut panel_width = None;
     let mut scale = 1.0_f32;
     let mut knock: Option<PathBuf> = None;
     let mut puzzle: Option<PathBuf> = None;
@@ -77,6 +80,7 @@ fn main() -> Result<()> {
                     gain: None,
                     with_ui: false,
                     puzzle: None,
+                    panel_width: None,
                 });
             }
             "--size" => {
@@ -108,6 +112,18 @@ fn main() -> Result<()> {
                 puzzle = Some(PathBuf::from(
                     arguments.next().context("--puzzle needs a file name")?,
                 ));
+            }
+            "--panel-width" => {
+                let width: f32 = arguments
+                    .next()
+                    .context("--panel-width needs points")?
+                    .parse()
+                    .context("--panel-width needs a number")?;
+                anyhow::ensure!(
+                    (180.0..=420.0).contains(&width),
+                    "--panel-width must be 180..=420 points"
+                );
+                panel_width = Some(width);
             }
             "--preview-ui" => ui_preview = true,
             "--scale" => {
@@ -169,6 +185,7 @@ fn main() -> Result<()> {
         preview.centre = centre;
         preview.gain = gain;
         preview.with_ui = ui_preview;
+        preview.panel_width = panel_width;
         preview.puzzle = puzzle;
         return write_preview(&preview, &game);
     }
@@ -208,6 +225,7 @@ fn print_help() {
   --frames N          quit after N frames (a smoke test)
   --preview FILE.bmp  render one frame to a file and exit
   --preview-ui        include the interface in the preview
+  --panel-width N     preview side-panel width in points (180–420)
   --scale N           interface points per pixel, as a scaled display has
   --knock DIR         render every stone sound into DIR and stop
   --puzzle FILE       open the puzzle picker on FILE at start-up
@@ -262,6 +280,7 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
         gain,
         with_ui,
         ref puzzle,
+        panel_width,
     } = preview;
     let gpu = preview::HeadlessGpu::new()?;
     let wood = WoodTexture::load_wood()?;
@@ -301,6 +320,9 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
         let settings = gomoku_core::Settings::default();
         let mut session = session::Session::new(&settings);
         session.install_game(game.clone());
+        if let Some(width) = panel_width {
+            session.panel_width = width;
+        }
         session.camera = camera;
         session.gain = look.gain;
         session.viewport = viewport;

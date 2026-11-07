@@ -88,6 +88,14 @@ wire text.
 `winner` is `black` or `white`. `method` is `five` in either version, or
 `resignation` in version 2 only. The new meaning requires the version bump,
 even though it fits the existing result shape. Methods are lowercase strings.
+All new saves write v2, including ongoing/five/draw games originally read from
+v1; v1 is a read-compatibility format, not an encoder mode.
+
+The GUI presents resignation as “White resigned — Black wins” (or the inverse),
+including as a live result during history review. It adds no history row,
+stone number, winning line or knock. Editable player names remain ordinary saved
+metadata; Take/Release never changes them. Seat ownership and Sims/Temp settings
+are session-only intent, not record fields.
 
 ### Validation and game restoration
 

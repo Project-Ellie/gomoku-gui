@@ -7,6 +7,7 @@
 use egui::{Align2, Color32, FontId, Frame, RichText, Stroke, Vec2};
 use gomoku_core::{Color, Outcome, WinMethod, label};
 
+use crate::ai::SeatOwner;
 use crate::render::WOOD;
 use crate::session::{After, Dialog, Session, name_of, winning_line};
 
@@ -156,9 +157,9 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         .resizable(true)
         .default_size(session.panel_width)
         .size_range(180.0..=420.0)
-        .frame(Frame::NONE.fill(PANEL))
+        .frame(Frame::NONE.fill(PANEL).inner_margin(8.0))
         .show(ui, |ui| {
-            names(ui, session);
+            seats(ui, session);
             ui.separator();
             move_list(ui, session);
             recents(ui, session);
@@ -194,6 +195,8 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                 // the board grows and shrinks with the area it is drawn into.
                 session.camera.refit(session.viewport);
             }
+            // Turn/ownership changes also refresh a stationary pointer.
+            session.update_hover();
             let painter = ui.painter().clone();
             overlays(&painter, session, scale);
             // Nothing here senses the pointer: a click on the board is the game's,
@@ -206,75 +209,172 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
 
 /// The line of text that says what is happening.
 fn status_line(session: &Session) -> String {
-    if let Some(notice) = &session.notice {
-        return notice.clone();
-    }
+    let review = if session.game().is_rewound() {
+        format!(
+            " — reviewing {} of {}",
+            session.game().cursor(),
+            session.game().len()
+        )
+    } else {
+        String::new()
+    };
     match session.game().outcome() {
         Outcome::Ongoing => {
-            let side = match session.game().to_move() {
-                Color::Black => "Black",
-                Color::White => "White",
-            };
-            let view = if session.game().is_rewound() {
-                format!(
-                    " — looking at move {} of {}",
-                    session.game().cursor(),
-                    session.game().len()
-                )
+            let side = if session.game().to_move() == Color::Black {
+                "Black"
             } else {
-                String::new()
+                "White"
             };
-            format!("{side} to play — move {}{view}", session.game().len() + 1)
+            if session.owner(session.game().to_move()) == SeatOwner::Ai
+                && session.automation_running()
+                && !session.game().is_rewound()
+            {
+                return format!("{side} · Thinking…");
+            }
+            let paused = if !session.automation_running() {
+                " — AI paused"
+            } else {
+                ""
+            };
+            let notice = session
+                .notice
+                .as_ref()
+                .map(|text| format!(" — {text}"))
+                .unwrap_or_default();
+            format!(
+                "{side} to play — move {}{paused}{review}{notice}",
+                session.game().len() + 1
+            )
         }
         Outcome::Won { winner, method } => {
-            let side = match winner {
-                Color::Black => "Black",
-                Color::White => "White",
+            let side = if winner == Color::Black {
+                "Black"
+            } else {
+                "White"
             };
             match method {
-                WinMethod::Five => format!("{side} wins in {} moves", session.game().len()),
-                WinMethod::Resignation => format!("{side} wins by resignation"),
+                WinMethod::Five => format!("{side} wins in {} moves{review}", session.game().len()),
+                WinMethod::Resignation => {
+                    let resigned = if winner == Color::Black {
+                        "White"
+                    } else {
+                        "Black"
+                    };
+                    format!("{resigned} resigned — {side} wins{review}")
+                }
             }
         }
-        Outcome::Draw => "A draw".to_string(),
+        Outcome::Draw => format!("A draw{review}"),
     }
 }
 
-/// The player names.
-fn names(ui: &mut egui::Ui, session: &mut Session) {
-    let mut black = session.game().meta().black.clone().unwrap_or_default();
-    let mut white = session.game().meta().white.clone().unwrap_or_default();
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Black").color(PANEL_INK));
-        let edit = egui::TextEdit::singleline(&mut black)
-            .desired_width(120.0)
-            .text_color(PANEL_INK)
-            .background_color(PANEL_FIELD);
-        if ui.add(edit).changed() {
-            changed = true;
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("White").color(PANEL_INK));
-        let edit = egui::TextEdit::singleline(&mut white)
-            .desired_width(120.0)
-            .text_color(PANEL_INK)
-            .background_color(PANEL_FIELD);
-        if ui.add(edit).changed() {
-            changed = true;
-        }
-    });
-    if changed {
-        let black = (!black.trim().is_empty()).then(|| black.trim().to_string());
-        let white = (!white.trim().is_empty()).then(|| white.trim().to_string());
-        session.set_players(black, white);
+/// Seat intent is separate from editable player metadata. Only actual widget
+/// changes commit options: repainting must never invalidate a search.
+fn seats(ui: &mut egui::Ui, session: &mut Session) {
+    ui.spacing_mut().interact_size.y = 26.0;
+    ui.visuals_mut().override_text_color = Some(PANEL_INK);
+    let widgets = &mut ui.visuals_mut().widgets;
+    for state in [
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+    ] {
+        state.weak_bg_fill = PANEL_FIELD;
+        state.bg_fill = PANEL_FIELD;
+        state.fg_stroke.color = PANEL_INK;
+    }
+    widgets.hovered.weak_bg_fill = Color32::from_rgb(224, 224, 230);
+    widgets.active.weak_bg_fill = PANEL_CURRENT;
+    for (side, label) in [(Color::Black, "Black"), (Color::White, "White")] {
+        ui.push_id(label, |ui| {
+            Frame::NONE.show(ui, |ui| {
+                let human = session.owner(side) == SeatOwner::Human;
+                ui.horizontal(|ui| {
+                    stone_dot(ui, side);
+                    ui.label(RichText::new(label).strong().color(PANEL_INK));
+                    ui.label(if human { "Human" } else { "AI · baseline" });
+                });
+                let mut name = match side {
+                    Color::Black => session.game().meta().black.clone(),
+                    Color::White => session.game().meta().white.clone(),
+                }.unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut name)
+                    .id_salt("name")
+                    .desired_width(ui.available_width())
+                    .hint_text("Player name")
+                    .text_color(PANEL_INK)
+                    .background_color(PANEL_FIELD))
+                    .on_hover_text(format!("{label} player name (saved with the game)"))
+                    .changed()
+                {
+                    let name = (!name.trim().is_empty()).then(|| name.trim().to_owned());
+                    let meta = session.game().meta();
+                    let (black, white) = match side {
+                        Color::Black => (name, meta.white.clone()),
+                        Color::White => (meta.black.clone(), name),
+                    };
+                    session.set_players(black, white);
+                }
+                let action = if human { "Release" } else { "Take" };
+                let help = if human {
+                    format!("Release {label} to the baseline AI. Turns run automatically; both colors may be AI.")
+                } else {
+                    format!("Take {label} for human play, even while thinking. Discards any pending decision for this seat.")
+                };
+                if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(format!("{action} {label}")))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(help).clicked()
+                {
+                    if human { session.release_seat(side); } else { session.take_seat(side); }
+                }
+                let mut options = session.ai_options(side);
+                let before = options;
+                let field_width = (ui.available_width() - 12.0) / 2.0;
+                egui::Grid::new("options").spacing([12.0, 3.0]).show(ui, |ui| {
+                    ui.label("Sims").on_hover_text("Retained for this color, even while human. 1–10,000 simulations per decision.");
+                    ui.label("Temp");
+                    ui.end_row();
+                    ui.add_sized([field_width, 26.0], egui::DragValue::new(&mut options.simulations).range(1..=10_000).speed(1));
+                    ui.add_sized([field_width, 26.0], egui::DragValue::new(&mut options.temperature).range(0.0..=2.0)
+                        .speed(0.1).fixed_decimals(1))
+                        .on_hover_text("Sampling temperature: 0 (deterministic) to 2, in steps of 0.1.");
+                    ui.end_row();
+                });
+                options.temperature = (options.temperature * 10.0).round() / 10.0;
+                if options != before {
+                    if let Err(error) = session.set_ai_options(side, options) {
+                        session.notice = Some(error.to_string());
+                    }
+                }
+            });
+        });
+        ui.separator();
+    }
+    ui.label(RichText::new("Resignation ON").small())
+        .on_hover_text("Baseline resignation is enabled for both AI seats by default. It is a heuristic concession, not a proof of a forced win.");
+    if !session.automation_running() {
+        ui.label("AI paused").on_hover_text("Undo and history review pause automatic turns. Return to the latest move, then Resume AI.");
+    }
+    if !session.automation_running()
+        && !session.game().is_rewound()
+        && session.game().outcome() == Outcome::Ongoing
+        && session.owner(session.game().to_move()) == SeatOwner::Ai
+        && ui
+            .add_sized([ui.available_width(), 28.0], egui::Button::new("Resume AI"))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Resume continuous automatic turns, not a single step.")
+            .clicked()
+    {
+        session.resume_automation();
     }
 }
 
 /// The list of moves, one row each, with a click to look at that position.
 fn move_list(ui: &mut egui::Ui, session: &mut Session) {
     ui.label(RichText::new("Moves").color(PANEL_INK));
+    if session.game().outcome() != Outcome::Ongoing {
+        ui.label(RichText::new(format!("Live result: {}", status_line(session))).color(PANEL_INK));
+    }
     let cursor = session.game().cursor();
     let mut seek = None;
     // The whole game, so that the moves ahead of the cursor stay visible. They
@@ -855,7 +955,375 @@ mod tests {
             search: None,
             guard: None,
         })));
-        assert_eq!(status_line(&session), "Black wins by resignation");
+        assert_eq!(status_line(&session), "White resigned — Black wins");
+        assert!(session.title().contains("White resigned — Black wins"));
+
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                candidates: 5,
+            }),
+            search: None,
+            guard: None,
+        })));
+        assert_eq!(status_line(&session), "Black resigned — White wins");
+        assert!(session.title().contains("Black resigned — White wins"));
+        assert_eq!(session.game().len(), 0);
+        assert!(winning_line(session.game()).is_none());
+        assert!(session.knock.is_none());
+    }
+
+    fn ui_frame(
+        context: &egui::Context,
+        session: &mut Session,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        for event in &events {
+            if let egui::Event::PointerMoved(point) = event {
+                let scale = context.pixels_per_point();
+                session.pointer = [point.x * scale, point.y * scale];
+            }
+        }
+        context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                draw(ui, session);
+            },
+        )
+    }
+
+    #[test]
+    fn seat_buttons_transfer_both_colors_without_renaming_or_paint_churn() {
+        use crate::ai::SeatOwner;
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.set_players(Some("Wolfie".into()), Some("Shell".into()));
+        for (label, side, owner) in [
+            ("Release Black", Color::Black, SeatOwner::Ai),
+            ("Take Black", Color::Black, SeatOwner::Human),
+            ("Take White", Color::White, SeatOwner::Human),
+            ("Release White", Color::White, SeatOwner::Ai),
+        ] {
+            click_text(label, |events| ui_frame(&context, &mut session, events));
+            assert_eq!(session.owner(side), owner);
+            assert!(!session.on_board(), "a control click is not a board click");
+            assert!(session.hover.is_none());
+            assert_eq!(session.game().len(), 0);
+        }
+        assert_eq!(session.game().meta().black.as_deref(), Some("Wolfie"));
+        assert_eq!(session.game().meta().white.as_deref(), Some("Shell"));
+        let generation = session.generation();
+        for _ in 0..10 {
+            ui_frame(&context, &mut session, vec![])
+                .textures_delta
+                .clear();
+        }
+        assert_eq!(session.generation(), generation);
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn edit_value(context: &egui::Context, session: &mut Session, current: &str, value: &str) {
+        click_text(current, |events| ui_frame(context, session, events));
+        ui_frame(
+            context,
+            session,
+            vec![
+                key(
+                    egui::Key::A,
+                    egui::Modifiers {
+                        command: true,
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                ),
+                egui::Event::Text(value.into()),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+            ],
+        )
+        .textures_delta
+        .clear();
+    }
+
+    #[test]
+    fn widget_edits_are_validated_retained_and_reach_the_next_request() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        edit_value(&context, &mut session, "400", "900");
+        edit_value(&context, &mut session, "0.0", "0.7");
+        assert_eq!(session.ai_options(Color::Black).simulations, 900);
+        assert_eq!(session.ai_options(Color::Black).temperature, 0.7);
+        edit_value(&context, &mut session, "400", "700");
+        edit_value(&context, &mut session, "0.0", "1.2");
+        assert_eq!(session.ai_options(Color::White).simulations, 700);
+        assert_eq!(session.ai_options(Color::White).temperature, 1.2);
+        assert!(!session.changed(), "AI settings are not game metadata");
+        click_text("Take White", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        click_text("Release White", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let request = session.next_ai_request().unwrap();
+        assert_eq!(request.options.simulations, 700);
+        assert_eq!(request.options.temperature, 1.2);
+        assert!(request.options.resign);
+        assert_eq!(session.game().len(), 1);
+        let generation = session.generation();
+        for _ in 0..10 {
+            ui_frame(&context, &mut session, vec![])
+                .textures_delta
+                .clear();
+        }
+        assert_eq!(session.generation(), generation);
+        assert!(session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
+            search: None,
+            guard: None,
+        }))));
+        click_text("Release Black", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        let request = session.next_ai_request().unwrap();
+        assert_eq!(request.options.simulations, 900);
+        assert_eq!(request.options.temperature, 0.7);
+    }
+
+    #[test]
+    fn resume_is_continuous_and_take_is_active_while_thinking_but_not_modal() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        session.seek(0);
+        assert!(status_line(&session).contains("AI paused"));
+        session.seek(usize::MAX);
+        click_text("Resume AI", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        session.notice = Some("stale file notice".into());
+        assert_eq!(status_line(&session), "White · Thinking…");
+        let flight = session.next_ai_request().unwrap();
+        session.set_dialog(Dialog::Message {
+            title: "Wait".into(),
+            body: "Modal".into(),
+        });
+        click_text("Take White", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(session.owner(Color::White), SeatOwner::Ai);
+        session.dismiss_dialog();
+        click_text("Take White", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(session.owner(Color::White), SeatOwner::Human);
+        assert!(!session.apply_ai_reply(flight.reply(Ok(player::Decision {
+            action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
+            search: None,
+            guard: None,
+        }))));
+        click_text("Release White", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        let request = session.next_ai_request().unwrap();
+        assert!(session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
+            search: None,
+            guard: None,
+        }))));
+        click_text("Release Black", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert!(
+            session.next_ai_request().is_some(),
+            "automation continues without Step"
+        );
+    }
+
+    #[test]
+    fn resignation_is_a_live_result_not_a_stone_even_while_reviewing() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        session.knock.take();
+        let request = session.next_ai_request().unwrap();
+        session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                candidates: 5,
+            }),
+            search: None,
+            guard: None,
+        })));
+        session.notice = Some("old notice".into());
+        assert!(session.title().contains("White resigned — Black wins"));
+        assert_eq!(session.game().len(), 1);
+        assert_eq!(session.game().stones().count(), 1);
+        assert!(session.knock.is_none());
+        assert!(winning_line(session.game()).is_none());
+        session.seek(0);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        output.textures_delta.clear();
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Live result: White resigned — Black wins — reviewing 0 of 1")));
+        assert!(session.knock.is_none());
+    }
+
+    #[test]
+    fn names_edit_through_metadata_without_invalidating_ai() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let generation = session.generation();
+        edit_value(&context, &mut session, "Player name", "Wolfie");
+        assert_eq!(session.game().meta().black.as_deref(), Some("Wolfie"));
+        assert!(session.changed());
+        assert_eq!(session.generation(), generation);
+        click_text("Release Black", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(session.game().meta().black.as_deref(), Some("Wolfie"));
+    }
+
+    #[test]
+    fn stationary_board_hover_follows_ownership_and_never_survives_resignation() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        ui_frame(&context, &mut session, vec![])
+            .textures_delta
+            .clear();
+        session.pointer = session.camera.to_screen(session.viewport, [6.0, 6.0]);
+        ui_frame(&context, &mut session, vec![])
+            .textures_delta
+            .clear();
+        assert!(session.hover.is_some());
+        session.place(gomoku_core::point(7, 7).unwrap());
+        ui_frame(&context, &mut session, vec![])
+            .textures_delta
+            .clear();
+        assert!(session.hover.is_none(), "now AI's turn");
+        session.take_seat(Color::White);
+        ui_frame(&context, &mut session, vec![])
+            .textures_delta
+            .clear();
+        assert!(session.hover.is_some(), "no cursor motion was needed");
+        session.release_seat(Color::White);
+        let request = session.next_ai_request().unwrap();
+        session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                candidates: 5,
+            }),
+            search: None,
+            guard: None,
+        })));
+        ui_frame(&context, &mut session, vec![])
+            .textures_delta
+            .clear();
+        assert!(session.hover.is_none());
+        assert!(session.knock.is_none());
+    }
+
+    #[test]
+    fn numeric_widgets_clamp_bounds_and_snap_temperature_to_tenths() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        edit_value(&context, &mut session, "400", "10001");
+        edit_value(&context, &mut session, "0.0", "0.74");
+        assert_eq!(session.ai_options(Color::Black).simulations, 10000);
+        assert_eq!(session.ai_options(Color::Black).temperature, 0.7);
+        edit_value(&context, &mut session, "400", "0");
+        edit_value(&context, &mut session, "0.0", "3");
+        assert_eq!(session.ai_options(Color::White).simulations, 1);
+        assert_eq!(session.ai_options(Color::White).temperature, 2.0);
+    }
+
+    #[test]
+    fn minimum_width_hidpi_controls_stay_inside_the_panel() {
+        let context = egui::Context::default();
+        context.set_pixels_per_point(2.0);
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.panel_width = 180.0;
+        session
+            .set_ai_options(
+                Color::Black,
+                crate::ai::AiOptions {
+                    simulations: 10000,
+                    temperature: 2.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        ui_frame(&context, &mut session, vec![])
+            .textures_delta
+            .clear();
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        output.textures_delta.clear();
+        assert_eq!(context.pixels_per_point(), 2.0);
+        let panel_left = session.viewport_points[0] + session.viewport_points[2];
+        for label in ["Release Black", "Take White", "10000", "2.0"] {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => Some(text),
+                    _ => None,
+                })
+                .expect("control is visible");
+            let rect = text.galley.rect.translate(text.pos.to_vec2());
+            assert!(
+                rect.left() >= panel_left && rect.right() <= 1200.0,
+                "{label}: {rect:?}"
+            );
+        }
+        click_text("Release Black", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(session.owner(Color::Black), SeatOwner::Ai);
+        assert!(!session.on_board());
+    }
+
+    #[test]
+    fn resume_is_absent_for_review_human_turns_and_finished_games() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.seek(0);
+        let absent = |session: &mut Session| {
+            let mut output = ui_frame(&context, session, vec![]);
+            output.textures_delta.clear();
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Resume AI")));
+        };
+        absent(&mut session); // paused but Human Black
+        session.place(gomoku_core::point(7, 7).unwrap());
+        session.seek(0);
+        absent(&mut session); // reviewing
+        session.seek(usize::MAX);
+        session.resume_automation();
+        let request = session.next_ai_request().unwrap();
+        session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                candidates: 5,
+            }),
+            search: None,
+            guard: None,
+        })));
+        session.seek(usize::MAX);
+        absent(&mut session); // live but finished
     }
 
     #[test]
