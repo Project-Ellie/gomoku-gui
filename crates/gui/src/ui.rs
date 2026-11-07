@@ -51,6 +51,12 @@ const PANEL_FIELD: Color32 = Color32::from_rgb(200, 200, 206);
 const SLATE_MARK: Color32 = Color32::from_rgb(22, 22, 26);
 /// The colour of a white stone in the move list.
 const SHELL_MARK: Color32 = Color32::from_rgb(246, 246, 250);
+/// The resignation banner: a strong red, because a concession is the one
+/// result the board itself cannot show. Bold white text on it stays readable
+/// at a glance.
+const BANNER: Color32 = Color32::from_rgb(178, 24, 24);
+/// The banner is meant to shout; anything under 24 points is a label.
+const BANNER_FONT: f32 = 28.0;
 /// Draw the whole interface and return what the application should do next.
 ///
 /// `ui` covers the whole window: the panels take their edges from it and the
@@ -153,6 +159,27 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         });
     });
 
+    // A concession is the one result the board itself cannot show, so it gets
+    // the loudest surface there is: a persistent red banner across the top of
+    // the board. It takes no space in any other state of the game.
+    if let Some(line) = resignation_banner(session.game().outcome()) {
+        egui::Panel::top("resignation")
+            .frame(Frame::NONE.fill(BANNER).inner_margin(8.0))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(line)
+                                .font(FontId::proportional(BANNER_FONT))
+                                .strong()
+                                .color(Color32::WHITE),
+                        )
+                        .wrap(),
+                    );
+                });
+            });
+    }
+
     let panel = egui::Panel::right("panel")
         .resizable(true)
         .default_size(session.panel_width)
@@ -205,6 +232,27 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
 
     dialogs(ui.ctx(), session, &mut requests, Session::resume_autosave);
     requests
+}
+
+/// The banner line for a resigned game, and nothing for any other state.
+///
+/// The text is the same one the status line and the title use. It does not
+/// carry the review position: a resignation belongs to the game, not to the
+/// move under the cursor, so the banner stays while the game is reviewed.
+fn resignation_banner(outcome: Outcome) -> Option<String> {
+    if let Outcome::Won {
+        winner,
+        method: WinMethod::Resignation,
+    } = outcome
+    {
+        let (resigned, wins) = match winner {
+            Color::Black => ("White", "Black"),
+            Color::White => ("Black", "White"),
+        };
+        Some(format!("{resigned} resigned — {wins} wins"))
+    } else {
+        None
+    }
 }
 
 /// The line of text that says what is happening.
@@ -980,6 +1028,15 @@ mod tests {
         session: &mut Session,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
+        ui_frame_sized(context, session, events, egui::vec2(1200.0, 900.0))
+    }
+
+    fn ui_frame_sized(
+        context: &egui::Context,
+        session: &mut Session,
+        events: Vec<egui::Event>,
+        size: Vec2,
+    ) -> egui::FullOutput {
         for event in &events {
             if let egui::Event::PointerMoved(point) = event {
                 let scale = context.pixels_per_point();
@@ -988,10 +1045,7 @@ mod tests {
         }
         context.run_ui(
             egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 900.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 events,
                 ..Default::default()
             },
@@ -1570,6 +1624,156 @@ mod tests {
         }
         assert!(session.dialog().is_none());
         assert!(session.game().is_from_position());
+    }
+
+    /// A game that the given side resigns, through the same AI reply path the
+    /// application uses, so the banner is tested against a real outcome.
+    fn resigned_session(resigner: Color) -> Session {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        if resigner == Color::White {
+            session.place(gomoku_core::point(7, 7).unwrap());
+        } else {
+            session.release_seat(Color::Black);
+        }
+        let request = session.next_ai_request().unwrap();
+        session.apply_ai_reply(request.reply(Ok(player::Decision {
+            action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                candidates: 5,
+            }),
+            search: None,
+            guard: None,
+        })));
+        session
+    }
+
+    /// The banner as drawn: the red rect and the text it carries, if any.
+    fn banner(output: &egui::FullOutput) -> Option<(egui::Rect, egui::epaint::TextShape)> {
+        let fill = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == BANNER => Some(rect.rect),
+            _ => None,
+        })?;
+        let text = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text)
+                if fill.contains(text.pos + text.galley.rect.center().to_vec2()) =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        })?;
+        Some((fill, text))
+    }
+
+    #[test]
+    fn resignation_banner_is_big_red_exact_and_persistent() {
+        let context = egui::Context::default();
+        for (resigner, line) in [
+            (Color::White, "White resigned — Black wins"),
+            (Color::Black, "Black resigned — White wins"),
+        ] {
+            let mut session = resigned_session(resigner);
+            let mut output = ui_frame(&context, &mut session, vec![]);
+            let (fill, text) = banner(&output).expect("a resigned game shows the banner");
+            output.textures_delta.clear();
+            assert_eq!(text.galley.text(), line);
+            let format = &text.galley.job.sections[0].format;
+            assert!(
+                format.font_id.size >= 24.0,
+                "the banner shouts: {}pt",
+                format.font_id.size
+            );
+            assert_eq!(
+                format.color,
+                Color32::WHITE,
+                "white on red reads at a glance"
+            );
+            // The banner sits between the menu bar and the board, and the board
+            // knows it: the viewport starts where the banner ends (egui keeps a
+            // one-point separator line between panels).
+            let top = session.viewport_points[1];
+            assert!(
+                top >= fill.bottom() && top <= fill.bottom() + 2.0,
+                "board viewport {:?} starts under the banner {fill:?}",
+                session.viewport_points
+            );
+            // A pointer over the banner is the interface's, not the game's.
+            session.pointer = [fill.center().x, fill.center().y];
+            assert!(!session.on_board());
+            // It is persistent: reviewing an earlier move keeps it, and drawing
+            // it never disturbs the game or the search.
+            session.seek(0);
+            let mut output = ui_frame(&context, &mut session, vec![]);
+            assert!(
+                banner(&output).is_some(),
+                "the banner stays while the resignation is reviewed"
+            );
+            output.textures_delta.clear();
+            let generation = session.generation();
+            for _ in 0..5 {
+                ui_frame(&context, &mut session, vec![])
+                    .textures_delta
+                    .clear();
+            }
+            assert_eq!(session.generation(), generation);
+        }
+    }
+
+    #[test]
+    fn no_banner_for_ongoing_five_or_draw() {
+        // The gate itself: only a resignation earns the banner.
+        assert_eq!(resignation_banner(Outcome::Ongoing), None);
+        assert_eq!(resignation_banner(Outcome::Draw), None);
+        assert_eq!(
+            resignation_banner(Outcome::Won {
+                winner: Color::Black,
+                method: WinMethod::Five
+            }),
+            None
+        );
+
+        // And through the interface, for the states a test can reach by play:
+        // no banner, and no blank space where it would be.
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        output.textures_delta.clear();
+        assert!(banner(&output).is_none(), "an ongoing game has no banner");
+        assert_eq!(
+            session.viewport_points[1], 28.0,
+            "the board starts right under the menu bar"
+        );
+
+        session.take_seat(Color::White);
+        for row in 3..8 {
+            session.place(gomoku_core::point(row, 7).unwrap());
+            if row < 7 {
+                session.place(gomoku_core::point(row, 0).unwrap());
+            }
+        }
+        assert!(matches!(
+            session.game().outcome(),
+            Outcome::Won {
+                method: WinMethod::Five,
+                ..
+            }
+        ));
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        output.textures_delta.clear();
+        assert!(banner(&output).is_none(), "a win by five has no banner");
+        assert_eq!(session.viewport_points[1], 28.0);
+    }
+
+    #[test]
+    fn the_banner_wraps_when_the_window_is_narrow() {
+        let context = egui::Context::default();
+        let mut session = resigned_session(Color::White);
+        let mut output = ui_frame_sized(&context, &mut session, vec![], egui::vec2(360.0, 900.0));
+        let (_, text) = banner(&output).expect("the banner shows at any width");
+        output.textures_delta.clear();
+        assert!(
+            text.galley.rows.len() > 1,
+            "the text wraps instead of clipping: {:?}",
+            text.galley.rect
+        );
     }
 
     #[test]

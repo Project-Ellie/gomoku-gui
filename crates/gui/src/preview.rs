@@ -359,6 +359,54 @@ fn write_bmp(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Render the resignation banner for a look:
+    /// `cargo test --bin gomoku-gui -- --ignored resignation_banner_preview`
+    /// writes `target/resignation-banner.bmp`, next to the other build output.
+    #[test]
+    #[ignore = "manual preview: writes target/resignation-banner.bmp"]
+    fn resignation_banner_preview() {
+        let gpu = HeadlessGpu::new().unwrap();
+        let wood = crate::render::WoodTexture::load_wood().unwrap();
+        let glyphs = crate::render::GlyphTexture::load_glyphs().unwrap();
+        let mut renderer = crate::render::Renderer::new(
+            &gpu.device,
+            &gpu.queue,
+            PREVIEW_FORMAT,
+            4,
+            &wood,
+            &glyphs,
+            &crate::render::STONE_SHAPE,
+        );
+        let mut game = gomoku_core::Game::new();
+        for (row, col) in [(7, 7), (7, 8), (8, 8), (6, 6)] {
+            game.play(gomoku_core::point(row, col).unwrap()).unwrap();
+        }
+        game.resign().unwrap();
+        let size = 1100;
+        let viewport = crate::camera::Viewport::window(size, size);
+        let camera = crate::camera::Camera::fit(viewport);
+        let mut globals = crate::render::Renderer::globals_with_wood(viewport, crate::render::WOOD);
+        globals.view = [
+            camera.centre[0],
+            camera.centre[1],
+            camera.pixels_per_cell,
+            0.0,
+        ];
+        renderer.set_globals(&gpu.queue, &globals);
+        renderer.set_stones(&gpu.queue, &crate::app::stone_instances(&game));
+        let settings = gomoku_core::Settings::default();
+        let mut session = crate::session::Session::new(&settings);
+        session.install_game(game);
+        session.camera = camera;
+        session.viewport = viewport;
+        session.pixels_per_point = 1.0;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/resignation-banner.bmp");
+        gpu.write_ui_frame(&path, size, 1.0, &mut renderer, &mut session)
+            .unwrap();
+        println!("wrote {}", path.display());
+    }
+
     #[test]
     fn warmup_retains_texture_updates_from_every_pass() {
         let context = egui::Context::default();
