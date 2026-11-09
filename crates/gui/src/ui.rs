@@ -2054,6 +2054,30 @@ mod tests {
     }
 
     #[test]
+    fn explorer_clamped_up_arrows_keep_first_row_without_loading() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        session.select_explorer_record(0);
+        let requests = std::cell::Cell::new(Requests::default());
+
+        explorer_frame(
+            &context,
+            &mut session,
+            &requests,
+            vec![
+                key(egui::Key::ArrowUp, egui::Modifiers::NONE),
+                key(egui::Key::ArrowUp, egui::Modifiers::NONE),
+            ],
+            None,
+        )
+        .textures_delta
+        .clear();
+
+        assert_eq!(session.explorer().unwrap().selected, Some(0));
+        assert_eq!(requests.get().explorer_select, None);
+    }
+
+    #[test]
     fn explorer_opposite_arrows_clamp_in_order_from_the_first_row() {
         let context = egui::Context::default();
         let mut session = explorer_session();
