@@ -1265,10 +1265,10 @@ new flags (e.g. selection moves emit `explorer_select` like double-click
 filter interaction sane: the highlight walks the filtered list as
 rendered.
 
-- [ ] **Step 1: RED tests** — session: move selection clamps at both ends and walks the filtered list; ui: ArrowDown emits a load request for the next visible row, Enter opens Moves.
-- [ ] **Step 2: Implement** rows without text selection, double-click loads + opens Moves, arrow walking with live preview + scroll-into-view, Enter hand-over.
-- [ ] **Step 3: Green + gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
-- [ ] **Step 4: Commit** — `git commit -m "feat(gui): keyboard-driven Explorer with Moves hand-over"` (list all touched files).
+- [x] **Step 1: RED tests** — session: move selection clamps at both ends and walks the filtered list; ui: ArrowDown emits a load request for the next visible row, Enter opens Moves.
+- [x] **Step 2: Implement** rows without text selection, double-click loads + opens Moves, arrow walking with live preview + scroll-into-view, Enter hand-over.
+- [x] **Step 3: Green + gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [x] **Step 4: Commit** — `git commit -m "feat(gui): keyboard-driven Explorer with Moves hand-over"` (list all touched files).
 
 ---
 
