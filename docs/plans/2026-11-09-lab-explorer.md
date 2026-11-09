@@ -38,7 +38,7 @@ M1 delivers a standalone Explorer: open a directory of psq files, list them, pic
 - Produces: `gomoku_core::{Confidence, RecordKind, RecordMeta, RecordUnit, OpenedThing, Format, LoadError, Registry}`.
 - `RecordUnit::Game(Game)` wraps the existing `Game` aggregate.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `crates/core/tests/format_contract.rs`:
 
@@ -80,12 +80,12 @@ fn a_registry_sniffs_a_dummy_file() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p gomoku-core --test format_contract`
 Expected: compile failure because `format.rs` does not exist.
 
-- [ ] **Step 3: Write the contracts**
+- [x] **Step 3: Write the contracts**
 
 `crates/core/src/format.rs`:
 
@@ -269,7 +269,7 @@ impl Registry {
 }
 ```
 
-- [ ] **Step 4: Export the new module**
+- [x] **Step 4: Export the new module**
 
 In `crates/core/src/lib.rs`, add `mod format;` and re-export the public items:
 
@@ -277,12 +277,12 @@ In `crates/core/src/lib.rs`, add `mod format;` and re-export the public items:
 pub use format::{Confidence, Format, LoadError, OpenedThing, RecordKind, RecordMeta, RecordUnit, Registry};
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `cargo test -p gomoku-core --test format_contract`
 Expected: 1 test passes.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/core/src/format.rs crates/core/src/lib.rs crates/core/tests/format_contract.rs
@@ -303,7 +303,7 @@ git commit -m "feat(core): add the Lab Explorer format registry contracts"
 - Produces: `gomoku_core::PsqFormat` implementing `Format`.
 - Consumes: `Game::started_at`, `Game::play`, `Game::meta`, `RecordUnit::Game`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `crates/core/tests/psq.rs`:
 
@@ -349,12 +349,12 @@ fn corrupt_psq_reports_the_offending_line() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p gomoku-core --test psq`
 Expected: compile failure because `PsqFormat` and the fixture do not exist.
 
-- [ ] **Step 3: Create the checked-in fixture**
+- [x] **Step 3: Create the checked-in fixture**
 
 `crates/core/tests/fixtures/psq/tiny.psq`:
 
@@ -380,7 +380,7 @@ Piskvorky 15x15, 0:0, 0
 8,8,0
 ```
 
-- [ ] **Step 4: Implement the psq loader**
+- [x] **Step 4: Implement the psq loader**
 
 `crates/core/src/psq.rs`:
 
@@ -501,7 +501,7 @@ impl Format for PsqFormat {
 }
 ```
 
-- [ ] **Step 5: Export and run tests**
+- [x] **Step 5: Export and run tests**
 
 In `crates/core/src/lib.rs` add `mod psq;` and:
 
@@ -512,12 +512,12 @@ pub use psq::PsqFormat;
 Run: `cargo test -p gomoku-core --test psq`
 Expected: 3 tests pass.
 
-- [ ] **Step 6: Run the gates**
+- [x] **Step 6: Run the gates**
 
 Run: `cargo test -p gomoku-core && cargo clippy -p gomoku-core --all-targets -- -D warnings && cargo fmt --all`
 Expected: all green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/core/src/psq.rs crates/core/src/lib.rs crates/core/tests/psq.rs crates/core/tests/fixtures/psq
@@ -537,7 +537,7 @@ git commit -m "feat(core): add Piskvorky psq loader and checked-in fixture"
 - Produces: `gomoku_core::{index_directory, IndexEntry}`.
 - Consumes: `Registry`, `RecordMeta`, `LoadError`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `crates/core/tests/index.rs`:
 
@@ -558,12 +558,12 @@ fn indexes_a_directory_of_psq_files() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p gomoku-core --test index`
 Expected: compile failure because `index.rs` does not exist.
 
-- [ ] **Step 3: Implement the indexer**
+- [x] **Step 3: Implement the indexer**
 
 `crates/core/src/index.rs`:
 
@@ -635,7 +635,7 @@ pub fn index_directory(root: &Path, registry: &Registry) -> Result<Vec<IndexEntr
 }
 ```
 
-- [ ] **Step 4: Export and run tests**
+- [x] **Step 4: Export and run tests**
 
 In `crates/core/src/lib.rs` add `mod index;` and:
 
@@ -646,12 +646,31 @@ pub use index::{IndexEntry, index_directory};
 Run: `cargo test -p gomoku-core --test index`
 Expected: 1 test passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/core/src/index.rs crates/core/src/lib.rs crates/core/tests/index.rs
 git commit -m "feat(core): add lazy corpus indexer"
 ```
+
+**Review deferrals (decided by Wolfie, 2026-11-09, after S3 review of `182b60b`):**
+The review found no criticals; gates green; implementation faithful to this
+sketch. Three important findings are plan-faithful divergences from the design
+spec and are **explicitly deferred** so M1 can land; they must be revisited at
+the latest in the milestone they bite:
+
+1. Unrecognized files are silently dropped (spec §4 wants them listed with
+   reason). `IndexEntry` has no reason field. Revisit in M2 when more formats
+   land, or earlier if real corpora show surprise dropouts.
+2. One unreadable subdirectory aborts the whole corpus open (spec §8 wants the
+   corpus to stay browsable). Revisit if real corpora ever hit this.
+3. Directory traversal follows symlinks (corpus escape / ELOOP via cycles).
+   Real corpora are symlink-free today.
+
+Nits carried forward: hardcoded `RecordKind::Game` mislabels once M2 adds
+puzzle/sample formats (fix with the M2 adapters); reverse-DFS subtree order
+(only visible in nested corpora); thin single happy-path test; single short
+`read` for the sniff head; "stable index" doc precision.
 
 ---
 
