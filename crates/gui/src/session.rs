@@ -54,6 +54,17 @@ pub enum Dialog {
     },
 }
 
+/// The right-panel section that is currently open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelSection {
+    /// Player names and seat ownership.
+    Players,
+    /// The game's move list.
+    Moves,
+    /// The open record corpus.
+    Explorer,
+}
+
 /// State for the Lab Explorer while a corpus is open.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExplorerSession {
@@ -220,6 +231,8 @@ pub struct Session {
     after_save: Option<After>,
     /// Lab Explorer state, when a corpus is open.
     explorer: Option<ExplorerSession>,
+    /// The one right-panel section that is open.
+    open_panel_section: PanelSection,
 }
 
 impl Session {
@@ -264,7 +277,28 @@ impl Session {
             perform: None,
             after_save: None,
             explorer: None,
+            open_panel_section: PanelSection::Moves,
         }
+    }
+
+    /// The one right-panel section that is open.
+    ///
+    /// Explorer falls back to Moves when no corpus is open.
+    pub fn open_panel_section(&self) -> PanelSection {
+        match self.open_panel_section {
+            PanelSection::Explorer if self.explorer.is_none() => PanelSection::Moves,
+            section => section,
+        }
+    }
+
+    /// Open one right-panel section, closing the previously open section.
+    ///
+    /// Requesting Explorer without a corpus opens Moves instead.
+    pub fn toggle_panel_section(&mut self, section: PanelSection) {
+        self.open_panel_section = match section {
+            PanelSection::Explorer if self.explorer.is_none() => PanelSection::Moves,
+            _ => section,
+        };
     }
 
     /// Read-only game access; all changes pass through the session.
@@ -280,6 +314,7 @@ impl Session {
             filter: String::new(),
             jump: String::new(),
         });
+        self.open_panel_section = PanelSection::Explorer;
     }
 
     /// Read-only access to Explorer state.
@@ -319,6 +354,17 @@ impl Session {
             return Err("index out of range".to_string());
         }
         Ok(index)
+    }
+
+    /// Select an Explorer record without loading it onto the board.
+    ///
+    /// An index outside the corpus is ignored. This is a no-op without a corpus.
+    pub fn select_explorer_record(&mut self, index: usize) {
+        if let Some(explorer) = &mut self.explorer {
+            if index < explorer.records.len() {
+                explorer.selected = Some(index);
+            }
+        }
     }
 
     /// Load a record from the Explorer into the board.
@@ -1950,6 +1996,21 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_panel_section_closes_the_previous_section() {
+        let mut session = Session::new(&Settings::default());
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
+
+        session.toggle_panel_section(PanelSection::Explorer);
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
+
+        session.toggle_panel_section(PanelSection::Players);
+        assert_eq!(session.open_panel_section(), PanelSection::Players);
+
+        session.toggle_panel_section(PanelSection::Moves);
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
+    }
+
+    #[test]
     fn explorer_corpus_is_stored() {
         use gomoku_core::{IndexEntry, RecordKind};
         let mut session = Session::new(&Settings::default());
@@ -1959,9 +2020,11 @@ mod tests {
             name: "tiny.psq".into(),
             path: std::env::temp_dir().join("nonexistent.psq"),
         }];
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
         session.open_explorer_corpus(entries.clone());
         assert!(session.explorer().is_some());
         assert_eq!(session.explorer().unwrap().records.len(), 1);
+        assert_eq!(session.open_panel_section(), PanelSection::Explorer);
     }
 
     #[test]

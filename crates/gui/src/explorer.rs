@@ -85,6 +85,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         })
         .collect();
 
+    let mut clicked_record = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .max_height((ui.available_height() - 60.0).max(80.0))
@@ -92,22 +93,30 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             for record in records {
                 let here = selected == Some(record.index);
                 let text = format!("{:>5} {}", record.index, record.name);
-                let response = if here {
-                    egui::Frame::NONE
-                        .fill(PANEL_CURRENT)
-                        .inner_margin(2.0)
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(text).strong().color(PANEL_INK))
-                        })
-                        .response
+                let text = RichText::new(text).color(PANEL_INK);
+                let text = if here { text.strong() } else { text };
+                let frame = if here {
+                    egui::Frame::NONE.fill(PANEL_CURRENT).inner_margin(2.0)
                 } else {
-                    ui.label(RichText::new(text).color(PANEL_INK))
+                    egui::Frame::NONE
                 };
-                if response.interact(egui::Sense::click()).clicked() {
+                // Keep the same widget identity when selection changes, so the
+                // second half of a double-click still belongs to this row.
+                let response = frame
+                    .show(ui, |ui| ui.label(text))
+                    .inner
+                    .interact(egui::Sense::click());
+                if response.clicked() {
+                    clicked_record = Some(record.index);
+                }
+                if response.double_clicked() {
                     requests.explorer_select = Some(record.index);
                 }
             }
         });
+    if let Some(index) = clicked_record {
+        session.select_explorer_record(index);
+    }
 
     requests
 }

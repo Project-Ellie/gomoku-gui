@@ -9,7 +9,7 @@ use gomoku_core::{Color, Outcome, WinMethod, label};
 
 use crate::ai::SeatOwner;
 use crate::render::WOOD;
-use crate::session::{After, Dialog, Session, name_of, winning_line};
+use crate::session::{After, Dialog, PanelSection, Session, name_of, winning_line};
 
 /// What the interface asks the application to do once the frame is drawn. The
 /// application owns the file dialogs and the window, so it performs these.
@@ -61,6 +61,34 @@ const SHELL_MARK: Color32 = Color32::from_rgb(246, 246, 250);
 const BANNER: Color32 = Color32::from_rgb(178, 24, 24);
 /// The banner is meant to shout; anything under 24 points is a label.
 const BANNER_FONT: f32 = 28.0;
+
+/// Draw one accordion header and report whether its section is open.
+fn panel_section_header(
+    ui: &mut egui::Ui,
+    session: &mut Session,
+    section: PanelSection,
+    title: &str,
+    font_size: f32,
+) -> bool {
+    let indicator = if session.open_panel_section() == section {
+        "▾"
+    } else {
+        "▸"
+    };
+    let response = ui.add(
+        egui::Label::new(
+            RichText::new(format!("{indicator} {title}"))
+                .font(FontId::proportional(font_size))
+                .color(PANEL_INK),
+        )
+        .sense(egui::Sense::click()),
+    );
+    if response.clicked() {
+        session.toggle_panel_section(section);
+    }
+    session.open_panel_section() == section
+}
+
 /// Draw the whole interface and return what the application should do next.
 ///
 /// `ui` covers the whole window: the panels take their edges from it and the
@@ -196,27 +224,35 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         .size_range(180.0..=420.0)
         .frame(Frame::NONE.fill(PANEL).inner_margin(8.0))
         .show(ui, |ui| {
-            // The sections are collapsible, so each draws into its own child
-            // region. The panel ink is set once here, before any section runs,
-            // so that headers and uncoloured labels read on the grey panel.
+            // Exactly one section is open. The panel ink is set once here,
+            // before any section runs, so headers and uncoloured labels read
+            // on the grey panel.
             ui.visuals_mut().override_text_color = Some(PANEL_INK);
-            egui::CollapsingHeader::new(RichText::new("Players").color(PANEL_INK))
-                .default_open(true)
-                .show_unindented(ui, |ui| seats(ui, session));
+            let header_size = ui
+                .style()
+                .text_styles
+                .get(&egui::TextStyle::Body)
+                .map_or(FontId::default().size, |font| font.size)
+                * 2.0;
+            if panel_section_header(ui, session, PanelSection::Players, "Players", header_size) {
+                seats(ui, session);
+            }
             ui.separator();
-            egui::CollapsingHeader::new(RichText::new("Moves").color(PANEL_INK))
-                .default_open(true)
-                .show_unindented(ui, |ui| move_list(ui, session));
-            // The Explorer is one section in the accordion: it appears when a
-            // corpus is open, and the move list stays reachable alongside it.
+            if panel_section_header(ui, session, PanelSection::Moves, "Moves", header_size) {
+                move_list(ui, session);
+            }
+            // The Explorer header appears only while its corpus is available.
             if session.explorer().is_some() {
                 ui.separator();
-                egui::CollapsingHeader::new(RichText::new("Lab Explorer").color(PANEL_INK))
-                    .default_open(true)
-                    .show_unindented(ui, |ui| {
-                        requests.explorer_select =
-                            crate::explorer::draw(ui, session).explorer_select;
-                    });
+                if panel_section_header(
+                    ui,
+                    session,
+                    PanelSection::Explorer,
+                    "Lab Explorer",
+                    header_size,
+                ) {
+                    requests.explorer_select = crate::explorer::draw(ui, session).explorer_select;
+                }
             }
             recents(ui, session);
         });
@@ -976,8 +1012,23 @@ mod tests {
 
     /// Drive a real egui button/link by its visible label, never fixed pixels.
     fn click_text(text: &str, mut frame: impl FnMut(Vec<egui::Event>) -> egui::FullOutput) {
-        frame(vec![]).textures_delta.clear();
-        let mut output = frame(vec![]);
+        click_text_timed(text, 1, |events, _| frame(events));
+    }
+
+    /// Drive a real egui double-click by its visible label and explicit times.
+    fn double_click_text(text: &str, frame: impl FnMut(Vec<egui::Event>, f64) -> egui::FullOutput) {
+        click_text_timed(text, 2, frame);
+    }
+
+    fn click_text_timed(
+        text: &str,
+        clicks: usize,
+        mut frame: impl FnMut(Vec<egui::Event>, f64) -> egui::FullOutput,
+    ) {
+        for _ in 0..8 {
+            frame(vec![], 0.0).textures_delta.clear();
+        }
+        let mut output = frame(vec![], 0.0);
         let position = output
             .shapes
             .iter()
@@ -989,18 +1040,24 @@ mod tests {
             })
             .expect("the requested action is drawn");
         output.textures_delta.clear();
-        for pressed in [true, false] {
-            frame(vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ])
-            .textures_delta
-            .clear();
+        for click in 0..clicks {
+            for (step, pressed) in [true, false].into_iter().enumerate() {
+                let time = 0.01 + (click * 2 + step) as f64 * 0.01;
+                frame(
+                    vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    time,
+                )
+                .textures_delta
+                .clear();
+            }
         }
     }
 
@@ -1089,6 +1146,7 @@ mod tests {
         use crate::ai::SeatOwner;
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
         session.set_players(Some("Wolfie".into()), Some("Shell".into()));
         for (label, side, owner) in [
             ("Release Black", Color::Black, SeatOwner::Ai),
@@ -1149,6 +1207,7 @@ mod tests {
     fn widget_edits_are_validated_retained_and_reach_the_next_request() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
         edit_value(&context, &mut session, "400", "900");
         edit_value(&context, &mut session, "0.0", "0.7");
         assert_eq!(session.ai_options(Color::Black).simulations, 900);
@@ -1194,6 +1253,7 @@ mod tests {
     fn resume_is_continuous_and_take_is_active_while_thinking_but_not_modal() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
         session.place(gomoku_core::point(7, 7).unwrap());
         session.seek(0);
         assert!(status_line(&session).contains("AI paused"));
@@ -1272,6 +1332,7 @@ mod tests {
     fn names_edit_through_metadata_without_invalidating_ai() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
         let generation = session.generation();
         edit_value(&context, &mut session, "Player name", "Wolfie");
         assert_eq!(session.game().meta().black.as_deref(), Some("Wolfie"));
@@ -1325,6 +1386,7 @@ mod tests {
     fn numeric_widgets_clamp_bounds_and_snap_temperature_to_tenths() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
         edit_value(&context, &mut session, "400", "10001");
         edit_value(&context, &mut session, "0.0", "0.74");
         assert_eq!(session.ai_options(Color::Black).simulations, 10000);
@@ -1336,10 +1398,46 @@ mod tests {
     }
 
     #[test]
+    fn panel_headers_open_exclusively_at_double_body_size() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let body_size = egui::Style::default().text_styles[&egui::TextStyle::Body].size;
+        let header = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "▸ Players" => Some(text),
+                _ => None,
+            })
+            .expect("the closed Players header is drawn");
+        assert_eq!(
+            header.galley.job.sections[0].format.font_id.size,
+            body_size * 2.0
+        );
+        output.textures_delta.clear();
+
+        click_text("▸ Players", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(
+            session.open_panel_section(),
+            crate::session::PanelSection::Players
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "▾ Players")));
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "▸ Moves")));
+        output.textures_delta.clear();
+    }
+
+    #[test]
     fn minimum_width_hidpi_controls_stay_inside_the_panel() {
         let context = egui::Context::default();
         context.set_pixels_per_point(2.0);
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
         session.panel_width = 180.0;
         session
             .set_ai_options(
@@ -1811,10 +1909,8 @@ mod tests {
         assert_eq!(parse_puzzle_index("2", 3), Some(2));
     }
 
-    #[test]
-    fn explorer_rows_emit_selection_requests() {
+    fn explorer_session() -> Session {
         use gomoku_core::{IndexEntry, RecordKind};
-        let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.open_explorer_corpus(vec![
             IndexEntry {
@@ -1830,22 +1926,59 @@ mod tests {
                 path: PathBuf::from("two.psq"),
             },
         ]);
+        session
+    }
+
+    fn explorer_frame(
+        context: &egui::Context,
+        session: &mut Session,
+        requests: &std::cell::Cell<Requests>,
+        events: Vec<egui::Event>,
+        time: Option<f64>,
+    ) -> egui::FullOutput {
+        context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 900.0),
+                )),
+                events,
+                time,
+                ..Default::default()
+            },
+            |ui| {
+                let next = draw(ui, session);
+                requests.set(Requests {
+                    explorer_select: next.explorer_select.or(requests.get().explorer_select),
+                    ..next
+                });
+            },
+        )
+    }
+
+    #[test]
+    fn explorer_rows_select_on_single_click_without_loading() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
         let requests = std::cell::Cell::new(Requests::default());
-        let frame = |events: Vec<egui::Event>| {
-            context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1200.0, 900.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| requests.set(draw(ui, &mut session)),
-            )
-        };
-        click_text("    1 two.psq", frame);
+        click_text("    1 two.psq", |events| {
+            explorer_frame(&context, &mut session, &requests, events, None)
+        });
+        assert_eq!(session.explorer().unwrap().selected, Some(1));
+        assert_eq!(requests.get().explorer_select, None);
+        assert!(session.game().is_empty());
+    }
+
+    #[test]
+    fn explorer_rows_emit_load_requests_on_double_click() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        let requests = std::cell::Cell::new(Requests::default());
+        double_click_text("    1 two.psq", |events, time| {
+            explorer_frame(&context, &mut session, &requests, events, Some(time))
+        });
         assert_eq!(requests.get().explorer_select, Some(1));
+        assert!(session.game().is_empty());
     }
 
     #[test]
