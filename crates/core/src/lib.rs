@@ -9,6 +9,7 @@ mod config;
 mod error;
 mod format;
 mod game;
+mod index;
 mod notation;
 mod psq;
 mod puzzle;
@@ -26,6 +27,7 @@ pub use format::{
     Confidence, Format, LoadError, OpenedThing, RecordKind, RecordMeta, RecordUnit, Registry,
 };
 pub use game::{Game, MetaData, Outcome, WinMethod};
+pub use index::{IndexEntry, index_directory};
 pub use notation::label;
 pub use psq::PsqFormat;
 pub use puzzle::{Puzzle, PuzzleError, load_puzzles};
