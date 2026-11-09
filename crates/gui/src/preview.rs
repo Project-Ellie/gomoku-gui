@@ -216,6 +216,7 @@ impl HeadlessGpu {
         // is how a window on a display with a scale factor is laid out.
         let pixels = (size as f32 * scale).round() as u32;
         let context = egui::Context::default();
+        crate::theme::install(&context);
         let mut egui_renderer = egui_wgpu::Renderer::new(
             &self.device,
             PREVIEW_FORMAT,

@@ -759,6 +759,7 @@ impl App {
         let multisampled = create_multisampled(&device, &config);
 
         let egui = egui::Context::default();
+        crate::theme::install(&egui);
         let egui_state = egui_winit::State::new(
             egui.clone(),
             egui::ViewportId::ROOT,

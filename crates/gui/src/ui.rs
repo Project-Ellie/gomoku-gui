@@ -10,6 +10,10 @@ use gomoku_core::{Color, Outcome, WinMethod, label};
 use crate::ai::SeatOwner;
 use crate::render::WOOD;
 use crate::session::{After, Dialog, PanelSection, Session, name_of, winning_line};
+use crate::theme::{
+    BANNER, BANNER_FONT_SIZE, MENU_BAR_HEIGHT, MENU_FONT_SIZE, MUTED, PANEL, PANEL_CURRENT,
+    PANEL_INK, PANEL_MARGIN, SECTION_HEADER_FONT_SIZE, SURFACE,
+};
 
 /// What the interface asks the application to do once the frame is drawn. The
 /// application owns the file dialogs and the window, so it performs these.
@@ -33,35 +37,12 @@ pub struct Requests {
     pub explorer_select: Option<usize>,
 }
 
-/// The colours of the interface.
-const MUTED: Color32 = Color32::from_rgb(150, 150, 158);
 /// The puzzle-start cursor ring.
 const PUZZLE_CURSOR: Color32 = Color32::from_rgb(50, 232, 90);
-
-/// The side panel is middle grey. On the dark background of the window a black
-/// stone could not be told from the panel, so the move list could not show both
-/// stones as a filled circle of their own colour.
-const PANEL: Color32 = Color32::from_rgb(126, 126, 132);
-/// The ink for the middle grey panel.
-const PANEL_INK: Color32 = Color32::from_rgb(26, 26, 30);
-/// The background of the row that the board is showing, lighter than the panel
-/// so that both stone colours stay visible on it.
-const PANEL_CURRENT: Color32 = Color32::from_rgb(178, 178, 184);
-/// The background of a text field on the middle grey panel. The dark theme gives
-/// a text field a near-black background, which turns the player names into two
-/// black bars.
-const PANEL_FIELD: Color32 = Color32::from_rgb(200, 200, 206);
 /// The colour of a black stone in the move list.
 const SLATE_MARK: Color32 = Color32::from_rgb(22, 22, 26);
 /// The colour of a white stone in the move list.
 const SHELL_MARK: Color32 = Color32::from_rgb(246, 246, 250);
-/// The resignation banner: a strong red, because a concession is the one
-/// result the board itself cannot show. Bold white text on it stays readable
-/// at a glance.
-const BANNER: Color32 = Color32::from_rgb(178, 24, 24);
-/// The banner is meant to shout; anything under 24 points is a label.
-const BANNER_FONT: f32 = 28.0;
-
 /// A section body's shapes in the paint list.
 type PanelBodyPaint = (
     PanelSection,
@@ -85,6 +66,13 @@ fn paint_panel_body(
         .ctx()
         .graphics_mut(|graphics| graphics.entry(layer_id).next_idx());
     (section, layer_id, first, last)
+}
+
+/// Text for a main-menu label or submenu entry at the shared doubled size.
+fn menu_text(text: impl Into<String>) -> RichText {
+    RichText::new(text)
+        .font(FontId::proportional(MENU_FONT_SIZE))
+        .color(PANEL_INK)
 }
 
 /// Draw one accordion header and report whether its section is open.
@@ -126,101 +114,108 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         ui.disable();
     }
 
-    egui::Panel::top("bar").exact_size(28.0).show(ui, |ui| {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("New game").clicked() {
-                    requests.new_game = true;
-                    ui.close();
-                }
-                if ui.button("Open...").clicked() {
-                    requests.open = true;
-                    ui.close();
-                }
-                if ui.button("Load puzzle...").clicked() {
-                    requests.open_puzzle = true;
-                    ui.close();
-                }
+    egui::Panel::top("bar")
+        .exact_size(MENU_BAR_HEIGHT)
+        .frame(
+            Frame::NONE
+                .fill(SURFACE)
+                .inner_margin(egui::Margin::symmetric(12, 0)),
+        )
+        .show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button(menu_text("File"), |ui| {
+                    if ui.button(menu_text("New game")).clicked() {
+                        requests.new_game = true;
+                        ui.close();
+                    }
+                    if ui.button(menu_text("Open...")).clicked() {
+                        requests.open = true;
+                        ui.close();
+                    }
+                    if ui.button(menu_text("Load puzzle...")).clicked() {
+                        requests.open_puzzle = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button(menu_text("Save")).clicked() {
+                        requests.save = true;
+                        ui.close();
+                    }
+                    if ui.button(menu_text("Save as...")).clicked() {
+                        requests.save_as = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button(menu_text("Quit")).clicked() {
+                        requests.quit = true;
+                        ui.close();
+                    }
+                });
+                ui.menu_button(menu_text("Edit"), |ui| {
+                    if ui.button(menu_text("Undo, and the move is gone")).clicked() {
+                        session.undo();
+                        ui.close();
+                    }
+                });
+                ui.menu_button(menu_text("View"), |ui| {
+                    if ui.button(menu_text("Fit the board")).clicked() {
+                        session.fit();
+                        ui.close();
+                    }
+                    if ui.button(menu_text("Turn the board around")).clicked() {
+                        session.flip();
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.checkbox(&mut session.toggles.coordinates, menu_text("Coordinates"));
+                    ui.checkbox(&mut session.toggles.move_numbers, menu_text("Move numbers"));
+                    ui.checkbox(&mut session.toggles.last_move, menu_text("Last move"));
+                    ui.checkbox(&mut session.toggles.win_line, menu_text("Winning line"));
+                    ui.separator();
+                    ui.checkbox(&mut session.sound, menu_text("Sound"));
+                    ui.add(
+                        egui::Slider::new(&mut session.volume, 0.0..=1.0)
+                            .text(menu_text("Volume"))
+                            .show_value(false),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut session.gain, 1.0..=6.0)
+                            .text(menu_text("Wood lightness"))
+                            .show_value(false),
+                    );
+                    if ui.button(menu_text("Reset the wood lightness")).clicked() {
+                        session.gain = WOOD.gain;
+                        ui.close();
+                    }
+                });
+                ui.menu_button(menu_text("Go"), |ui| {
+                    if ui.button(menu_text("To the start")).clicked() {
+                        session.seek(0);
+                        ui.close();
+                    }
+                    if ui.button(menu_text("Back one move")).clicked() {
+                        session.rewind();
+                        ui.close();
+                    }
+                    if ui.button(menu_text("Forward one move")).clicked() {
+                        session.forward();
+                        ui.close();
+                    }
+                    if ui.button(menu_text("To the latest move")).clicked() {
+                        session.seek(usize::MAX);
+                        ui.close();
+                    }
+                });
+                ui.menu_button(menu_text("Lab"), |ui| {
+                    if ui.button(menu_text("Explorer...")).clicked() {
+                        requests.open_explorer = true;
+                        ui.close();
+                    }
+                });
                 ui.separator();
-                if ui.button("Save").clicked() {
-                    requests.save = true;
-                    ui.close();
-                }
-                if ui.button("Save as...").clicked() {
-                    requests.save_as = true;
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button("Quit").clicked() {
-                    requests.quit = true;
-                    ui.close();
-                }
+                ui.label(RichText::new(status_line(session)).color(MUTED));
             });
-            ui.menu_button("Edit", |ui| {
-                if ui.button("Undo, and the move is gone").clicked() {
-                    session.undo();
-                    ui.close();
-                }
-            });
-            ui.menu_button("View", |ui| {
-                if ui.button("Fit the board").clicked() {
-                    session.fit();
-                    ui.close();
-                }
-                if ui.button("Turn the board around").clicked() {
-                    session.flip();
-                    ui.close();
-                }
-                ui.separator();
-                ui.checkbox(&mut session.toggles.coordinates, "Coordinates");
-                ui.checkbox(&mut session.toggles.move_numbers, "Move numbers");
-                ui.checkbox(&mut session.toggles.last_move, "Last move");
-                ui.checkbox(&mut session.toggles.win_line, "Winning line");
-                ui.separator();
-                ui.checkbox(&mut session.sound, "Sound");
-                ui.add(
-                    egui::Slider::new(&mut session.volume, 0.0..=1.0)
-                        .text("Volume")
-                        .show_value(false),
-                );
-                ui.add(
-                    egui::Slider::new(&mut session.gain, 1.0..=6.0)
-                        .text("Wood lightness")
-                        .show_value(false),
-                );
-                if ui.button("Reset the wood lightness").clicked() {
-                    session.gain = WOOD.gain;
-                    ui.close();
-                }
-            });
-            ui.menu_button("Go", |ui| {
-                if ui.button("To the start").clicked() {
-                    session.seek(0);
-                    ui.close();
-                }
-                if ui.button("Back one move").clicked() {
-                    session.rewind();
-                    ui.close();
-                }
-                if ui.button("Forward one move").clicked() {
-                    session.forward();
-                    ui.close();
-                }
-                if ui.button("To the latest move").clicked() {
-                    session.seek(usize::MAX);
-                    ui.close();
-                }
-            });
-            ui.menu_button("Lab", |ui| {
-                if ui.button("Explorer...").clicked() {
-                    requests.open_explorer = true;
-                    ui.close();
-                }
-            });
-            ui.separator();
-            ui.label(RichText::new(status_line(session)).color(MUTED));
         });
-    });
 
     // A concession is the one result the board itself cannot show, so it gets
     // the loudest surface there is: a persistent red banner across the top of
@@ -233,7 +228,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     ui.add(
                         egui::Label::new(
                             RichText::new(line)
-                                .font(FontId::proportional(BANNER_FONT))
+                                .font(FontId::proportional(BANNER_FONT_SIZE))
                                 .strong()
                                 .color(Color32::WHITE),
                         )
@@ -247,19 +242,11 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         .resizable(true)
         .default_size(session.panel_width)
         .size_range(180.0..=420.0)
-        .frame(Frame::NONE.fill(PANEL).inner_margin(8.0))
+        .frame(Frame::NONE.fill(PANEL).inner_margin(PANEL_MARGIN))
         .show(ui, |ui| {
-            // Exactly one section is open. The panel ink is set once here,
-            // before any section runs, so headers and uncoloured labels read
-            // on the grey panel.
-            ui.visuals_mut().override_text_color = Some(PANEL_INK);
-            ui.visuals_mut().text_edit_bg_color = Some(PANEL_FIELD);
-            let header_size = ui
-                .style()
-                .text_styles
-                .get(&egui::TextStyle::Body)
-                .map_or(FontId::default().size, |font| font.size)
-                * 2.0;
+            // Exactly one section is open; all bodies inherit the same light
+            // theme, so no section needs its own dark-theme colour corrections.
+            let header_size = SECTION_HEADER_FONT_SIZE;
             let mut body_paints = Vec::new();
             if panel_section_header(ui, session, PanelSection::Players, "Players", header_size) {
                 body_paints.push(paint_panel_body(ui, PanelSection::Players, |ui| {
@@ -432,19 +419,6 @@ fn status_line(session: &Session) -> String {
 /// changes commit options: repainting must never invalidate a search.
 fn seats(ui: &mut egui::Ui, session: &mut Session) {
     ui.spacing_mut().interact_size.y = 26.0;
-    ui.visuals_mut().override_text_color = Some(PANEL_INK);
-    let widgets = &mut ui.visuals_mut().widgets;
-    for state in [
-        &mut widgets.inactive,
-        &mut widgets.hovered,
-        &mut widgets.active,
-    ] {
-        state.weak_bg_fill = PANEL_FIELD;
-        state.bg_fill = PANEL_FIELD;
-        state.fg_stroke.color = PANEL_INK;
-    }
-    widgets.hovered.weak_bg_fill = Color32::from_rgb(224, 224, 230);
-    widgets.active.weak_bg_fill = PANEL_CURRENT;
     for (side, label) in [(Color::Black, "Black"), (Color::White, "White")] {
         ui.push_id(label, |ui| {
             Frame::NONE.show(ui, |ui| {
@@ -461,9 +435,7 @@ fn seats(ui: &mut egui::Ui, session: &mut Session) {
                 if ui.add(egui::TextEdit::singleline(&mut name)
                     .id_salt("name")
                     .desired_width(ui.available_width())
-                    .hint_text("Player name")
-                    .text_color(PANEL_INK)
-                    .background_color(PANEL_FIELD))
+                    .hint_text("Player name"))
                     .on_hover_text(format!("{label} player name (saved with the game)"))
                     .changed()
                 {
@@ -1029,6 +1001,7 @@ mod tests {
     /// given place, and report what it drew and what it claimed.
     fn run(session: &mut Session, pointer: egui::Pos2) -> (Requests, Claim) {
         let context = egui::Context::default();
+        crate::theme::install(&context);
         let mut requests = Requests::default();
         let mut claim = Claim::default();
         // The application records the pointer as the cursor moves; a test must
@@ -1179,6 +1152,7 @@ mod tests {
                 session.pointer = [point.x * scale, point.y * scale];
             }
         }
+        crate::theme::install(context);
         context.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
@@ -1445,6 +1419,41 @@ mod tests {
         edit_value(&context, &mut session, "0.0", "3");
         assert_eq!(session.ai_options(Color::White).simulations, 1);
         assert_eq!(session.ai_options(Color::White).temperature, 2.0);
+    }
+
+    #[test]
+    fn menu_bar_and_submenu_entries_use_double_sized_fonts() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let former_size = egui::Style::default().text_styles[&egui::TextStyle::Button].size;
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let file = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "File" => Some(text),
+                _ => None,
+            })
+            .expect("the File menu is drawn");
+        let file_size = file.galley.job.sections[0].format.font_id.size;
+        output.textures_delta.clear();
+        assert_eq!(file_size, former_size * 2.0);
+
+        click_text("File", |events| ui_frame(&context, &mut session, events))
+            .textures_delta
+            .clear();
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let new_game = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "New game" => Some(text),
+                _ => None,
+            })
+            .expect("the open File menu draws its entries");
+        let new_game_size = new_game.galley.job.sections[0].format.font_id.size;
+        output.textures_delta.clear();
+        assert_eq!(new_game_size, former_size * 2.0);
     }
 
     #[test]
@@ -1928,7 +1937,7 @@ mod tests {
         output.textures_delta.clear();
         assert!(banner(&output).is_none(), "an ongoing game has no banner");
         assert_eq!(
-            session.viewport_points[1], 28.0,
+            session.viewport_points[1], MENU_BAR_HEIGHT,
             "the board starts right under the menu bar"
         );
 
@@ -1949,7 +1958,7 @@ mod tests {
         let mut output = ui_frame(&context, &mut session, vec![]);
         output.textures_delta.clear();
         assert!(banner(&output).is_none(), "a win by five has no banner");
-        assert_eq!(session.viewport_points[1], 28.0);
+        assert_eq!(session.viewport_points[1], MENU_BAR_HEIGHT);
     }
 
     #[test]
@@ -2005,6 +2014,7 @@ mod tests {
         events: Vec<egui::Event>,
         time: Option<f64>,
     ) -> egui::FullOutput {
+        crate::theme::install(context);
         context.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(

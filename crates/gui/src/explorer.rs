@@ -4,19 +4,11 @@
 //! open. It only reads and edits the session's Explorer state; loading a
 //! record is the application's job, asked for through [`Requests`].
 
-use egui::{Color32, RichText};
+use egui::RichText;
 
 use crate::session::Session;
+use crate::theme::{PANEL_CURRENT, PANEL_INK};
 use crate::ui::Requests;
-
-/// The ink for the middle grey panel.
-const PANEL_INK: Color32 = Color32::from_rgb(26, 26, 30);
-/// The background of the row that the board is showing, lighter than the
-/// panel so that both stone colours stay visible on it.
-const PANEL_CURRENT: Color32 = Color32::from_rgb(178, 178, 184);
-/// The background of a text field on the middle grey panel. The dark theme
-/// gives a text field a near-black background, which would not read here.
-const PANEL_FIELD: Color32 = Color32::from_rgb(200, 200, 206);
 
 /// Draw the Explorer section and return any application requests.
 ///
@@ -25,21 +17,6 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
     let mut requests = Requests::default();
     if session.explorer().is_none() {
         return requests;
-    }
-
-    // The filter and jump fields sit on the middle grey panel, so they need
-    // the same light field background the seat section gives its own fields.
-    // The section draws into a child region, which does not share the seat
-    // section's styling.
-    let widgets = &mut ui.visuals_mut().widgets;
-    for state in [
-        &mut widgets.inactive,
-        &mut widgets.hovered,
-        &mut widgets.active,
-    ] {
-        state.weak_bg_fill = PANEL_FIELD;
-        state.bg_fill = PANEL_FIELD;
-        state.fg_stroke.color = PANEL_INK;
     }
 
     ui.horizontal(|ui| {

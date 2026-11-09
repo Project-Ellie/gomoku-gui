@@ -14,6 +14,7 @@ mod preview;
 mod render;
 pub mod session;
 mod sound;
+mod theme;
 mod ui;
 mod variants;
 
