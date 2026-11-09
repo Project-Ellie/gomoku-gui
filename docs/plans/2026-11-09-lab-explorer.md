@@ -1222,10 +1222,10 @@ Explorer when the corpus closes, fall back to Moves.
 - Modify: `crates/gui/src/session.rs` (`PanelSection` + open/close state)
 - Tests: `crates/gui/src/ui.rs` tests, `crates/gui/src/app_tests.rs`, `crates/gui/src/session.rs` tests
 
-- [ ] **Step 1: RED tests** — (a) clicking a closed section header opens it and closes the previously open one; (b) opening a corpus switches the open section to Explorer; (c) single click on a record row selects without loading (no `explorer_select` request / game unchanged), double click emits the load request.
-- [ ] **Step 2: Implement** `PanelSection` state on Session, custom big-font headers, exclusive open, Explorer row single/double-click split.
-- [ ] **Step 3: Green + gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
-- [ ] **Step 4: Commit** — `git commit -m "feat(gui): exclusive accordion sections, big headers, double-click open"` (list all touched files).
+- [x] **Step 1: RED tests** — (a) clicking a closed section header opens it and closes the previously open one; (b) opening a corpus switches the open section to Explorer; (c) single click on a record row selects without loading (no `explorer_select` request / game unchanged), double click emits the load request.
+- [x] **Step 2: Implement** `PanelSection` state on Session, custom big-font headers, exclusive open, Explorer row single/double-click split.
+- [x] **Step 3: Green + gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [x] **Step 4: Commit** — `git commit -m "feat(gui): exclusive accordion sections, big headers, double-click open"` (list all touched files).
 
 ---
 
