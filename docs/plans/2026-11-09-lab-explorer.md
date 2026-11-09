@@ -1190,6 +1190,45 @@ and every Explorer reopen started the folder navigation from scratch.
 
 ---
 
+### Task 1.8: Exclusive accordion sections, big headers, double-click open
+
+Added 2026-11-09 after Wolfie's M1 hands-on verification (which passed).
+
+**Requirements (owner-approved in conversation):**
+
+1. **Exclusive accordion:** exactly one right-panel section (Players /
+   Moves / Lab Explorer) is open at a time. Clicking a section header
+   opens it and closes the others automatically. When a corpus is
+   opened, the Lab Explorer section opens (and the others close).
+2. **Big headers:** the section header labels ("Players", "Moves", "Lab
+   Explorer", with their open/close indicator) render at twice the
+   current panel font size. The panel may become wider — fine. The stone
+   depictions in the Players section stay exactly as they are.
+3. **Double-click to open:** a single click on an Explorer record row
+   only selects/highlights it; a double-click loads the record onto the
+   board. The Jump-to-# "Go" button keeps loading immediately.
+
+Implementation latitude: the exclusivity + custom header size likely
+call for replacing `egui::CollapsingHeader` with a custom header row
+(big `RichText` + click) driven by an explicit `open_panel_section`
+state on `Session` (enum `PanelSection { Players, Moves, Explorer }`,
+default `Moves`), which is also headless-testable. The Explorer section
+header only appears while a corpus is open; if the open section is
+Explorer when the corpus closes, fall back to Moves.
+
+**Files:**
+- Modify: `crates/gui/src/ui.rs` (custom section headers, exclusive open)
+- Modify: `crates/gui/src/explorer.rs` (single vs. double click)
+- Modify: `crates/gui/src/session.rs` (`PanelSection` + open/close state)
+- Tests: `crates/gui/src/ui.rs` tests, `crates/gui/src/app_tests.rs`, `crates/gui/src/session.rs` tests
+
+- [ ] **Step 1: RED tests** — (a) clicking a closed section header opens it and closes the previously open one; (b) opening a corpus switches the open section to Explorer; (c) single click on a record row selects without loading (no `explorer_select` request / game unchanged), double click emits the load request.
+- [ ] **Step 2: Implement** `PanelSection` state on Session, custom big-font headers, exclusive open, Explorer row single/double-click split.
+- [ ] **Step 3: Green + gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [ ] **Step 4: Commit** — `git commit -m "feat(gui): exclusive accordion sections, big headers, double-click open"` (list all touched files).
+
+---
+
 ### M1 — Human verification
 
 1. Build and launch:
