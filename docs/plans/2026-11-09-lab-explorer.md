@@ -1179,14 +1179,14 @@ and every Explorer reopen started the folder navigation from scratch.
 - Modify: `crates/gui/src/app.rs` (sanity check + picker seeding in `ask_to_open_explorer`)
 - Tests: `crates/core/tests/format_contract.rs`, `crates/core/src/config.rs` tests, `crates/gui/src/session.rs` tests, `crates/gui/src/app_tests.rs`
 
-- [ ] **Step 1: RED core test** — `looks_like_corpus` true for the psq fixture dir, false for a temp dir of `.txt` files, true for a temp dir whose only record sits one subdirectory down (BFS reaches it).
-- [ ] **Step 2: Implement** `Registry::looks_like_corpus` + `CORPUS_PROBE_LIMIT` in `format.rs`; green.
-- [ ] **Step 3: RED config/session tests** — `last_corpus_directory` round-trips through settings save/load and defaults to `None`; `remember_corpus_directory` updates the session field and the settings write-back carries it.
-- [ ] **Step 4: Implement** config field, session mirror, `remember_corpus_directory`; green.
-- [ ] **Step 5: RED app test** — opening a non-corpus folder leaves `session.explorer()` `None` and surfaces a failure dialog; a second open's picker receives the last corpus directory as its seed.
-- [ ] **Step 6: Implement** the sanity check and picker seeding in `ask_to_open_explorer`; green.
-- [ ] **Step 7: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
-- [ ] **Step 8: Commit** — `git commit -m "feat(gui): reject non-corpus folders and remember the Explorer location"` (list all touched files).
+- [x] **Step 1: RED core test** — `looks_like_corpus` true for the psq fixture dir, false for a temp dir of `.txt` files, true for a temp dir whose only record sits one subdirectory down (BFS reaches it).
+- [x] **Step 2: Implement** `Registry::looks_like_corpus` + `CORPUS_PROBE_LIMIT` in `format.rs`; green.
+- [x] **Step 3: RED config/session tests** — `last_corpus_directory` round-trips through settings save/load and defaults to `None`; `remember_corpus_directory` updates the session field and the settings write-back carries it.
+- [x] **Step 4: Implement** config field, session mirror, `remember_corpus_directory`; green.
+- [x] **Step 5: RED app test** — opening a non-corpus folder leaves `session.explorer()` `None` and surfaces a failure dialog; a second open's picker receives the last corpus directory as its seed.
+- [x] **Step 6: Implement** the sanity check and picker seeding in `ask_to_open_explorer`; green.
+- [x] **Step 7: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [x] **Step 8: Commit** — `git commit -m "feat(gui): reject non-corpus folders and remember the Explorer location"` (list all touched files).
 
 ---
 
