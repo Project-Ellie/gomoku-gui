@@ -190,4 +190,92 @@ impl Registry {
         }
         best
     }
+
+    /// Open a single file or recursively index a directory.
+    ///
+    /// A directory becomes an [`OpenedThing::Corpus`] of indexed entries.
+    /// A file is sniffed by every registered format; the first `Yes` wins,
+    /// otherwise the first `Maybe` gets to load it.
+    pub fn open(&self, path: &Path) -> Result<OpenedThing, LoadError> {
+        if path.is_dir() {
+            let entries = crate::index::index_directory(path, self)?;
+            return Ok(OpenedThing::Corpus {
+                records: entries
+                    .into_iter()
+                    .map(|e| RecordMeta {
+                        index: e.index,
+                        kind: e.kind,
+                        name: e.name,
+                        source: e.path,
+                        plies: None,
+                        result: None,
+                    })
+                    .collect(),
+                source: path.to_path_buf(),
+            });
+        }
+
+        let mut head = [0u8; 64];
+        let read = match std::fs::File::open(path) {
+            Ok(mut file) => std::io::Read::read(&mut file, &mut head).unwrap_or(0),
+            Err(e) => {
+                return Err(LoadError::Io {
+                    path: path.to_path_buf(),
+                    source: e,
+                });
+            }
+        };
+
+        let mut best: Option<&dyn Format> = None;
+        for format in &self.formats {
+            match format.sniff(path, &head[..read]) {
+                Confidence::Yes => return Self::load_as_opened(format.as_ref(), path),
+                Confidence::Maybe => {
+                    if best.is_none() {
+                        best = Some(format.as_ref());
+                    }
+                }
+                Confidence::No => {}
+            }
+        }
+        if let Some(format) = best {
+            return Self::load_as_opened(format, path);
+        }
+        Err(LoadError::Unsupported {
+            path: path.to_path_buf(),
+            reason: "no registered format recognizes this file".to_string(),
+        })
+    }
+
+    /// Load `path` with `format` and wrap the result in an [`OpenedThing`].
+    fn load_as_opened(format: &dyn Format, path: &Path) -> Result<OpenedThing, LoadError> {
+        let units = format.load(path)?;
+        if units.len() == 1 {
+            let mut units = units;
+            // Invariant: `units.len() == 1` was just checked, so `pop`
+            // returns `Some`.
+            let unit = units.pop().expect("exactly one unit");
+            Ok(OpenedThing::SingleRecord(unit))
+        } else {
+            Ok(OpenedThing::Corpus {
+                records: units
+                    .iter()
+                    .enumerate()
+                    .map(|(i, unit)| RecordMeta {
+                        index: i,
+                        kind: match unit {
+                            RecordUnit::Game(_) => RecordKind::Game,
+                            RecordUnit::Position(_) => RecordKind::Position,
+                            RecordUnit::Sample { .. } => RecordKind::Sample,
+                        },
+                        name: format!("record-{i}"),
+                        source: path.to_path_buf(),
+                        plies: None,
+                        result: None,
+                    })
+                    .collect(),
+                source: path.to_path_buf(),
+            })
+        }
+    }
 }

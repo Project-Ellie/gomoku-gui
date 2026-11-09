@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use gomoku_core::{Confidence, Format, LoadError, RecordUnit, Registry};
+use gomoku_core::{Confidence, Format, LoadError, OpenedThing, RecordUnit, Registry};
 
 struct DummyFormat;
 
@@ -32,4 +32,15 @@ fn a_registry_sniffs_a_dummy_file() {
     let registry = Registry::builder().add(DummyFormat).build();
     let confidence = registry.sniff_path(PathBuf::from("test.dummy").as_path(), b"DUMMY header");
     assert_eq!(confidence, Confidence::Yes);
+}
+
+#[test]
+fn registry_opens_a_psq_file() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/psq/tiny.psq");
+    let registry = Registry::builder().add(gomoku_core::PsqFormat).build();
+    let opened = registry.open(&path).expect("open succeeds");
+    let OpenedThing::SingleRecord(RecordUnit::Game(game)) = opened else {
+        panic!("expected a single game record");
+    };
+    assert_eq!(game.len(), 5);
 }
