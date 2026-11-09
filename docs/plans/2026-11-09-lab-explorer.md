@@ -970,7 +970,7 @@ git commit -m "feat(core): add Registry::open for files and directories"
 
 **Implementation note (found during S6 dispatch):** `Session::load_explorer_record` was deferred out of Task 1.4 but never picked up by Task 1.5 — this task must add it (sketch lives in Task 1.4's struck-through draft) since Step 6 calls it.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `crates/gui/src/app_tests.rs`:
 
@@ -989,12 +989,12 @@ fn explorer_request_reaches_session() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p gomoku-gui app::tests::explorer_request`
 Expected: compile failure because `open_explorer` and the Explorer panel do not exist.
 
-- [ ] **Step 3: Add the Explorer request flag**
+- [x] **Step 3: Add the Explorer request flag**
 
 In `crates/gui/src/ui.rs`, add to `pub struct Requests`:
 
@@ -1003,7 +1003,7 @@ In `crates/gui/src/ui.rs`, add to `pub struct Requests`:
     pub open_explorer: bool,
 ```
 
-- [ ] **Step 4: Implement the Explorer panel**
+- [x] **Step 4: Implement the Explorer panel**
 
 `crates/gui/src/explorer.rs`:
 
@@ -1084,7 +1084,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
 }
 ```
 
-- [ ] **Step 5: Wire Explorer helpers into Session**
+- [x] **Step 5: Wire Explorer helpers into Session**
 
 In `crates/gui/src/session.rs`, add:
 
@@ -1115,7 +1115,7 @@ impl Session {
 }
 ```
 
-- [ ] **Step 6: Add Explorer request handling**
+- [x] **Step 6: Add Explorer request handling**
 
 In `crates/gui/src/ui.rs`, add to `Requests`:
 
@@ -1130,17 +1130,17 @@ In `crates/gui/src/app.rs` `run_requests`, handle `requests.open_explorer` by ca
 
 `ask_to_open_explorer` mirrors `ask_to_open` but uses `rfd::FileDialog::pick_folder()` and passes the result through the registry to `Session::open_explorer_corpus`.
 
-- [ ] **Step 7: Run the test to verify it passes**
+- [x] **Step 7: Run the test to verify it passes**
 
 Run: `cargo test -p gomoku-gui app::tests::explorer_request`
 Expected: 1 test passes.
 
-- [ ] **Step 8: Run the gates**
+- [x] **Step 8: Run the gates**
 
 Run: `cargo test --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo fmt --all`
 Expected: all green.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/gui/src/explorer.rs crates/gui/src/ui.rs crates/gui/src/session.rs crates/gui/src/app.rs crates/gui/src/app_tests.rs
