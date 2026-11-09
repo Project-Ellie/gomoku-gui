@@ -1,10 +1,15 @@
 //! The Lab Explorer format registry: detection and loading of every record
 //! kind the GUI understands.
 
+use std::collections::VecDeque;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::game::Game;
 use crate::puzzle::Puzzle;
+
+/// Maximum number of directory entries visited by the corpus sanity check.
+pub const CORPUS_PROBE_LIMIT: usize = 500;
 
 /// How confident a format is that a file belongs to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +194,44 @@ impl Registry {
             }
         }
         best
+    }
+
+    /// Return whether a breadth-first probe finds a recognizable record file.
+    ///
+    /// The probe stops at the first recognized file or after visiting
+    /// [`CORPUS_PROBE_LIMIT`] entries. Unreadable directories and files are
+    /// ignored.
+    pub fn looks_like_corpus(&self, root: &Path) -> bool {
+        let mut directories = VecDeque::from([root.to_path_buf()]);
+        let mut visited = 0;
+        while let Some(directory) = directories.pop_front() {
+            let Ok(entries) = fs::read_dir(directory) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                if visited >= CORPUS_PROBE_LIMIT {
+                    return false;
+                }
+                visited += 1;
+                let path = entry.path();
+                if path.is_dir() {
+                    directories.push_back(path);
+                    continue;
+                }
+                let mut head = [0u8; 64];
+                let read = match fs::File::open(&path) {
+                    Ok(mut file) => std::io::Read::read(&mut file, &mut head).unwrap_or(0),
+                    Err(_) => 0,
+                };
+                if matches!(
+                    self.sniff_path(&path, &head[..read]),
+                    Confidence::Yes | Confidence::Maybe
+                ) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Open a single file or recursively index a directory.

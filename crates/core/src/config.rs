@@ -170,6 +170,8 @@ impl Default for AudioSettings {
 pub struct FileSettings {
     /// The directory of the last save or open.
     pub last_directory: Option<PathBuf>,
+    /// The directory of the last successfully opened Explorer corpus.
+    pub last_corpus_directory: Option<PathBuf>,
     /// The most recently used record paths, newest first.
     pub recent: Vec<PathBuf>,
 }
@@ -316,6 +318,7 @@ mod tests {
         assert_eq!(settings.stones.set, "slate_shell");
         assert!(settings.audio.enabled);
         assert_eq!(settings.audio.volume, 0.7);
+        assert!(settings.files.last_corpus_directory.is_none());
         assert!(settings.files.recent.is_empty());
     }
 
@@ -365,6 +368,7 @@ mod tests {
             },
             files: FileSettings {
                 last_directory: Some(std::path::PathBuf::from("/games")),
+                last_corpus_directory: Some(std::path::PathBuf::from("/games/corpus")),
                 recent: vec![std::path::PathBuf::from("/games/a.json")],
             },
         };
@@ -388,6 +392,7 @@ mod tests {
             "the missing field keeps its default"
         );
         assert_eq!(loaded.settings.board.material, "aged_wood");
+        assert_eq!(loaded.settings.files.last_corpus_directory, None);
     }
 
     #[test]

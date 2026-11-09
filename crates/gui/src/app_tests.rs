@@ -684,6 +684,74 @@ fn explorer_request_reaches_session() {
 }
 
 #[test]
+fn explorer_rejects_a_non_corpus_folder_without_changing_state() {
+    let files = Files::new("explorer-non-corpus");
+    let folder = files.path("not-a-corpus");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("notes.txt"), "not a game record").unwrap();
+    let previous = files.path("previous-corpus");
+    let mut app = app();
+    app.session.last_corpus_directory = Some(previous.clone());
+
+    app.run_requests(
+        ui::Requests {
+            open_explorer: true,
+            ..Default::default()
+        },
+        &mut |_| None,
+        &mut |_| Some(folder.clone()),
+        &mut || {},
+    );
+
+    assert!(app.session.explorer().is_none());
+    assert!(matches!(
+        app.session.dialog(),
+        Some(Dialog::Message { title, body })
+            if title == "This folder doesn't look like a Gomoku corpus"
+                && body.contains("no recognized record files")
+    ));
+    assert_eq!(app.session.last_corpus_directory, Some(previous));
+}
+
+#[test]
+fn explorer_picker_remembers_the_last_successful_corpus() {
+    let files = Files::new("explorer-remembered");
+    let corpus = psq_corpus(&files);
+    let fallback = files.path("last-game-directory");
+    let mut app = app();
+    app.session.last_directory = Some(fallback.clone());
+    let requests = ui::Requests {
+        open_explorer: true,
+        ..Default::default()
+    };
+
+    app.run_requests(
+        requests,
+        &mut |_| None,
+        &mut |directory| {
+            assert_eq!(directory, Some(fallback.as_path()));
+            Some(corpus.clone())
+        },
+        &mut || {},
+    );
+    assert_eq!(app.session.last_corpus_directory, Some(corpus.clone()));
+
+    app.run_requests(
+        ui::Requests {
+            open_explorer: true,
+            ..Default::default()
+        },
+        &mut |_| None,
+        &mut |directory| {
+            assert_eq!(directory, Some(corpus.as_path()));
+            None
+        },
+        &mut || {},
+    );
+    assert_eq!(app.session.last_corpus_directory, Some(corpus));
+}
+
+#[test]
 fn explorer_selection_loads_the_record_onto_the_board() {
     let files = Files::new("explorer-select");
     let corpus = psq_corpus(&files);

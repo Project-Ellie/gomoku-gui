@@ -331,10 +331,23 @@ impl App {
         pick_folder: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
     ) {
         self.session.begin_native_dialog();
-        let directory = self.session.last_directory.clone();
+        let directory = self
+            .session
+            .last_corpus_directory
+            .as_ref()
+            .or(self.session.last_directory.as_ref())
+            .cloned();
         let path = pick_folder(directory.as_deref());
         self.session.end_native_dialog();
         if let Some(path) = path {
+            if !self.registry.looks_like_corpus(&path) {
+                self.session.fail(
+                    "This folder doesn't look like a Gomoku corpus",
+                    &"no recognized record files were found in this folder",
+                );
+                self.request_redraw();
+                return;
+            }
             match self.registry.open(&path) {
                 Ok(gomoku_core::OpenedThing::Corpus { records, .. }) => {
                     let entries = records
@@ -347,6 +360,7 @@ impl App {
                         })
                         .collect();
                     self.session.open_explorer_corpus(entries);
+                    self.session.remember_corpus_directory(&path);
                 }
                 Ok(gomoku_core::OpenedThing::SingleRecord(_)) => {
                     self.session.fail(

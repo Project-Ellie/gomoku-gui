@@ -24,7 +24,8 @@ pub use config::{
 pub use engine::{Color, Move, Status};
 pub use error::{ConfigError, GameError, PositionError, RecordError};
 pub use format::{
-    Confidence, Format, LoadError, OpenedThing, RecordKind, RecordMeta, RecordUnit, Registry,
+    CORPUS_PROBE_LIMIT, Confidence, Format, LoadError, OpenedThing, RecordKind, RecordMeta,
+    RecordUnit, Registry,
 };
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use index::{IndexEntry, index_directory};

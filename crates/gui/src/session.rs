@@ -177,6 +177,8 @@ pub struct Session {
     pub notice: Option<String>,
     /// The directory of the last open or save.
     pub last_directory: Option<PathBuf>,
+    /// The directory of the last successfully opened Explorer corpus.
+    pub last_corpus_directory: Option<PathBuf>,
     /// The most recently used files, newest first.
     pub recent: Vec<PathBuf>,
     /// The stone knock to play, as the number of occupied neighbours.
@@ -244,6 +246,7 @@ impl Session {
             dialog: None,
             notice: None,
             last_directory: settings.files.last_directory.clone(),
+            last_corpus_directory: settings.files.last_corpus_directory.clone(),
             recent: settings.files.recent.clone(),
             knock: None,
             title_stale: true,
@@ -1015,6 +1018,11 @@ impl Session {
         self.recent.truncate(gomoku_core::MAX_RECENT);
     }
 
+    /// Remember a successfully opened Explorer corpus directory.
+    pub fn remember_corpus_directory(&mut self, directory: &Path) {
+        self.last_corpus_directory = Some(directory.to_path_buf());
+    }
+
     /// Show a failure to the user, with the detail.
     pub fn fail(&mut self, title: &str, error: &dyn std::fmt::Display) {
         log::error!("{title}: {error}");
@@ -1092,6 +1100,7 @@ impl Session {
             },
             files: gomoku_core::FileSettings {
                 last_directory: self.last_directory.clone(),
+                last_corpus_directory: self.last_corpus_directory.clone(),
                 recent: self.recent.clone(),
             },
         }
@@ -1913,6 +1922,31 @@ mod tests {
             "the unsaved stone is still unsaved, no more and no less"
         );
         assert!(session.dialog.is_none());
+    }
+
+    #[test]
+    fn corpus_directory_is_mirrored_and_written_to_settings() {
+        let initial = PathBuf::from("/games/initial-corpus");
+        let settings = Settings {
+            files: gomoku_core::FileSettings {
+                last_corpus_directory: Some(initial.clone()),
+                ..gomoku_core::FileSettings::default()
+            },
+            ..Settings::default()
+        };
+        let mut session = Session::new(&settings);
+        assert_eq!(session.last_corpus_directory, Some(initial));
+
+        let opened = PathBuf::from("/games/opened-corpus");
+        session.remember_corpus_directory(&opened);
+        assert_eq!(session.last_corpus_directory, Some(opened.clone()));
+        assert_eq!(
+            session
+                .settings(&WindowGeometry::default())
+                .files
+                .last_corpus_directory,
+            Some(opened)
+        );
     }
 
     #[test]
