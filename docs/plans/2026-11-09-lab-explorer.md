@@ -1229,6 +1229,49 @@ Explorer when the corpus closes, fall back to Moves.
 
 ---
 
+### Task 1.9: Explorer keyboard navigation and hand-over to Moves
+
+Added 2026-11-09 after Wolfie's second hands-on. Task 1.8 introduced
+single-click select / double-click load; this refines the Explorer into
+a keyboard-driven browser.
+
+**Requirements (owner-approved in conversation):**
+
+1. **No text selection:** double-clicking a record row must not enter
+   any text-selection/editing state on the file name. Rows are pure
+   click targets.
+2. **Double-click opens the game:** loads the record onto the board,
+   closes the Explorer section and opens the Moves section.
+3. **Arrow Up/Down walk the list:** while the Explorer section is the
+   open section, ArrowUp/ArrowDown move the highlight through the
+   *visible* (filtered) record list and load the highlighted record
+   onto the board immediately (live preview). Clamped at both ends.
+   The scroll area keeps the highlighted row visible.
+4. **Enter hands over to Moves:** pressing Enter opens the Moves
+   section and shifts keyboard focus there, so the existing Left/Right
+   move navigation takes over without a mouse click.
+
+**Files:**
+- Modify: `crates/gui/src/explorer.rs` (row sensing, no text selection)
+- Modify: `crates/gui/src/ui.rs` (key handling for the Explorer section, section switching)
+- Modify: `crates/gui/src/session.rs` (selection move helpers, e.g. `move_explorer_selection(delta)` over the filtered view; hand-over)
+- Tests: session tests (clamping, filtered navigation, hand-over state), ui tests (arrow keys drive selection+load requests, Enter switches section)
+
+**Notes for the implementer:** check how the app currently routes
+Left/Right key events to move navigation and mirror that plumbing for
+Up/Down + Enter while the Explorer section is open. `Requests` may need
+new flags (e.g. selection moves emit `explorer_select` like double-click
+— loading on every arrow step is the desired live preview). Keep the
+filter interaction sane: the highlight walks the filtered list as
+rendered.
+
+- [ ] **Step 1: RED tests** — session: move selection clamps at both ends and walks the filtered list; ui: ArrowDown emits a load request for the next visible row, Enter opens Moves.
+- [ ] **Step 2: Implement** rows without text selection, double-click loads + opens Moves, arrow walking with live preview + scroll-into-view, Enter hand-over.
+- [ ] **Step 3: Green + gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [ ] **Step 4: Commit** — `git commit -m "feat(gui): keyboard-driven Explorer with Moves hand-over"` (list all touched files).
+
+---
+
 ### M1 — Human verification
 
 1. Build and launch:
