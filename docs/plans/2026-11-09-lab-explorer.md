@@ -683,7 +683,7 @@ puzzle/sample formats (fix with the M2 adapters); reverse-DFS subtree order
 **Interfaces:**
 - Adds: `Session::open_explorer_corpus`, `Session::load_explorer_record`, `Session::explorer`, `ExplorerSession`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add at the end of `crates/gui/src/session.rs` `#[cfg(test)] mod tests`:
 
@@ -704,12 +704,12 @@ Add at the end of `crates/gui/src/session.rs` `#[cfg(test)] mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p gomoku-gui session::tests::explorer_corpus`
 Expected: compile failure because `open_explorer_corpus` and `explorer` do not exist.
 
-- [ ] **Step 3: Add the Explorer session type**
+- [x] **Step 3: Add the Explorer session type**
 
 In `crates/gui/src/session.rs`, add after `pub struct BeforePuzzle`:
 
@@ -808,12 +808,12 @@ Revised test:
 
 And keep `load_explorer_record` for Task 1.5.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cargo test -p gomoku-gui session::tests::explorer_corpus`
 Expected: 1 test passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/gui/src/session.rs
