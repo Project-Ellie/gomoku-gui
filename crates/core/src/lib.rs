@@ -10,6 +10,7 @@ mod error;
 mod format;
 mod game;
 mod notation;
+mod psq;
 mod puzzle;
 mod record;
 mod storage;
@@ -26,6 +27,7 @@ pub use format::{
 };
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;
+pub use psq::PsqFormat;
 pub use puzzle::{Puzzle, PuzzleError, load_puzzles};
 pub use record::{
     BOARD_SIZE, FORMAT_MARKER, FORMAT_VERSION, Players, Record, StoredColor, StoredMethod,
