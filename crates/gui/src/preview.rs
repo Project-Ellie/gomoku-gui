@@ -10,6 +10,15 @@ use anyhow::{Context as _, Result};
 /// The colour format used when there is no surface to take a format from.
 pub const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+/// Optional interface treatment for a headless UI snapshot.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UiFrameOptions<'a> {
+    /// A font file to install before laying out the interface.
+    pub font: Option<&'a Path>,
+    /// A main-menu label to click open before taking the snapshot.
+    pub open_menu: Option<&'a str>,
+}
+
 /// A device and queue, with no surface. Used by the preview and by any future
 /// offscreen work.
 pub struct HeadlessGpu {
@@ -211,12 +220,16 @@ impl HeadlessGpu {
         scale: f32,
         renderer: &mut crate::render::Renderer,
         session: &mut crate::session::Session,
+        options: UiFrameOptions<'_>,
     ) -> Result<()> {
         // `size` is in interface points and the image is in physical pixels, which
         // is how a window on a display with a scale factor is laid out.
         let pixels = (size as f32 * scale).round() as u32;
         let context = egui::Context::default();
         crate::theme::install(&context);
+        if let Some(path) = options.font {
+            crate::theme::install_font(&context, path)?;
+        }
         let mut egui_renderer = egui_wgpu::Renderer::new(
             &self.device,
             PREVIEW_FORMAT,
@@ -248,9 +261,9 @@ impl HeadlessGpu {
         context.global_style_mut(|style| style.animation_time = 0.0);
         // Three warm-up passes let windows measure and place themselves;
         // the following settled frame is the one that is drawn.
-        let output = settled_ui_output(&context, input, |ui| {
+        let output = settled_ui_output(&context, input, options.open_menu, |ui| {
             let _ = crate::ui::draw(ui, session);
-        });
+        })?;
         let egui::FullOutput {
             mut textures_delta,
             shapes,
@@ -299,21 +312,55 @@ impl HeadlessGpu {
     }
 }
 
-/// Settle the layout while retaining every pass's texture updates for upload.
+/// Settle the layout, optionally click a menu open, and retain every texture update.
 fn settled_ui_output(
     context: &egui::Context,
     input: egui::RawInput,
+    open_menu: Option<&str>,
     mut draw: impl FnMut(&mut egui::Ui),
-) -> egui::FullOutput {
+) -> Result<egui::FullOutput> {
     let mut textures = egui::TexturesDelta::default();
+    let mut pass = |input| {
+        let mut output = context.run_ui(input, &mut draw);
+        textures.append(std::mem::take(&mut output.textures_delta));
+        output
+    };
     for _ in 0..3 {
-        let output = context.run_ui(input.clone(), &mut draw);
-        textures.append(output.textures_delta);
+        let _ = pass(input.clone());
     }
-    let mut output = context.run_ui(input, draw);
-    textures.append(std::mem::take(&mut output.textures_delta));
+    if let Some(menu) = open_menu {
+        let output = pass(input.clone());
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == menu => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .with_context(|| format!("preview menu {menu:?} was not drawn"))?;
+        for pressed in [true, false] {
+            let mut click = input.clone();
+            click.events = vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ];
+            let _ = pass(click);
+        }
+        // Popup measurements and open-state transitions settle before the snapshot.
+        for _ in 0..3 {
+            let _ = pass(input.clone());
+        }
+    }
+    let mut output = pass(input);
     output.textures_delta = textures;
-    output
+    Ok(output)
 }
 
 /// Write 24-bit BMP data, with the rows in the order a BMP expects: bottom up.
@@ -403,16 +450,45 @@ mod tests {
         session.pixels_per_point = 1.0;
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/resignation-banner.bmp");
-        gpu.write_ui_frame(&path, size, 1.0, &mut renderer, &mut session)
-            .unwrap();
+        gpu.write_ui_frame(
+            &path,
+            size,
+            1.0,
+            &mut renderer,
+            &mut session,
+            UiFrameOptions::default(),
+        )
+        .unwrap();
         println!("wrote {}", path.display());
+    }
+
+    #[test]
+    fn requested_menu_is_open_in_the_settled_preview() {
+        let context = egui::Context::default();
+        crate::theme::install(&context);
+        context.global_style_mut(|style| style.animation_time = 0.0);
+        let mut session = crate::session::Session::new(&gomoku_core::Settings::default());
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100.0, 1100.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = settled_ui_output(&context, input, Some("View"), |ui| {
+            let _ = crate::ui::draw(ui, &mut session);
+        })
+        .expect("the View menu exists");
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Fit the board")));
+        output.textures_delta.clear();
     }
 
     #[test]
     fn warmup_retains_texture_updates_from_every_pass() {
         let context = egui::Context::default();
         let mut textures = Vec::new();
-        let mut output = settled_ui_output(&context, egui::RawInput::default(), |ui| {
+        let output = settled_ui_output(&context, egui::RawInput::default(), None, |ui| {
             // A distinct texture forces an upload on every warm-up pass.
             textures.push(ui.ctx().load_texture(
                 format!("pass-{}", textures.len()),
@@ -421,6 +497,7 @@ mod tests {
             ));
             ui.label("Puzzle preview");
         });
+        let mut output = output.expect("the warm-up has no menu to open");
         let uploads: Vec<_> = output.textures_delta.set.keys().copied().collect();
         output.textures_delta.clear();
         assert_eq!(textures.len(), 4);

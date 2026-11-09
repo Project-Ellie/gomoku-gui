@@ -4,7 +4,54 @@
 //! future visual pass has one place to tune. Board materials and stone drawing
 //! deliberately do not depend on this module.
 
+use std::path::Path;
+
+use anyhow::{Context as _, Result};
 use egui::{Color32, CornerRadius, FontId, Stroke, Style, TextStyle, Vec2, Visuals};
+
+/// The key used for the command-line font in egui's font table.
+const OVERRIDE_FONT: &str = "app-font-override";
+
+/// Put an override before the built-in proportional fonts, retaining glyph fallbacks.
+fn font_definitions(font: egui::FontData) -> egui::FontDefinitions {
+    let mut definitions = egui::FontDefinitions::default();
+    definitions
+        .font_data
+        .insert(OVERRIDE_FONT.to_owned(), std::sync::Arc::new(font));
+    if let Some(proportional) = definitions
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+    {
+        proportional.insert(0, OVERRIDE_FONT.to_owned());
+    }
+    definitions
+}
+
+/// Install a TTF/OTF/TTC font as the primary face for every text style.
+///
+/// Font collections use face index zero, the first font in the collection.
+/// Built-in egui fonts remain as fallbacks for glyphs the override does not contain.
+///
+/// # Errors
+///
+/// Returns an error when the font file cannot be read.
+pub(crate) fn install_font(context: &egui::Context, path: &Path) -> Result<()> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("cannot read font {}", path.display()))?;
+    // `from_owned` selects face zero, including for a TrueType collection.
+    install_font_data(context, egui::FontData::from_owned(bytes));
+    Ok(())
+}
+
+/// Install loaded font data and route every text style through it.
+fn install_font_data(context: &egui::Context, font: egui::FontData) {
+    context.set_fonts(font_definitions(font));
+    context.global_style_mut(|style| {
+        for font in style.text_styles.values_mut() {
+            font.family = egui::FontFamily::Proportional;
+        }
+    });
+}
 
 /// Warm white used by the menu bar and other chrome.
 pub(crate) const SURFACE: Color32 = Color32::from_rgb(247, 245, 240);
@@ -176,6 +223,48 @@ mod tests {
             style.text_styles[&TextStyle::Button].size * 2.0,
             MENU_FONT_SIZE
         );
+    }
+
+    #[test]
+    fn missing_custom_font_reports_its_path() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/font-previews/no-such-font.ttf");
+        let error = install_font(&egui::Context::default(), &path)
+            .expect_err("a missing font cannot be installed");
+        assert!(error.to_string().contains("no-such-font.ttf"));
+    }
+
+    #[test]
+    fn custom_font_applies_to_every_text_style() {
+        let context = egui::Context::default();
+        install(&context);
+        let font = egui::FontDefinitions::default().font_data["Ubuntu-Light"].clone();
+        install_font_data(&context, (*font).clone());
+        let style = context.global_style();
+        assert!(
+            style
+                .text_styles
+                .values()
+                .all(|font| font.family == egui::FontFamily::Proportional)
+        );
+    }
+
+    #[test]
+    fn custom_font_is_the_primary_proportional_font() {
+        let definitions = font_definitions(egui::FontData::from_static(&[]));
+        let proportional = definitions
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .expect("egui defines a proportional family");
+        assert_eq!(
+            proportional.first().map(String::as_str),
+            Some(OVERRIDE_FONT)
+        );
+        assert!(
+            proportional.iter().any(|name| name == "Ubuntu-Light"),
+            "built-in fonts remain available as fallbacks"
+        );
+        assert_eq!(definitions.font_data[OVERRIDE_FONT].index, 0);
     }
 
     #[test]

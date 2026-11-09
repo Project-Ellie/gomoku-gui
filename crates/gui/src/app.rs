@@ -57,6 +57,8 @@ pub struct App {
     press: Option<[f32; 2]>,
     /// The number of frames to draw before quitting. Used by the smoke test.
     frame_limit: Option<u32>,
+    /// An optional command-line override for every interface text style.
+    font: Option<PathBuf>,
     frames: u32,
     dirty: bool,
     /// When the interface asked for its next frame, if it did. egui
@@ -113,6 +115,7 @@ impl App {
             state: None,
             press: None,
             frame_limit,
+            font: None,
             frames: 0,
             dirty: true,
             wake_at: None,
@@ -125,6 +128,11 @@ impl App {
     /// Open a puzzle file before the window appears, as `--puzzle` asks.
     pub fn open_puzzle(&mut self, path: &std::path::Path) {
         self.session.open_puzzle(path);
+    }
+
+    /// Select a TTF/OTF/TTC font file for every interface text style.
+    pub fn set_font(&mut self, path: PathBuf) {
+        self.font = Some(path);
     }
 
     /// Open the window and run until it is closed.
@@ -760,6 +768,9 @@ impl App {
 
         let egui = egui::Context::default();
         crate::theme::install(&egui);
+        if let Some(path) = &self.font {
+            crate::theme::install_font(&egui, path)?;
+        }
         let egui_state = egui_winit::State::new(
             egui.clone(),
             egui::ViewportId::ROOT,

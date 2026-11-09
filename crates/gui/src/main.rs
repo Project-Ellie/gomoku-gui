@@ -50,6 +50,10 @@ struct Preview {
     puzzle: Option<PathBuf>,
     /// Side-panel width in points, for checking narrow layouts.
     panel_width: Option<f32>,
+    /// A font file to use for every interface text style.
+    font: Option<PathBuf>,
+    /// A main-menu label to click open before taking the snapshot.
+    open_menu: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -68,6 +72,8 @@ fn main() -> Result<()> {
     let mut gain: Option<f32> = None;
     let mut centre: Option<[f32; 2]> = None;
     let mut variation_sheets: Option<PathBuf> = None;
+    let mut font: Option<PathBuf> = None;
+    let mut preview_open_menu: Option<String> = None;
 
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -83,6 +89,8 @@ fn main() -> Result<()> {
                     with_ui: false,
                     puzzle: None,
                     panel_width: None,
+                    font: None,
+                    open_menu: None,
                 });
             }
             "--size" => {
@@ -128,6 +136,18 @@ fn main() -> Result<()> {
                 panel_width = Some(width);
             }
             "--preview-ui" => ui_preview = true,
+            "--preview-open-menu" => {
+                preview_open_menu = Some(
+                    arguments
+                        .next()
+                        .context("--preview-open-menu needs a menu label")?,
+                );
+            }
+            "--font" => {
+                font = Some(PathBuf::from(
+                    arguments.next().context("--font needs a font file")?,
+                ));
+            }
             "--scale" => {
                 scale = arguments
                     .next()
@@ -189,6 +209,8 @@ fn main() -> Result<()> {
         preview.with_ui = ui_preview;
         preview.panel_width = panel_width;
         preview.puzzle = puzzle;
+        preview.font = font;
+        preview.open_menu = preview_open_menu;
         return write_preview(&preview, &game);
     }
 
@@ -211,6 +233,9 @@ fn main() -> Result<()> {
         log::warn!("no audio output device was found, so the knock is off");
     }
     let mut app = app::App::new(settings, game, audio, frames);
+    if let Some(path) = font {
+        app.set_font(path);
+    }
     if let Some(path) = puzzle {
         // Straight into the puzzle library, with the picker open.
         app.open_puzzle(&path);
@@ -227,6 +252,8 @@ fn print_help() {
   --frames N          quit after N frames (a smoke test)
   --preview FILE.bmp  render one frame to a file and exit
   --preview-ui        include the interface in the preview
+  --preview-open-menu LABEL  open a main menu before the preview snapshot
+  --font FILE         use a TTF/OTF/TTC font for all interface text
   --panel-width N     preview side-panel width in points (180–420)
   --scale N           interface points per pixel, as a scaled display has
   --knock DIR         render every stone sound into DIR and stop
@@ -283,6 +310,8 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
         with_ui,
         ref puzzle,
         panel_width,
+        ref font,
+        ref open_menu,
     } = preview;
     let gpu = preview::HeadlessGpu::new()?;
     let wood = WoodTexture::load_wood()?;
@@ -333,7 +362,17 @@ fn write_preview(preview: &Preview, game: &Game) -> Result<()> {
             // Open the picker, so the frame shows how puzzles are chosen.
             session.open_puzzle(puzzle);
         }
-        gpu.write_ui_frame(path, size, scale, &mut renderer, &mut session)?;
+        gpu.write_ui_frame(
+            path,
+            size,
+            scale,
+            &mut renderer,
+            &mut session,
+            preview::UiFrameOptions {
+                font: font.as_deref(),
+                open_menu: open_menu.as_deref(),
+            },
+        )?;
     } else {
         gpu.write_frame(path, size, size, &renderer)?;
     }
