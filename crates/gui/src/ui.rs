@@ -2025,6 +2025,83 @@ mod tests {
     }
 
     #[test]
+    fn explorer_dialog_owns_arrow_and_enter_keys() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        session.select_explorer_record(0);
+        session.set_dialog(Dialog::Message {
+            title: "Wait".into(),
+            body: "Modal".into(),
+        });
+        let requests = std::cell::Cell::new(Requests::default());
+
+        explorer_frame(
+            &context,
+            &mut session,
+            &requests,
+            vec![
+                key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+            ],
+            None,
+        )
+        .textures_delta
+        .clear();
+
+        assert_eq!(session.explorer().unwrap().selected, Some(0));
+        assert_eq!(requests.get().explorer_select, None);
+        assert_eq!(session.open_panel_section(), PanelSection::Explorer);
+    }
+
+    #[test]
+    fn explorer_opposite_arrows_clamp_in_order_from_the_first_row() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        session.select_explorer_record(0);
+        let requests = std::cell::Cell::new(Requests::default());
+
+        explorer_frame(
+            &context,
+            &mut session,
+            &requests,
+            vec![
+                key(egui::Key::ArrowUp, egui::Modifiers::NONE),
+                key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+            ],
+            None,
+        )
+        .textures_delta
+        .clear();
+
+        assert_eq!(session.explorer().unwrap().selected, Some(1));
+        assert_eq!(requests.get().explorer_select, Some(1));
+    }
+
+    #[test]
+    fn explorer_opposite_arrows_clamp_in_order_from_the_last_row() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        session.select_explorer_record(2);
+        let requests = std::cell::Cell::new(Requests::default());
+
+        explorer_frame(
+            &context,
+            &mut session,
+            &requests,
+            vec![
+                key(egui::Key::ArrowDown, egui::Modifiers::NONE),
+                key(egui::Key::ArrowUp, egui::Modifiers::NONE),
+            ],
+            None,
+        )
+        .textures_delta
+        .clear();
+
+        assert_eq!(session.explorer().unwrap().selected, Some(1));
+        assert_eq!(requests.get().explorer_select, Some(1));
+    }
+
+    #[test]
     fn explorer_arrow_down_loads_the_next_visible_record() {
         let context = egui::Context::default();
         let mut session = explorer_session();

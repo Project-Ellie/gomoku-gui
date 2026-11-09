@@ -77,38 +77,42 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
 
     ui.separator();
 
-    // Count every press in this frame, but emit only the final selection. A
-    // burst of key repeats therefore does not queue loads for skipped records.
-    let delta = ui.input(|input| {
-        input.events.iter().fold(0_isize, |delta, event| {
-            let step = match event {
-                egui::Event::Key {
-                    key: egui::Key::ArrowUp,
-                    pressed: true,
-                    ..
-                } => -1,
-                egui::Event::Key {
-                    key: egui::Key::ArrowDown,
-                    pressed: true,
-                    ..
-                } => 1,
-                _ => 0,
-            };
-            delta.saturating_add(step)
-        })
-    });
-    let keyboard_selection = session.move_explorer_selection(delta);
-    if let Some(index) = keyboard_selection {
-        requests.explorer_select = Some(index);
-    }
-    let scroll_to_selection = keyboard_selection.is_some();
+    // Apply every press in order, clamping at each end, but emit only the final
+    // selection. A burst of key repeats therefore does not queue skipped loads.
+    let mut keyboard_selection = None;
+    if session.dialog().is_none() {
+        ui.input(|input| {
+            for event in &input.events {
+                let step = match event {
+                    egui::Event::Key {
+                        key: egui::Key::ArrowUp,
+                        pressed: true,
+                        ..
+                    } => -1,
+                    egui::Event::Key {
+                        key: egui::Key::ArrowDown,
+                        pressed: true,
+                        ..
+                    } => 1,
+                    _ => continue,
+                };
+                if let Some(index) = session.move_explorer_selection(step) {
+                    keyboard_selection = Some(index);
+                }
+            }
+        });
+        if let Some(index) = keyboard_selection {
+            requests.explorer_select = Some(index);
+        }
 
-    if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-        session.hand_over_explorer_to_moves();
-        if session.open_panel_section() == crate::session::PanelSection::Moves {
-            surrender_explorer_focus(ui);
+        if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            session.hand_over_explorer_to_moves();
+            if session.open_panel_section() == crate::session::PanelSection::Moves {
+                surrender_explorer_focus(ui);
+            }
         }
     }
+    let scroll_to_selection = keyboard_selection.is_some();
 
     // The edits above are settled, so the state can be borrowed for the list.
     let Some(explorer) = session.explorer() else {
