@@ -1293,10 +1293,10 @@ react as if a second late.
 `crates/gui/src/ui.rs` / `explorer.rs` (text edit styling) and
 `crates/gui/src/app.rs` / `main.rs` (repaint policy).
 
-- [ ] **Step 1: Diagnose** — find the root causes (style override leak; repaint policy) and state them in the commit message.
-- [ ] **Step 2: Fix + tests** — styling fix with a headless ui test asserting text-edit colors have readable contrast; repaint fix verified by code inspection (note in report).
-- [ ] **Step 3: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
-- [ ] **Step 4: Commit** — `git commit -m "fix(gui): readable, responsive text input fields"`.
+- [x] **Step 1: Diagnose** — find the root causes (style override leak; repaint policy) and state them in the commit message.
+- [x] **Step 2: Fix + tests** — styling fix with a headless ui test asserting text-edit colors have readable contrast; repaint fix verified by code inspection (note in report).
+- [x] **Step 3: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [x] **Step 4: Commit** — `git commit -m "fix(gui): readable, responsive text input fields"`.
 
 ---
 
