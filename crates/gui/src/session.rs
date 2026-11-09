@@ -54,6 +54,19 @@ pub enum Dialog {
     },
 }
 
+/// State for the Lab Explorer while a corpus is open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExplorerSession {
+    /// The indexed records.
+    pub records: Vec<gomoku_core::IndexEntry>,
+    /// The record currently shown, if any.
+    pub selected: Option<usize>,
+    /// Filter text from the user.
+    pub filter: String,
+    /// Jump-to-index input.
+    pub jump: String,
+}
+
 /// The game as it was before the puzzle picker opened. While the picker is
 /// open the board shows the selected puzzle, and cancelling the picker must
 /// bring back what was there, with no trace in the revision counters.
@@ -203,6 +216,8 @@ pub struct Session {
     perform: Option<After>,
     /// An action to perform once the game has been saved.
     after_save: Option<After>,
+    /// Lab Explorer state, when a corpus is open.
+    explorer: Option<ExplorerSession>,
 }
 
 impl Session {
@@ -245,12 +260,28 @@ impl Session {
             pixels_per_point: 1.0,
             perform: None,
             after_save: None,
+            explorer: None,
         }
     }
 
     /// Read-only game access; all changes pass through the session.
     pub fn game(&self) -> &Game {
         &self.game
+    }
+
+    /// Open an indexed corpus in the Explorer.
+    pub fn open_explorer_corpus(&mut self, records: Vec<gomoku_core::IndexEntry>) {
+        self.explorer = Some(ExplorerSession {
+            records,
+            selected: None,
+            filter: String::new(),
+            jump: String::new(),
+        });
+    }
+
+    /// Read-only access to Explorer state.
+    pub fn explorer(&self) -> Option<&ExplorerSession> {
+        self.explorer.as_ref()
     }
 
     /// Install startup/demo content before delivery is connected.
@@ -1814,5 +1845,20 @@ mod tests {
             "the unsaved stone is still unsaved, no more and no less"
         );
         assert!(session.dialog.is_none());
+    }
+
+    #[test]
+    fn explorer_corpus_is_stored() {
+        use gomoku_core::{IndexEntry, RecordKind};
+        let mut session = Session::new(&Settings::default());
+        let entries = vec![IndexEntry {
+            index: 0,
+            kind: RecordKind::Game,
+            name: "tiny.psq".into(),
+            path: std::env::temp_dir().join("nonexistent.psq"),
+        }];
+        session.open_explorer_corpus(entries.clone());
+        assert!(session.explorer().is_some());
+        assert_eq!(session.explorer().unwrap().records.len(), 1);
     }
 }
