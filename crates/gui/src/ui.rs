@@ -253,7 +253,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             // before any section runs, so headers and uncoloured labels read
             // on the grey panel.
             ui.visuals_mut().override_text_color = Some(PANEL_INK);
-            ui.visuals_mut().extreme_bg_color = PANEL_FIELD;
+            ui.visuals_mut().text_edit_bg_color = Some(PANEL_FIELD);
             let header_size = ui
                 .style()
                 .text_styles
