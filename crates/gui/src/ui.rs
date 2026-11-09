@@ -70,9 +70,7 @@ fn paint_panel_body(
 
 /// Text for a main-menu label or submenu entry at the shared doubled size.
 fn menu_text(text: impl Into<String>) -> RichText {
-    RichText::new(text)
-        .font(FontId::proportional(MENU_FONT_SIZE))
-        .color(PANEL_INK)
+    RichText::new(text).font(FontId::proportional(MENU_FONT_SIZE))
 }
 
 /// Draw one accordion header and report whether its section is open.
@@ -1454,6 +1452,110 @@ mod tests {
         let new_game_size = new_game.galley.job.sections[0].format.font_id.size;
         output.textures_delta.clear();
         assert_eq!(new_game_size, former_size * 2.0);
+    }
+
+    #[test]
+    fn pressed_menu_entries_have_readable_contrast() {
+        fn contrast_ratio(ink: Color32, paper: Color32) -> f32 {
+            fn luminance(color: Color32) -> f32 {
+                fn linear(channel: u8) -> f32 {
+                    let srgb = f32::from(channel) / 255.0;
+                    if srgb <= 0.04045 {
+                        srgb / 12.92
+                    } else {
+                        ((srgb + 0.055) / 1.055).powf(2.4)
+                    }
+                }
+                0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+            }
+            let light = luminance(ink).max(luminance(paper));
+            let dark = luminance(ink).min(luminance(paper));
+            (light + 0.05) / (dark + 0.05)
+        }
+
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let mut frame = |events, time| {
+            crate::theme::install(&context);
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 900.0),
+                    )),
+                    events,
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    draw(ui, &mut session);
+                },
+            )
+        };
+        click_text_timed("File", 1, &mut frame)
+            .textures_delta
+            .clear();
+        let mut output = frame(vec![], 1.0);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "New game" => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .expect("the open File menu draws its entries");
+        output.textures_delta.clear();
+
+        let mut output = frame(
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            1.01,
+        );
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "New game" => Some(text),
+                _ => None,
+            })
+            .expect("the pressed menu entry draws its text");
+        let centre = text.pos + text.galley.rect.center().to_vec2();
+        let fill = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill != Color32::TRANSPARENT && rect.rect.contains(centre) =>
+                {
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+            .expect("the pressed menu entry sits on its button fill");
+        let format_color = text.galley.job.sections[0].format.color;
+        let ink = if format_color == Color32::PLACEHOLDER {
+            text.fallback_color
+        } else {
+            format_color
+        };
+        assert_eq!(fill.fill, crate::theme::ACCENT, "the menu entry is pressed");
+        assert!(
+            contrast_ratio(ink, fill.fill) >= 4.5,
+            "pressed menu entry is {ink:?} on {:?}; contrast {:.2}:1",
+            fill.fill,
+            contrast_ratio(ink, fill.fill),
+        );
+        output.textures_delta.clear();
     }
 
     #[test]
