@@ -1325,10 +1325,10 @@ look-and-feel pass by Wolfie.
 **Files:** likely new `crates/gui/src/theme.rs` + touches in `ui.rs`,
 `app.rs`/`main.rs` (style install at startup).
 
-- [ ] **Step 1: Implement** theme module + install; menu fonts 2×; subdued modern palette/rounding/spacing.
-- [ ] **Step 2: Tests** — headless checks where meaningful (e.g. style is installed, menu font size is the configured token); keep all existing ui/app tests green (panel geometry may need token-aware updates — note any such change).
-- [ ] **Step 3: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
-- [ ] **Step 4: Commit** — `git commit -m "feat(gui): modern subdued theme and larger menu fonts"`.
+- [x] **Step 1: Implement** theme module + install; menu fonts 2×; subdued modern palette/rounding/spacing.
+- [x] **Step 2: Tests** — headless checks where meaningful (e.g. style is installed, menu font size is the configured token); keep all existing ui/app tests green (panel geometry may need token-aware updates — note any such change).
+- [x] **Step 3: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [x] **Step 4: Commit** — `git commit -m "feat(gui): modern subdued theme and larger menu fonts"`.
 
 ---
 
