@@ -1272,6 +1272,66 @@ rendered.
 
 ---
 
+### Task 1.10: Readable and responsive text input fields
+
+Added 2026-11-09 from Wolfie's hands-on: text input fields (Explorer
+filter/jump, Players tab) render black-on-black while editing, and
+react as if a second late.
+
+**Requirements (owner-approved in conversation):**
+
+1. Input field text must be clearly readable while editing — fix the
+   color contrast (suspect: the panel-level `override_text_color =
+   PANEL_INK` leaking into `TextEdit` visuals, or dark text on egui's
+   default dark edit fill). Applies app-wide, not just the Explorer.
+2. Editing must feel immediate — diagnose the lag (suspect: the winit
+   event loop only repaints on certain events; typing may not trigger
+   `request_repaint`, so the field updates one event late). Fix at the
+   event-loop level, not per-field.
+
+**Files:** whichever the diagnosis implicates — likely
+`crates/gui/src/ui.rs` / `explorer.rs` (text edit styling) and
+`crates/gui/src/app.rs` / `main.rs` (repaint policy).
+
+- [ ] **Step 1: Diagnose** — find the root causes (style override leak; repaint policy) and state them in the commit message.
+- [ ] **Step 2: Fix + tests** — styling fix with a headless ui test asserting text-edit colors have readable contrast; repaint fix verified by code inspection (note in report).
+- [ ] **Step 3: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [ ] **Step 4: Commit** — `git commit -m "fix(gui): readable, responsive text input fields"`.
+
+---
+
+### Task 1.11: Modern theme pass + 2× menu fonts
+
+Added 2026-11-09 from Wolfie's hands-on: the app looks "like from the
+70s"; menu and submenu fonts are too small.
+
+**Requirements (owner-approved in conversation):**
+
+1. **Modern, subdued lab aesthetic** — a proper, modern application
+   look; stylish but not exaggerated ("a lab, not a studio"). Centralize
+   design tokens (colors, spacing, rounding, font sizes) in one style
+   module so future passes tweak one place. Light theme preserved (the
+   board is wooden and light; the UI must harmonize with it).
+2. **Menu fonts 2×:** the main menu bar and all submenu entries render
+   at twice the current font size. Panel/body text sizes stay as they
+   are (Task 1.8 already doubled section headers).
+3. **Untouchables:** the wooden board rendering, the stone depictions,
+   and the board interaction stay exactly as they are.
+
+This is a visual task: automated tests can only pin structure (fonts
+configured, no panic), so M1's human verification includes an explicit
+look-and-feel pass by Wolfie.
+
+**Files:** likely new `crates/gui/src/theme.rs` + touches in `ui.rs`,
+`app.rs`/`main.rs` (style install at startup).
+
+- [ ] **Step 1: Implement** theme module + install; menu fonts 2×; subdued modern palette/rounding/spacing.
+- [ ] **Step 2: Tests** — headless checks where meaningful (e.g. style is installed, menu font size is the configured token); keep all existing ui/app tests green (panel geometry may need token-aware updates — note any such change).
+- [ ] **Step 3: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [ ] **Step 4: Commit** — `git commit -m "feat(gui): modern subdued theme and larger menu fonts"`.
+
+---
+
 ### M1 — Human verification
 
 1. Build and launch:
@@ -1503,7 +1563,14 @@ git commit -m "feat(core): add VCF puzzle format adapter"
 
 ---
 
-### Task 2.3: Sample-shard directory adapter
+### Task 2.3: Sample-shard directory adapter — **DROPPED 2026-11-09**
+
+Dropped by Wolfie: the bincode-schema coupling to rust-ml's `train`
+crate isn't worth it right now ("we just dump the samples for the time
+being"). M2 ships with psq + GUI record + VCF puzzle formats only. The
+task text below is kept for when sample browsing returns.
+
+<details><summary>Original task text (deferred)</summary>
 
 **Files:**
 - Create: `crates/core/src/shard.rs`
@@ -1642,9 +1709,18 @@ git add crates/core/src/shard.rs crates/core/src/lib.rs crates/core/tests/shard.
 git commit -m "feat(core): add sample-shard directory adapter"
 ```
 
+</details>
+
 ---
 
-### Task 2.4: Standard registry and jump-to-index filter
+### Task 2.4: Standard registry (slimmed 2026-11-09)
+
+Slimmed by Wolfie when 2.3 was dropped: the jump-to-index and filter
+half of this task already landed with Tasks 1.6 (filter field, Jump-to-#
++ Go, `explorer_jump_index`) and 1.9 (keyboard walking). What remains:
+`Registry::standard()` bundling the three formats, the app using it
+instead of the hand-built psq-only registry, and a sanity pass that
+filter/jump behave across the new record kinds.
 
 **Files:**
 - Modify: `crates/core/src/format.rs`
@@ -1690,7 +1766,6 @@ impl Registry {
             .add(PsqFormat)
             .add(GuiRecordFormat)
             .add(VcfPuzzleFormat)
-            .add(SampleShardFormat)
             .build()
     }
 }
