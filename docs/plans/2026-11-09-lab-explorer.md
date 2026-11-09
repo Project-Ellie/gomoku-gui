@@ -1161,7 +1161,7 @@ git commit -m "feat(gui): add Lab Explorer panel and menu"
    /Users/wgiersche/workspace/Project-Ellie/rust-ml/data/gomocup-games/games/2026/Freestyle15_2
    ```
    and click **Open**.
-4. Observe: the right panel is replaced by the Lab Explorer, showing a numbered list of `.psq` files.
+4. Observe: the right panel gains a **Lab Explorer** section in its accordion stack (Players / Moves / Lab Explorer all stay reachable), showing a numbered list of `.psq` files.
 5. Scroll and double-click the row named like `6_5_12_2.psq` (or any row).
 6. Observe: the board shows the end position of that game with all stones placed.
 7. Press the **Left Arrow** key several times: the board rewinds through the moves.
