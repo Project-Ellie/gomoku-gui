@@ -1149,6 +1149,47 @@ git commit -m "feat(gui): add Lab Explorer panel and menu"
 
 ---
 
+### Task 1.7: Corpus sanity check + remembered Explorer location
+
+Added 2026-11-09 after Wolfie's first hands-on: he double-clicked a high
+root folder in the picker, the app indexed thousands of unrelated files,
+and every Explorer reopen started the folder navigation from scratch.
+
+**Requirements (owner-approved in conversation):**
+
+1. Opening a folder that doesn't look like a corpus must be refused fast,
+   with a message, leaving the current Explorer state untouched. Rule: a
+   folder is a corpus if a breadth-first walk finds at least one file a
+   registered format recognizes (`Confidence::Yes` or `Maybe`). The walk
+   early-exits on the first recognized file and gives up after visiting
+   500 entries (constant `CORPUS_PROBE_LIMIT`), so huge non-corpus trees
+   cost almost nothing. BFS (not DFS) so shallow corpora win over deep
+   junk trees.
+2. The Explorer folder picker reopens at the last successfully opened
+   corpus folder — persisted across restarts. New optional field
+   `FileSettings::last_corpus_directory` (serde `default`, so old
+   settings files load fine). Session mirrors it like `last_directory`;
+   the picker seeds from `last_corpus_directory.or(last_directory)`.
+   Only successful corpus opens update it.
+
+**Files:**
+- Modify: `crates/core/src/format.rs` (`Registry::looks_like_corpus`, `CORPUS_PROBE_LIMIT`)
+- Modify: `crates/core/src/config.rs` (`FileSettings::last_corpus_directory`)
+- Modify: `crates/gui/src/session.rs` (field mirror, `remember_corpus_directory`, settings write-back)
+- Modify: `crates/gui/src/app.rs` (sanity check + picker seeding in `ask_to_open_explorer`)
+- Tests: `crates/core/tests/format_contract.rs`, `crates/core/src/config.rs` tests, `crates/gui/src/session.rs` tests, `crates/gui/src/app_tests.rs`
+
+- [ ] **Step 1: RED core test** — `looks_like_corpus` true for the psq fixture dir, false for a temp dir of `.txt` files, true for a temp dir whose only record sits one subdirectory down (BFS reaches it).
+- [ ] **Step 2: Implement** `Registry::looks_like_corpus` + `CORPUS_PROBE_LIMIT` in `format.rs`; green.
+- [ ] **Step 3: RED config/session tests** — `last_corpus_directory` round-trips through settings save/load and defaults to `None`; `remember_corpus_directory` updates the session field and the settings write-back carries it.
+- [ ] **Step 4: Implement** config field, session mirror, `remember_corpus_directory`; green.
+- [ ] **Step 5: RED app test** — opening a non-corpus folder leaves `session.explorer()` `None` and surfaces a failure dialog; a second open's picker receives the last corpus directory as its seed.
+- [ ] **Step 6: Implement** the sanity check and picker seeding in `ask_to_open_explorer`; green.
+- [ ] **Step 7: Gates** — `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all`.
+- [ ] **Step 8: Commit** — `git commit -m "feat(gui): reject non-corpus folders and remember the Explorer location"` (list all touched files).
+
+---
+
 ### M1 — Human verification
 
 1. Build and launch:
@@ -1167,6 +1208,8 @@ git commit -m "feat(gui): add Lab Explorer panel and menu"
 7. Press the **Left Arrow** key several times: the board rewinds through the moves.
 8. Press the **Right Arrow** key several times: the board moves forward again.
 9. Expected: no crash, the status line shows the review position, and the board renders correctly.
+10. Close the app completely and relaunch it. Click **Lab → Explorer…** again: the folder dialog opens at `Freestyle15_2` (the last opened corpus), not at some unrelated directory.
+11. In the dialog, deliberately pick a folder that holds no Gomoku records (e.g. the workspace root). Expected: a fast refusal with a message dialog ("doesn't look like a corpus"), no long busy indexing, and the previously opened corpus list stays intact in the Explorer panel.
 
 ---
 
