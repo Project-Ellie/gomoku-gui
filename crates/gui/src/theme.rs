@@ -9,7 +9,11 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use egui::{Color32, CornerRadius, FontId, Stroke, Style, TextStyle, Vec2, Visuals};
 
-/// The key used for the command-line font in egui's font table.
+/// SF Rounded is the preferred UI font on the owner's macOS development machine.
+/// Other systems retain egui's built-in fonts when this system path is unavailable.
+const DEFAULT_UI_FONT_PATH: &str = "/System/Library/Fonts/SFNSRounded.ttf";
+
+/// The key used for the selected application font in egui's font table.
 const OVERRIDE_FONT: &str = "app-font-override";
 
 /// Put an override before the built-in proportional fonts, retaining glyph fallbacks.
@@ -105,7 +109,15 @@ const WINDOW_CORNER_RADIUS: u8 = 8;
 
 /// Install the designed light theme on an egui context.
 pub(crate) fn install(context: &egui::Context) {
+    install_with_default_font(context, Path::new(DEFAULT_UI_FONT_PATH));
+}
+
+/// Install the theme, retaining egui's fonts if the preferred font cannot be read.
+fn install_with_default_font(context: &egui::Context, default_font: &Path) {
     context.global_style_mut(|style| *style = lab_style());
+    if let Err(error) = install_font(context, default_font) {
+        log::warn!("the default UI font is unavailable; using egui's fonts: {error}");
+    }
 }
 
 /// Build a complete style rather than layering more local colour overrides.
@@ -226,6 +238,43 @@ mod tests {
     }
 
     #[test]
+    fn sf_rounded_is_the_default_primary_font_when_available() {
+        let path = Path::new(DEFAULT_UI_FONT_PATH);
+        if !path.is_file() {
+            eprintln!("SF Rounded is unavailable; skipping the default-font assertion");
+            return;
+        }
+
+        let context = egui::Context::default();
+        install(&context);
+        let mut output = context.run_ui(egui::RawInput::default(), |_| {});
+        let proportional = context.fonts(|fonts| {
+            fonts.definitions().families[&egui::FontFamily::Proportional]
+                .first()
+                .cloned()
+        });
+        output.textures_delta.clear();
+        assert_eq!(proportional.as_deref(), Some(OVERRIDE_FONT));
+    }
+
+    #[test]
+    fn missing_default_font_keeps_egui_fallbacks() {
+        let context = egui::Context::default();
+        install_with_default_font(
+            &context,
+            Path::new("../../target/font-previews/no-such-default-font.ttf"),
+        );
+        let mut output = context.run_ui(egui::RawInput::default(), |_| {});
+        let proportional = context.fonts(|fonts| {
+            fonts.definitions().families[&egui::FontFamily::Proportional]
+                .first()
+                .cloned()
+        });
+        output.textures_delta.clear();
+        assert_eq!(proportional.as_deref(), Some("Ubuntu-Light"));
+    }
+
+    #[test]
     fn missing_custom_font_reports_its_path() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/font-previews/no-such-font.ttf");
@@ -235,11 +284,26 @@ mod tests {
     }
 
     #[test]
-    fn custom_font_applies_to_every_text_style() {
+    fn custom_font_overrides_the_default_for_every_text_style() {
         let context = egui::Context::default();
         install(&context);
         let font = egui::FontDefinitions::default().font_data["Ubuntu-Light"].clone();
-        install_font_data(&context, (*font).clone());
+        let custom_font = (*font).clone();
+        install_font_data(&context, custom_font.clone());
+        let mut output = context.run_ui(egui::RawInput::default(), |_| {});
+        let (primary, custom_data_is_installed) = context.fonts(|fonts| {
+            let definitions = fonts.definitions();
+            (
+                definitions.families[&egui::FontFamily::Proportional]
+                    .first()
+                    .cloned(),
+                definitions.font_data[OVERRIDE_FONT].font.as_ref() == custom_font.font.as_ref(),
+            )
+        });
+        output.textures_delta.clear();
+
+        assert_eq!(primary.as_deref(), Some(OVERRIDE_FONT));
+        assert!(custom_data_is_installed);
         let style = context.global_style();
         assert!(
             style
