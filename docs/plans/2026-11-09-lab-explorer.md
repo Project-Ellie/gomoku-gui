@@ -966,7 +966,9 @@ git commit -m "feat(core): add Registry::open for files and directories"
 - Produces: `ui::explorer_panel`, `ui::Requests` gains `open_explorer`.
 - Consumes: `Session::explorer`, `Session::load_explorer_record`.
 
-**Steering point:** Wolfie must choose the Explorer panel layout (list above board or side-by-side) and whether the record list is a floating window or docks into the right panel. The plan defaults to a right-side panel replacing the normal move list while Explorer is active, because that reuses the existing panel chrome.
+**Steering point (RESOLVED 2026-11-09):** Wolfie chose the right-side panel. Amendment to the plan default: the Explorer must NOT hard-replace the normal side panel — the right panel's functions (move list, Explorer, etc.) switch smoothly, organized as an accordion-style stack of collapsible sections (e.g. `egui::CollapsingHeader`) so navigation between panel functions stays easy. The Explorer docks as one section in that stack.
+
+**Implementation note (found during S6 dispatch):** `Session::load_explorer_record` was deferred out of Task 1.4 but never picked up by Task 1.5 — this task must add it (sketch lives in Task 1.4's struck-through draft) since Step 6 calls it.
 
 - [ ] **Step 1: Write the failing test**
 
