@@ -62,6 +62,31 @@ const BANNER: Color32 = Color32::from_rgb(178, 24, 24);
 /// The banner is meant to shout; anything under 24 points is a label.
 const BANNER_FONT: f32 = 28.0;
 
+/// A section body's shapes in the paint list.
+type PanelBodyPaint = (
+    PanelSection,
+    egui::LayerId,
+    egui::layers::ShapeIdx,
+    egui::layers::ShapeIdx,
+);
+
+/// Paint a section body and remember its shapes in case a later header supersedes it.
+fn paint_panel_body(
+    ui: &mut egui::Ui,
+    section: PanelSection,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) -> PanelBodyPaint {
+    let layer_id = ui.painter().layer_id();
+    let first = ui
+        .ctx()
+        .graphics_mut(|graphics| graphics.entry(layer_id).next_idx());
+    add_contents(ui);
+    let last = ui
+        .ctx()
+        .graphics_mut(|graphics| graphics.entry(layer_id).next_idx());
+    (section, layer_id, first, last)
+}
+
 /// Draw one accordion header and report whether its section is open.
 fn panel_section_header(
     ui: &mut egui::Ui,
@@ -234,12 +259,17 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                 .get(&egui::TextStyle::Body)
                 .map_or(FontId::default().size, |font| font.size)
                 * 2.0;
+            let mut body_paints = Vec::new();
             if panel_section_header(ui, session, PanelSection::Players, "Players", header_size) {
-                seats(ui, session);
+                body_paints.push(paint_panel_body(ui, PanelSection::Players, |ui| {
+                    seats(ui, session)
+                }));
             }
             ui.separator();
             if panel_section_header(ui, session, PanelSection::Moves, "Moves", header_size) {
-                move_list(ui, session);
+                body_paints.push(paint_panel_body(ui, PanelSection::Moves, |ui| {
+                    move_list(ui, session);
+                }));
             }
             // The Explorer header appears only while its corpus is available.
             if session.explorer().is_some() {
@@ -251,7 +281,23 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     "Lab Explorer",
                     header_size,
                 ) {
-                    requests.explorer_select = crate::explorer::draw(ui, session).explorer_select;
+                    body_paints.push(paint_panel_body(ui, PanelSection::Explorer, |ui| {
+                        requests.explorer_select =
+                            crate::explorer::draw(ui, session).explorer_select;
+                    }));
+                }
+            }
+            // A later header can supersede a body that was already laid out.
+            // Keep its space for this frame, but remove its paint so only the
+            // newly selected body is visible during the switch.
+            for (section, layer_id, first, last) in body_paints {
+                if section != session.open_panel_section() {
+                    ui.ctx().graphics_mut(|graphics| {
+                        let paint_list = graphics.entry(layer_id);
+                        for index in first.0..last.0 {
+                            paint_list.reset_shape(egui::layers::ShapeIdx(index));
+                        }
+                    });
                 }
             }
             recents(ui, session);
@@ -1011,8 +1057,11 @@ mod tests {
     }
 
     /// Drive a real egui button/link by its visible label, never fixed pixels.
-    fn click_text(text: &str, mut frame: impl FnMut(Vec<egui::Event>) -> egui::FullOutput) {
-        click_text_timed(text, 1, |events, _| frame(events));
+    fn click_text(
+        text: &str,
+        mut frame: impl FnMut(Vec<egui::Event>) -> egui::FullOutput,
+    ) -> egui::FullOutput {
+        click_text_timed(text, 1, |events, _| frame(events))
     }
 
     /// Drive a real egui double-click by its visible label and explicit times.
@@ -1024,7 +1073,7 @@ mod tests {
         text: &str,
         clicks: usize,
         mut frame: impl FnMut(Vec<egui::Event>, f64) -> egui::FullOutput,
-    ) {
+    ) -> egui::FullOutput {
         for _ in 0..8 {
             frame(vec![], 0.0).textures_delta.clear();
         }
@@ -1043,7 +1092,7 @@ mod tests {
         for click in 0..clicks {
             for (step, pressed) in [true, false].into_iter().enumerate() {
                 let time = 0.01 + (click * 2 + step) as f64 * 0.01;
-                frame(
+                output = frame(
                     vec![
                         egui::Event::PointerMoved(position),
                         egui::Event::PointerButton {
@@ -1054,11 +1103,11 @@ mod tests {
                         },
                     ],
                     time,
-                )
-                .textures_delta
-                .clear();
+                );
+                output.textures_delta.clear();
             }
         }
+        output
     }
 
     /// What the interface says about the pointer, in the two ways it can say it.
@@ -1429,6 +1478,19 @@ mod tests {
             egui::Shape::Text(text) if text.galley.text() == "▾ Players")));
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.text() == "▸ Moves")));
+        output.textures_delta.clear();
+
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let mut output = click_text("▸ Moves", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "H8")));
+        assert!(
+            !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Resignation ON")),
+            "the superseded Players body must not render in the switching frame"
+        );
         output.textures_delta.clear();
     }
 

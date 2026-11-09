@@ -70,7 +70,8 @@ pub enum PanelSection {
 pub struct ExplorerSession {
     /// The indexed records.
     pub records: Vec<gomoku_core::IndexEntry>,
-    /// The record currently shown, if any.
+    /// The selected, highlighted record, if any. Loading it onto the board is
+    /// a separate action, triggered by double-click or Jump Go.
     pub selected: Option<usize>,
     /// Filter text from the user.
     pub filter: String,
