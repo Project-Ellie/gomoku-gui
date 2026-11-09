@@ -7,6 +7,7 @@
 
 mod config;
 mod error;
+mod format;
 mod game;
 mod notation;
 mod puzzle;
@@ -20,6 +21,9 @@ pub use config::{
 };
 pub use engine::{Color, Move, Status};
 pub use error::{ConfigError, GameError, PositionError, RecordError};
+pub use format::{
+    Confidence, Format, LoadError, OpenedThing, RecordKind, RecordMeta, RecordUnit, Registry,
+};
 pub use game::{Game, MetaData, Outcome, WinMethod};
 pub use notation::label;
 pub use puzzle::{Puzzle, PuzzleError, load_puzzles};
