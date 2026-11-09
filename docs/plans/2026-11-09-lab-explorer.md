@@ -831,7 +831,7 @@ git commit -m "feat(gui): add Explorer session state"
 **Interfaces:**
 - Adds: `Registry::open(&Path) -> Result<OpenedThing, LoadError>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `crates/core/tests/format_contract.rs`:
 
@@ -848,12 +848,12 @@ fn registry_opens_a_psq_file() {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test -p gomoku-core --test format_contract registry_opens_a_psq_file`
 Expected: compile failure because `Registry::open` does not exist.
 
-- [ ] **Step 3: Implement `Registry::open`**
+- [x] **Step 3: Implement `Registry::open`**
 
 In `crates/core/src/format.rs`, add to `impl Registry`:
 
@@ -940,12 +940,12 @@ In `crates/core/src/format.rs`, add to `impl Registry`:
     }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cargo test -p gomoku-core --test format_contract`
 Expected: 2 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/core/src/format.rs crates/core/tests/format_contract.rs
