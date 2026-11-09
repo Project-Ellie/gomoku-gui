@@ -368,6 +368,63 @@ impl Session {
         }
     }
 
+    /// Move the Explorer highlight through the records visible under its filter.
+    ///
+    /// Returns the newly selected record index, or `None` when the highlight
+    /// cannot move. Both ends of the filtered list clamp without reselecting.
+    pub fn move_explorer_selection(&mut self, delta: isize) -> Option<usize> {
+        let explorer = self.explorer.as_mut()?;
+        if delta == 0 {
+            return None;
+        }
+        let filter = explorer.filter.to_lowercase();
+        let visible: Vec<usize> = explorer
+            .records
+            .iter()
+            .filter(|record| filter.is_empty() || record.name.to_lowercase().contains(&filter))
+            .map(|record| record.index)
+            .collect();
+        if visible.is_empty() {
+            return None;
+        }
+        let position = visible
+            .iter()
+            .position(|index| Some(*index) == explorer.selected);
+        let last = visible.len() - 1;
+        let next = match (position, delta < 0) {
+            (Some(position), true) => position.saturating_sub(delta.unsigned_abs()),
+            (Some(position), false) => position.saturating_add(delta.unsigned_abs()).min(last),
+            (None, true) => visible.len().saturating_sub(delta.unsigned_abs()).min(last),
+            (None, false) => delta.unsigned_abs().saturating_sub(1).min(last),
+        };
+        let selected = visible[next];
+        if explorer.selected == Some(selected) {
+            return None;
+        }
+        explorer.selected = Some(selected);
+        Some(selected)
+    }
+
+    /// Hand keyboard navigation from an open, non-empty Explorer to Moves.
+    ///
+    /// Without a corpus, or when the filter hides every record, this is a no-op.
+    pub fn hand_over_explorer_to_moves(&mut self) {
+        if self.open_panel_section != PanelSection::Explorer {
+            return;
+        }
+        let Some(explorer) = self.explorer.as_ref() else {
+            return;
+        };
+        let filter = explorer.filter.to_lowercase();
+        if explorer
+            .records
+            .iter()
+            .any(|record| filter.is_empty() || record.name.to_lowercase().contains(&filter))
+        {
+            self.open_panel_section = PanelSection::Moves;
+        }
+    }
+
     /// Load a record from the Explorer into the board.
     ///
     /// The record comes through the registry, so whatever format it is in is
@@ -2062,6 +2119,79 @@ mod tests {
             session.explorer_jump_index(),
             Err("not a number".to_string())
         );
+    }
+
+    #[test]
+    fn explorer_selection_walks_filtered_records_and_clamps() {
+        use gomoku_core::{IndexEntry, RecordKind};
+        let mut session = Session::new(&Settings::default());
+        session.open_explorer_corpus(
+            ["zero.psq", "keep-one.psq", "two.psq", "keep-three.psq"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| IndexEntry {
+                    index,
+                    kind: RecordKind::Game,
+                    name: name.into(),
+                    path: PathBuf::from(name),
+                })
+                .collect(),
+        );
+        session.set_explorer_filter("keep".into());
+        session.select_explorer_record(1);
+
+        assert_eq!(session.move_explorer_selection(1), Some(3));
+        assert_eq!(session.explorer().unwrap().selected, Some(3));
+        assert_eq!(session.move_explorer_selection(1), None);
+        assert_eq!(session.explorer().unwrap().selected, Some(3));
+        assert_eq!(session.move_explorer_selection(-1), Some(1));
+        assert_eq!(session.move_explorer_selection(-1), None);
+        assert_eq!(session.explorer().unwrap().selected, Some(1));
+
+        session.set_explorer_filter("missing".into());
+        assert_eq!(session.move_explorer_selection(1), None);
+        assert_eq!(session.explorer().unwrap().selected, Some(1));
+    }
+
+    #[test]
+    fn explorer_selection_starts_at_the_requested_end() {
+        use gomoku_core::{IndexEntry, RecordKind};
+        let entries = (0..3)
+            .map(|index| IndexEntry {
+                index,
+                kind: RecordKind::Game,
+                name: format!("game-{index}.psq"),
+                path: PathBuf::from(format!("game-{index}.psq")),
+            })
+            .collect::<Vec<_>>();
+        let mut session = Session::new(&Settings::default());
+        assert_eq!(session.move_explorer_selection(1), None);
+        session.open_explorer_corpus(entries.clone());
+        assert_eq!(session.move_explorer_selection(1), Some(0));
+        session.open_explorer_corpus(entries);
+        assert_eq!(session.move_explorer_selection(-1), Some(2));
+    }
+
+    #[test]
+    fn explorer_hand_over_requires_a_visible_record() {
+        use gomoku_core::{IndexEntry, RecordKind};
+        let mut session = Session::new(&Settings::default());
+        session.hand_over_explorer_to_moves();
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
+
+        session.open_explorer_corpus(vec![IndexEntry {
+            index: 0,
+            kind: RecordKind::Game,
+            name: "tiny.psq".into(),
+            path: PathBuf::from("tiny.psq"),
+        }]);
+        session.set_explorer_filter("missing".into());
+        session.hand_over_explorer_to_moves();
+        assert_eq!(session.open_panel_section(), PanelSection::Explorer);
+
+        session.set_explorer_filter(String::new());
+        session.hand_over_explorer_to_moves();
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
     }
 
     #[test]

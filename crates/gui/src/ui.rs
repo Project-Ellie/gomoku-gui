@@ -1987,6 +1987,12 @@ mod tests {
                 name: "two.psq".into(),
                 path: PathBuf::from("two.psq"),
             },
+            IndexEntry {
+                index: 2,
+                kind: RecordKind::Game,
+                name: "three.psq".into(),
+                path: PathBuf::from("three.psq"),
+            },
         ]);
         session
     }
@@ -2019,6 +2025,60 @@ mod tests {
     }
 
     #[test]
+    fn explorer_arrow_down_loads_the_next_visible_record() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        session.set_explorer_filter("t".into());
+        session.select_explorer_record(1);
+        let requests = std::cell::Cell::new(Requests::default());
+
+        explorer_frame(
+            &context,
+            &mut session,
+            &requests,
+            vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)],
+            None,
+        )
+        .textures_delta
+        .clear();
+
+        assert_eq!(session.explorer().unwrap().selected, Some(2));
+        assert_eq!(requests.get().explorer_select, Some(2));
+        assert_eq!(session.open_panel_section(), PanelSection::Explorer);
+    }
+
+    #[test]
+    fn explorer_enter_hands_keyboard_to_moves() {
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        let requests = std::cell::Cell::new(Requests::default());
+        explorer_frame(&context, &mut session, &requests, vec![], None)
+            .textures_delta
+            .clear();
+        context.memory_mut(|memory| {
+            memory.request_focus(egui::Id::new("explorer-filter"));
+        });
+        assert!(context.egui_wants_keyboard_input());
+
+        explorer_frame(
+            &context,
+            &mut session,
+            &requests,
+            vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+            None,
+        )
+        .textures_delta
+        .clear();
+
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
+        assert!(
+            !context.egui_wants_keyboard_input(),
+            "Left/Right must reach the application's move navigation"
+        );
+        assert_eq!(requests.get().explorer_select, None);
+    }
+
+    #[test]
     fn explorer_rows_select_on_single_click_without_loading() {
         let context = egui::Context::default();
         let mut session = explorer_session();
@@ -2040,6 +2100,7 @@ mod tests {
             explorer_frame(&context, &mut session, &requests, events, Some(time))
         });
         assert_eq!(requests.get().explorer_select, Some(1));
+        assert_eq!(session.open_panel_section(), PanelSection::Moves);
         assert!(session.game().is_empty());
     }
 

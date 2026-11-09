@@ -779,6 +779,31 @@ fn explorer_selection_loads_the_record_onto_the_board() {
     assert_eq!(app.session.explorer().unwrap().selected, Some(0));
 }
 
+#[test]
+fn explorer_arrows_bypass_game_seek_and_moves_hand_over_restores_right_arrow() {
+    let mut app = app();
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.session.place(gomoku_core::point(8, 8).unwrap());
+    app.session.seek(0);
+    app.session
+        .open_explorer_corpus(vec![gomoku_core::IndexEntry {
+            index: 0,
+            kind: gomoku_core::RecordKind::Game,
+            name: "tiny.psq".into(),
+            path: PathBuf::from("tiny.psq"),
+        }]);
+    let reviewing_start = app.session.game().clone();
+
+    app.handle_key(&Key::Named(NamedKey::ArrowDown), &mut || {});
+    assert_eq!(app.session.game(), &reviewing_start);
+    app.handle_key(&Key::Named(NamedKey::ArrowUp), &mut || {});
+    assert_eq!(app.session.game(), &reviewing_start);
+
+    app.session.hand_over_explorer_to_moves();
+    app.handle_key(&Key::Named(NamedKey::ArrowRight), &mut || {});
+    assert_eq!(app.session.game().cursor(), 1);
+}
+
 /// Slow acceptance through the actual App scheduler and owned worker sink.
 /// Run: cargo test --release -p gomoku-gui --locked app::tests::real_acceptance \
 ///     -- --ignored --nocapture --test-threads=1

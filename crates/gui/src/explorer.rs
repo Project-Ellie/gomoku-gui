@@ -48,7 +48,10 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             .explorer()
             .map(|explorer| explorer.filter.clone())
             .unwrap_or_default();
-        if ui.text_edit_singleline(&mut filter).changed() {
+        if ui
+            .add(egui::TextEdit::singleline(&mut filter).id(egui::Id::new("explorer-filter")))
+            .changed()
+        {
             session.set_explorer_filter(filter);
         }
     });
@@ -59,7 +62,10 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             .explorer()
             .map(|explorer| explorer.jump.clone())
             .unwrap_or_default();
-        if ui.text_edit_singleline(&mut jump).changed() {
+        if ui
+            .add(egui::TextEdit::singleline(&mut jump).id(egui::Id::new("explorer-jump")))
+            .changed()
+        {
             session.set_explorer_jump(jump);
         }
         if ui.button("Go").clicked() {
@@ -70,6 +76,39 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
     });
 
     ui.separator();
+
+    // Count every press in this frame, but emit only the final selection. A
+    // burst of key repeats therefore does not queue loads for skipped records.
+    let delta = ui.input(|input| {
+        input.events.iter().fold(0_isize, |delta, event| {
+            let step = match event {
+                egui::Event::Key {
+                    key: egui::Key::ArrowUp,
+                    pressed: true,
+                    ..
+                } => -1,
+                egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    pressed: true,
+                    ..
+                } => 1,
+                _ => 0,
+            };
+            delta.saturating_add(step)
+        })
+    });
+    let keyboard_selection = session.move_explorer_selection(delta);
+    if let Some(index) = keyboard_selection {
+        requests.explorer_select = Some(index);
+    }
+    let scroll_to_selection = keyboard_selection.is_some();
+
+    if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        session.hand_over_explorer_to_moves();
+        if session.open_panel_section() == crate::session::PanelSection::Moves {
+            surrender_explorer_focus(ui);
+        }
+    }
 
     // The edits above are settled, so the state can be borrowed for the list.
     let Some(explorer) = session.explorer() else {
@@ -86,6 +125,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         .collect();
 
     let mut clicked_record = None;
+    let mut hand_over = false;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .max_height((ui.available_height() - 60.0).max(80.0))
@@ -103,20 +143,40 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                 // Keep the same widget identity when selection changes, so the
                 // second half of a double-click still belongs to this row.
                 let response = frame
-                    .show(ui, |ui| ui.label(text))
+                    .show(ui, |ui| {
+                        // A record is a click target, never a text-selection
+                        // target, including on the second click of a double.
+                        ui.add(egui::Label::new(text).selectable(false))
+                    })
                     .inner
                     .interact(egui::Sense::click());
                 if response.clicked() {
                     clicked_record = Some(record.index);
                 }
+                if here && scroll_to_selection {
+                    ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                }
                 if response.double_clicked() {
                     requests.explorer_select = Some(record.index);
+                    hand_over = true;
                 }
             }
         });
     if let Some(index) = clicked_record {
         session.select_explorer_record(index);
     }
+    if hand_over {
+        session.hand_over_explorer_to_moves();
+        surrender_explorer_focus(ui);
+    }
 
     requests
+}
+
+/// Release Explorer text fields so Left/Right reach application move navigation.
+fn surrender_explorer_focus(ui: &mut egui::Ui) {
+    ui.memory_mut(|memory| {
+        memory.surrender_focus(egui::Id::new("explorer-filter"));
+        memory.surrender_focus(egui::Id::new("explorer-jump"));
+    });
 }

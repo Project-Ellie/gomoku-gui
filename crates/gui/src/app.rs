@@ -24,7 +24,7 @@ use crate::ai_worker::Worker;
 use crate::audio::Audio;
 use crate::camera::Viewport;
 use crate::render::{Globals, GlyphTexture, Renderer, SHELL, SLATE, StoneInstance, WoodTexture};
-use crate::session::{After, Dialog, Session, WindowGeometry};
+use crate::session::{After, Dialog, PanelSection, Session, WindowGeometry};
 use crate::ui::{self, Requests};
 
 /// How far the pointer may move and still count as a click rather than a drag.
@@ -605,6 +605,86 @@ impl App {
         }
     }
 
+    /// Handle a global key after egui and modal ownership have been checked.
+    fn handle_key(&mut self, logical_key: &Key, exit: &mut impl FnMut()) {
+        // Explorer's egui handler owns these keys while its section is open.
+        // In particular, arrows must not also seek the game underneath it.
+        if self.session.open_panel_section() == PanelSection::Explorer
+            && matches!(
+                logical_key,
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
+            )
+        {
+            return;
+        }
+        match logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.attempt(After::Quit, exit);
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.session.rewind();
+                self.request_redraw();
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.session.forward();
+                self.request_redraw();
+            }
+            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::Home) => {
+                self.session.seek(0);
+                self.request_redraw();
+            }
+            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::End) => {
+                self.session.seek(usize::MAX);
+                self.request_redraw();
+            }
+            Key::Named(NamedKey::Space) | Key::Named(NamedKey::Backspace) => {
+                self.session.undo();
+                self.request_redraw();
+            }
+            Key::Character(text) => {
+                for command in text.chars() {
+                    match command {
+                        'u' => self.session.undo(),
+                        'f' | '0' => self.session.fit(),
+                        'v' => self.session.flip(),
+                        'c' => self.session.toggles.coordinates = !self.session.toggles.coordinates,
+                        'm' => {
+                            self.session.toggles.move_numbers = !self.session.toggles.move_numbers
+                        }
+                        'l' => self.session.toggles.last_move = !self.session.toggles.last_move,
+                        'w' => self.session.toggles.win_line = !self.session.toggles.win_line,
+                        '+' | '=' => {
+                            self.session.follows_window = false;
+                            self.session.camera.zoom_about(
+                                self.session.viewport,
+                                [
+                                    self.session.viewport.width * 0.5,
+                                    self.session.viewport.height * 0.5,
+                                ],
+                                1.15,
+                            );
+                        }
+                        '-' => {
+                            self.session.follows_window = false;
+                            self.session.camera.zoom_about(
+                                self.session.viewport,
+                                [
+                                    self.session.viewport.width * 0.5,
+                                    self.session.viewport.height * 0.5,
+                                ],
+                                1.0 / 1.15,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                self.session.update_hover();
+                self.request_redraw();
+            }
+            _ => {}
+        }
+    }
+
     fn configure(&mut self, window: Arc<Window>) -> Result<State> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -1008,80 +1088,7 @@ impl ApplicationHandler<AppEvent> for App {
                 if event.state != ElementState::Pressed || wants_keyboard || modal {
                     return;
                 }
-                match &event.logical_key {
-                    Key::Named(NamedKey::Escape) => {
-                        self.attempt(After::Quit, &mut || event_loop.exit());
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        self.session.rewind();
-                        self.request_redraw();
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        self.session.forward();
-                        self.request_redraw();
-                    }
-                    Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::Home) => {
-                        self.session.seek(0);
-                        self.request_redraw();
-                    }
-                    Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::End) => {
-                        self.session.seek(usize::MAX);
-                        self.request_redraw();
-                    }
-                    Key::Named(NamedKey::Space) | Key::Named(NamedKey::Backspace) => {
-                        self.session.undo();
-                        self.request_redraw();
-                    }
-                    Key::Character(text) => {
-                        for command in text.chars() {
-                            match command {
-                                'u' => self.session.undo(),
-                                'f' | '0' => self.session.fit(),
-                                'v' => self.session.flip(),
-                                'c' => {
-                                    self.session.toggles.coordinates =
-                                        !self.session.toggles.coordinates
-                                }
-                                'm' => {
-                                    self.session.toggles.move_numbers =
-                                        !self.session.toggles.move_numbers
-                                }
-                                'l' => {
-                                    self.session.toggles.last_move = !self.session.toggles.last_move
-                                }
-                                'w' => {
-                                    self.session.toggles.win_line = !self.session.toggles.win_line
-                                }
-                                '+' | '=' => {
-                                    self.session.follows_window = false;
-                                    self.session.camera.zoom_about(
-                                        self.session.viewport,
-                                        [
-                                            self.session.viewport.width * 0.5,
-                                            self.session.viewport.height * 0.5,
-                                        ],
-                                        1.15,
-                                    );
-                                }
-                                '-' => {
-                                    self.session.follows_window = false;
-                                    self.session.camera.zoom_about(
-                                        self.session.viewport,
-                                        [
-                                            self.session.viewport.width * 0.5,
-                                            self.session.viewport.height * 0.5,
-                                        ],
-                                        1.0 / 1.15,
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                        self.session.update_hover();
-                        self.request_redraw();
-                    }
-                    _ => {}
-                }
+                self.handle_key(&event.logical_key, &mut || event_loop.exit());
             }
             WindowEvent::RedrawRequested => {
                 self.redraw_pending = false;
