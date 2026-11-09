@@ -221,6 +221,12 @@ impl App {
 
     fn prepare_wait(&mut self) -> ControlFlow {
         self.reconcile_ai();
+        // Input dirtying egui must not wait for an older animation or cursor
+        // deadline: request_redraw() schedules the event that wakes this Wait.
+        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
+            self.request_redraw();
+            return ControlFlow::Wait;
+        }
         if let Some(wake) = self.wake_at {
             if std::time::Instant::now() >= wake {
                 self.wake_at = None;
@@ -228,9 +234,6 @@ impl App {
             } else {
                 return ControlFlow::WaitUntil(wake);
             }
-        }
-        if !self.closing && (self.dirty || self.frame_limit.is_some()) {
-            self.request_redraw();
         }
         ControlFlow::Wait
     }

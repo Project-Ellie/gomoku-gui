@@ -200,6 +200,16 @@ fn stale_decision_panic_rejects_replacement_before_worker_exit() {
 }
 
 #[test]
+fn dirty_interface_redraw_is_not_deferred_by_a_future_wake() {
+    let mut app = app();
+    app.dirty = true;
+    app.wake_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+
+    assert_eq!(app.prepare_wait(), ControlFlow::Wait);
+    assert!(app.dirty, "the redraw request remains outstanding");
+}
+
+#[test]
 fn headless_construction_does_not_start_worker_or_reserve_a_flight() {
     let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
     app.session.place(gomoku_core::point(7, 7).unwrap());

@@ -253,6 +253,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             // before any section runs, so headers and uncoloured labels read
             // on the grey panel.
             ui.visuals_mut().override_text_color = Some(PANEL_INK);
+            ui.visuals_mut().extreme_bg_color = PANEL_FIELD;
             let header_size = ui
                 .style()
                 .text_styles
@@ -2022,6 +2023,69 @@ mod tests {
                 });
             },
         )
+    }
+
+    #[test]
+    fn explorer_text_edit_has_readable_contrast_while_focused() {
+        fn contrast_ratio(ink: Color32, paper: Color32) -> f32 {
+            fn luminance(color: Color32) -> f32 {
+                fn linear(channel: u8) -> f32 {
+                    let srgb = f32::from(channel) / 255.0;
+                    if srgb <= 0.04045 {
+                        srgb / 12.92
+                    } else {
+                        ((srgb + 0.055) / 1.055).powf(2.4)
+                    }
+                }
+                0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+            }
+            let light = luminance(ink).max(luminance(paper));
+            let dark = luminance(ink).min(luminance(paper));
+            (light + 0.05) / (dark + 0.05)
+        }
+
+        let context = egui::Context::default();
+        let mut session = explorer_session();
+        session.set_explorer_filter("needle".into());
+        let requests = std::cell::Cell::new(Requests::default());
+        explorer_frame(&context, &mut session, &requests, vec![], None)
+            .textures_delta
+            .clear();
+        context.memory_mut(|memory| {
+            memory.request_focus(egui::Id::new("explorer-filter"));
+        });
+        let mut output = explorer_frame(&context, &mut session, &requests, vec![], None);
+        output.textures_delta.clear();
+
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "needle" => Some(text),
+                _ => None,
+            })
+            .expect("the focused filter draws its text");
+        let centre = text.pos + text.galley.rect.center().to_vec2();
+        let fill = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill != Color32::TRANSPARENT && rect.rect.contains(centre) =>
+                {
+                    Some(rect)
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+            .expect("the filter text sits on its edit fill");
+        let ink = text.galley.job.sections[0].format.color;
+        assert!(
+            contrast_ratio(ink, fill.fill) >= 4.5,
+            "focused edit is {ink:?} on {:?}; contrast {:.2}:1",
+            fill.fill,
+            contrast_ratio(ink, fill.fill),
+        );
     }
 
     #[test]
