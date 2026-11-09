@@ -21,12 +21,16 @@ pub struct Requests {
     pub open: bool,
     /// Ask for a puzzle file and load it.
     pub open_puzzle: bool,
+    /// Ask for a corpus folder and open it in the Lab Explorer.
+    pub open_explorer: bool,
     /// Save to the open file, or ask for one.
     pub save: bool,
     /// Ask for a file and save to it.
     pub save_as: bool,
     /// Close the application.
     pub quit: bool,
+    /// Load the record with this index from the Explorer into the board.
+    pub explorer_select: Option<usize>,
 }
 
 /// The colours of the interface.
@@ -154,6 +158,12 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     ui.close();
                 }
             });
+            ui.menu_button("Lab", |ui| {
+                if ui.button("Explorer...").clicked() {
+                    requests.open_explorer = true;
+                    ui.close();
+                }
+            });
             ui.separator();
             ui.label(RichText::new(status_line(session)).color(MUTED));
         });
@@ -186,9 +196,28 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         .size_range(180.0..=420.0)
         .frame(Frame::NONE.fill(PANEL).inner_margin(8.0))
         .show(ui, |ui| {
-            seats(ui, session);
+            // The sections are collapsible, so each draws into its own child
+            // region. The panel ink is set once here, before any section runs,
+            // so that headers and uncoloured labels read on the grey panel.
+            ui.visuals_mut().override_text_color = Some(PANEL_INK);
+            egui::CollapsingHeader::new(RichText::new("Players").color(PANEL_INK))
+                .default_open(true)
+                .show_unindented(ui, |ui| seats(ui, session));
             ui.separator();
-            move_list(ui, session);
+            egui::CollapsingHeader::new(RichText::new("Moves").color(PANEL_INK))
+                .default_open(true)
+                .show_unindented(ui, |ui| move_list(ui, session));
+            // The Explorer is one section in the accordion: it appears when a
+            // corpus is open, and the move list stays reachable alongside it.
+            if session.explorer().is_some() {
+                ui.separator();
+                egui::CollapsingHeader::new(RichText::new("Lab Explorer").color(PANEL_INK))
+                    .default_open(true)
+                    .show_unindented(ui, |ui| {
+                        requests.explorer_select =
+                            crate::explorer::draw(ui, session).explorer_select;
+                    });
+            }
             recents(ui, session);
         });
     session.panel_width = panel.response.rect.width();
@@ -418,8 +447,8 @@ fn seats(ui: &mut egui::Ui, session: &mut Session) {
 }
 
 /// The list of moves, one row each, with a click to look at that position.
+/// The section header above it carries the title.
 fn move_list(ui: &mut egui::Ui, session: &mut Session) {
-    ui.label(RichText::new("Moves").color(PANEL_INK));
     if session.game().outcome() != Outcome::Ongoing {
         ui.label(RichText::new(format!("Live result: {}", status_line(session))).color(PANEL_INK));
     }
@@ -1780,6 +1809,43 @@ mod tests {
     fn parse_puzzle_index_accepts_valid_indices() {
         assert_eq!(parse_puzzle_index("0", 3), Some(0));
         assert_eq!(parse_puzzle_index("2", 3), Some(2));
+    }
+
+    #[test]
+    fn explorer_rows_emit_selection_requests() {
+        use gomoku_core::{IndexEntry, RecordKind};
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.open_explorer_corpus(vec![
+            IndexEntry {
+                index: 0,
+                kind: RecordKind::Game,
+                name: "one.psq".into(),
+                path: PathBuf::from("one.psq"),
+            },
+            IndexEntry {
+                index: 1,
+                kind: RecordKind::Game,
+                name: "two.psq".into(),
+                path: PathBuf::from("two.psq"),
+            },
+        ]);
+        let requests = std::cell::Cell::new(Requests::default());
+        let frame = |events: Vec<egui::Event>| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| requests.set(draw(ui, &mut session)),
+            )
+        };
+        click_text("    1 two.psq", frame);
+        assert_eq!(requests.get().explorer_select, Some(1));
     }
 
     #[test]

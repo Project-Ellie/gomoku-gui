@@ -9,6 +9,7 @@ mod ai_worker;
 mod app;
 mod audio;
 mod camera;
+mod explorer;
 mod preview;
 mod render;
 pub mod session;

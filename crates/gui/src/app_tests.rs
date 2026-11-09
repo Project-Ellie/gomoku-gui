@@ -233,7 +233,7 @@ fn frame(
         },
         |ui| requests = ui::draw(ui, &mut app.session),
     );
-    app.run_requests(requests, pick, exit);
+    app.run_requests(requests, pick, &mut |_| None, exit);
     output
 }
 
@@ -319,6 +319,7 @@ fn save_first_existing_and_untitled_execute_pending_quit_exactly_once() {
                 ..Default::default()
             },
             &mut pick,
+            &mut |_| None,
             &mut exit,
         );
         let context = save_first(&mut app, &mut pick, &mut exit);
@@ -335,6 +336,7 @@ fn save_first_existing_and_untitled_execute_pending_quit_exactly_once() {
                 ..Default::default()
             },
             &mut pick,
+            &mut |_| None,
             &mut exit,
         );
         assert_eq!(exits, 1);
@@ -365,6 +367,7 @@ fn save_first_existing_and_untitled_start_new_game_without_replaying_it() {
                 ..Default::default()
             },
             &mut pick,
+            &mut |_| None,
             &mut exit,
         );
         let context = save_first(&mut app, &mut pick, &mut exit);
@@ -382,6 +385,7 @@ fn save_first_existing_and_untitled_start_new_game_without_replaying_it() {
                 ..Default::default()
             },
             &mut pick,
+            &mut |_| None,
             &mut exit,
         );
         assert_eq!(
@@ -411,7 +415,7 @@ fn save_first_cancel_preserves_game_and_never_replays_pending_action() {
         let expected = app.session.game().clone();
         let mut exits = 0;
         let mut exit = || exits += 1;
-        app.run_requests(requests, &mut |_| None, &mut exit);
+        app.run_requests(requests, &mut |_| None, &mut |_| None, &mut exit);
         let context = save_first(&mut app, &mut |_| None, &mut exit);
         assert_eq!(app.session.game(), &expected);
         assert!(app.session.changed());
@@ -427,6 +431,7 @@ fn save_first_cancel_preserves_game_and_never_replays_pending_action() {
                 ..Default::default()
             },
             &mut |_| Some(files.path("later.json")),
+            &mut |_| None,
             &mut exit,
         );
         assert_eq!(exits, 0);
@@ -469,6 +474,7 @@ fn save_first_existing_and_untitled_failure_keeps_error_and_never_continues() {
                     ..Default::default()
                 },
                 &mut pick,
+                &mut |_| None,
                 &mut exit,
             );
             let context = save_first(&mut app, &mut pick, &mut exit);
@@ -499,6 +505,7 @@ fn save_first_existing_and_untitled_failure_keeps_error_and_never_continues() {
                     ..Default::default()
                 },
                 &mut pick,
+                &mut |_| None,
                 &mut exit,
             );
             assert_eq!(exits, 0);
@@ -536,19 +543,21 @@ fn explicit_save_as_uses_new_destination_and_completes_pending_quit_once() {
             ..Default::default()
         },
         &mut pick,
+        &mut |_| None,
         &mut exit,
     );
     assert!(app.closing);
     assert!(!app.session.changed());
     assert_eq!(gomoku_core::load(&original).unwrap(), original_game);
     assert_eq!(gomoku_core::load(&destination).unwrap(), expected);
-    app.run_requests(Requests::default(), &mut pick, &mut exit);
+    app.run_requests(Requests::default(), &mut pick, &mut |_| None, &mut exit);
     app.run_requests(
         Requests {
             save: true,
             ..Default::default()
         },
         &mut pick,
+        &mut |_| None,
         &mut exit,
     );
     assert_eq!(exits, 1);
@@ -584,6 +593,7 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
             ..Default::default()
         },
         &mut no_picker,
+        &mut |_| None,
         &mut exit,
     );
     click_button(
@@ -617,6 +627,7 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
             ..Default::default()
         },
         &mut no_picker,
+        &mut |_| None,
         &mut exit,
     );
     files.write_settings(&mut saved);
@@ -631,12 +642,73 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
             ..Default::default()
         },
         &mut no_picker,
+        &mut |_| None,
         &mut exit,
     );
     files.write_settings(&mut pristine);
     assert!(!recovery.exists());
     assert!(!state.exists());
     assert_eq!(exits, 3);
+}
+
+/// A corpus directory holding one tiny psq game record.
+fn psq_corpus(files: &Files) -> PathBuf {
+    let corpus = files.path("corpus");
+    std::fs::create_dir(&corpus).unwrap();
+    std::fs::write(
+        corpus.join("tiny.psq"),
+        "Piskvorky 15x15, 0:0, 0\n8,8,0\n7,7,0\n9,9,0\n6,6,0\n10,7,0\n\
+         BlackPlayer\nWhitePlayer\n-1\n1,Freestyle15_2\n",
+    )
+    .unwrap();
+    corpus
+}
+
+#[test]
+fn explorer_request_reaches_session() {
+    let files = Files::new("explorer-request");
+    let corpus = psq_corpus(&files);
+    let mut app = app();
+    let requests = ui::Requests {
+        open_explorer: true,
+        ..Default::default()
+    };
+    let mut pick_folder = |_: Option<&Path>| Some(corpus.clone());
+    let mut exits = 0;
+    app.run_requests(requests, &mut |_| None, &mut pick_folder, &mut || {
+        exits += 1
+    });
+    assert!(app.session.explorer().is_some());
+    assert_eq!(app.session.explorer().unwrap().records.len(), 1);
+    assert_eq!(exits, 0);
+}
+
+#[test]
+fn explorer_selection_loads_the_record_onto_the_board() {
+    let files = Files::new("explorer-select");
+    let corpus = psq_corpus(&files);
+    let mut app = app();
+    let requests = ui::Requests {
+        open_explorer: true,
+        ..Default::default()
+    };
+    let mut pick_folder = |_: Option<&Path>| Some(corpus.clone());
+    app.run_requests(requests, &mut |_| None, &mut pick_folder, &mut || {});
+    app.run_requests(
+        ui::Requests {
+            explorer_select: Some(0),
+            ..Default::default()
+        },
+        &mut |_| None,
+        &mut |_| None,
+        &mut || {},
+    );
+    assert_eq!(app.session.game().len(), 5);
+    assert!(
+        !app.session.changed(),
+        "a loaded record has no unsaved changes"
+    );
+    assert_eq!(app.session.explorer().unwrap().selected, Some(0));
 }
 
 /// Slow acceptance through the actual App scheduler and owned worker sink.

@@ -284,6 +284,74 @@ impl Session {
         self.explorer.as_ref()
     }
 
+    /// Keep the Explorer filter text the user typed. A no-op without a corpus.
+    pub fn set_explorer_filter(&mut self, filter: String) {
+        if let Some(explorer) = &mut self.explorer {
+            explorer.filter = filter;
+        }
+    }
+
+    /// Keep the Explorer jump-to-index text the user typed. A no-op without a
+    /// corpus.
+    pub fn set_explorer_jump(&mut self, jump: String) {
+        if let Some(explorer) = &mut self.explorer {
+            explorer.jump = jump;
+        }
+    }
+
+    /// The record index the jump field names, when it is valid.
+    ///
+    /// # Errors
+    /// An error message when no corpus is open, the text is not a number, or
+    /// the number is outside the corpus.
+    pub fn explorer_jump_index(&self) -> Result<usize, String> {
+        let Some(explorer) = self.explorer.as_ref() else {
+            return Err("no explorer".to_string());
+        };
+        let index: usize = explorer
+            .jump
+            .parse()
+            .map_err(|_| "not a number".to_string())?;
+        if index >= explorer.records.len() {
+            return Err("index out of range".to_string());
+        }
+        Ok(index)
+    }
+
+    /// Load a record from the Explorer into the board.
+    ///
+    /// The record comes through the registry, so whatever format it is in is
+    /// the registry's concern. Only a game can go on the board; anything else
+    /// is reported and the sitting is kept. An index outside the corpus is
+    /// ignored.
+    pub fn load_explorer_record(&mut self, registry: &gomoku_core::Registry, index: usize) {
+        let Some(entry) = self
+            .explorer
+            .as_ref()
+            .and_then(|explorer| explorer.records.get(index))
+        else {
+            return;
+        };
+        let path = entry.path.clone();
+        match registry.open(&path) {
+            Ok(gomoku_core::OpenedThing::SingleRecord(gomoku_core::RecordUnit::Game(game))) => {
+                self.pause_automation();
+                self.dismiss_dialog();
+                self.game = game;
+                self.path = None;
+                self.puzzle_cursor = None;
+                self.revision += 1;
+                self.saved_revision = self.revision;
+                self.title_stale = true;
+                if let Some(explorer) = &mut self.explorer {
+                    explorer.selected = Some(index);
+                }
+            }
+            Ok(_) => self.fail("The record is not a game", &"expected a game record"),
+            Err(error) => self.fail("The record could not be loaded", &error),
+        }
+    }
+
     /// Install startup/demo content before delivery is connected.
     pub(crate) fn install_game(&mut self, game: Game) {
         self.dismiss_dialog();
@@ -1860,5 +1928,76 @@ mod tests {
         session.open_explorer_corpus(entries.clone());
         assert!(session.explorer().is_some());
         assert_eq!(session.explorer().unwrap().records.len(), 1);
+    }
+
+    #[test]
+    fn explorer_filter_and_jump_are_kept_and_validated() {
+        use gomoku_core::{IndexEntry, RecordKind};
+        let mut session = Session::new(&Settings::default());
+        // Without a corpus the edits are dropped and the jump has no answer.
+        session.set_explorer_filter("tiny".into());
+        session.set_explorer_jump("0".into());
+        assert_eq!(
+            session.explorer_jump_index(),
+            Err("no explorer".to_string())
+        );
+        let entries = (0..3)
+            .map(|index| IndexEntry {
+                index,
+                kind: RecordKind::Game,
+                name: format!("game-{index}.psq"),
+                path: std::env::temp_dir().join(format!("game-{index}.psq")),
+            })
+            .collect();
+        session.open_explorer_corpus(entries);
+        session.set_explorer_filter("game-1".into());
+        session.set_explorer_jump("2".into());
+        assert_eq!(session.explorer().unwrap().filter, "game-1");
+        assert_eq!(session.explorer_jump_index(), Ok(2));
+        session.set_explorer_jump("3".into());
+        assert_eq!(
+            session.explorer_jump_index(),
+            Err("index out of range".to_string())
+        );
+        session.set_explorer_jump("x".into());
+        assert_eq!(
+            session.explorer_jump_index(),
+            Err("not a number".to_string())
+        );
+    }
+
+    #[test]
+    fn explorer_record_loads_onto_the_board_and_unknowns_are_ignored() {
+        use gomoku_core::{IndexEntry, RecordKind};
+        let path = std::env::temp_dir().join(format!(
+            "gomoku-test-explorer-record-{}.psq",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "Piskvorky 15x15, 0:0, 0\n8,8,0\n7,7,0\n9,9,0\n6,6,0\n10,7,0\n\
+             BlackPlayer\nWhitePlayer\n-1\n1,Freestyle15_2\n",
+        )
+        .unwrap();
+        let registry = gomoku_core::Registry::builder()
+            .add(gomoku_core::PsqFormat)
+            .build();
+        let mut session = Session::new(&Settings::default());
+        session.open_explorer_corpus(vec![IndexEntry {
+            index: 0,
+            kind: RecordKind::Game,
+            name: "tiny.psq".into(),
+            path: path.clone(),
+        }]);
+        // An index outside the corpus is a no-op, not an error.
+        session.load_explorer_record(&registry, 9);
+        assert!(session.game().is_empty());
+        assert!(session.dialog().is_none());
+        session.load_explorer_record(&registry, 0);
+        assert_eq!(session.game().len(), 5);
+        assert!(!session.changed(), "a loaded record has no unsaved changes");
+        assert_eq!(session.explorer().unwrap().selected, Some(0));
+        assert!(!session.automation_running());
+        remove(&path);
     }
 }

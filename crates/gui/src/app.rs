@@ -47,6 +47,10 @@ pub struct App {
     // None for previews and headless construction. Started only by run().
     worker: Option<Result<Worker, String>>,
     session: Session,
+    /// The Lab Explorer format registry. The application owns it because it
+    /// is what opens corpus folders and records; the only format so far is
+    /// psq.
+    registry: gomoku_core::Registry,
     audio: Option<Audio>,
     state: Option<State>,
     /// Where the left button went down, if it is down.
@@ -102,6 +106,9 @@ impl App {
         App {
             worker: None,
             session,
+            registry: gomoku_core::Registry::builder()
+                .add(gomoku_core::PsqFormat)
+                .build(),
             audio,
             state: None,
             press: None,
@@ -315,6 +322,44 @@ impl App {
         self.request_redraw();
     }
 
+    /// Ask for a corpus folder and open it in the Explorer.
+    ///
+    /// The folder picker is injectable, like the save picker, so that
+    /// headless tests never open a native dialog.
+    fn ask_to_open_explorer(
+        &mut self,
+        pick_folder: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+    ) {
+        self.session.begin_native_dialog();
+        let directory = self.session.last_directory.clone();
+        let path = pick_folder(directory.as_deref());
+        self.session.end_native_dialog();
+        if let Some(path) = path {
+            match self.registry.open(&path) {
+                Ok(gomoku_core::OpenedThing::Corpus { records, .. }) => {
+                    let entries = records
+                        .into_iter()
+                        .map(|meta| gomoku_core::IndexEntry {
+                            index: meta.index,
+                            kind: meta.kind,
+                            name: meta.name,
+                            path: meta.source,
+                        })
+                        .collect();
+                    self.session.open_explorer_corpus(entries);
+                }
+                Ok(gomoku_core::OpenedThing::SingleRecord(_)) => {
+                    self.session.fail(
+                        "The Explorer needs a folder",
+                        &"pick a folder of records, not a single file",
+                    );
+                }
+                Err(error) => self.session.fail("The folder could not be opened", &error),
+            }
+        }
+        self.request_redraw();
+    }
+
     /// Save using the same transaction for existing paths and Save As.
     fn save(
         &mut self,
@@ -339,11 +384,19 @@ impl App {
         &mut self,
         requests: Requests,
         pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+        pick_folder: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
         exit: &mut impl FnMut(),
     ) {
         if let Some(after) = self.session.take_action() {
             self.perform(after, exit);
             return;
+        }
+        if requests.open_explorer {
+            self.ask_to_open_explorer(pick_folder);
+        }
+        if let Some(index) = requests.explorer_select {
+            self.session.load_explorer_record(&self.registry, index);
+            self.request_redraw();
         }
         if requests.quit {
             self.attempt(After::Quit, exit);
@@ -516,7 +569,12 @@ impl App {
             self.session.title_stale = false;
         }
 
-        self.run_requests(requests, &mut pick_save_file, &mut || event_loop.exit());
+        self.run_requests(
+            requests,
+            &mut pick_save_file,
+            &mut pick_corpus_folder,
+            &mut || event_loop.exit(),
+        );
 
         // A frame that consumed input is never allowed to be the last
         // frame; everything else (repaint_after, request_redraw) has
@@ -652,6 +710,16 @@ fn pick_save_file(directory: Option<&Path>) -> Option<PathBuf> {
         dialog = dialog.set_directory(directory);
     }
     dialog.save_file()
+}
+
+/// The native corpus-folder-picker boundary; never reached by headless app
+/// tests.
+fn pick_corpus_folder(directory: Option<&Path>) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title("Open a corpus folder");
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.pick_folder()
 }
 
 fn create_multisampled(
