@@ -179,6 +179,10 @@ pub struct Globals {
 }
 
 /// One stone.
+///
+/// The 44-byte instance wire format is `centre` at byte 0, `colour` at byte 8,
+/// `params` at byte 24, and `scale` at byte 40. Both stone and shadow vertex
+/// layouts below describe these same offsets to WGSL.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct StoneInstance {
@@ -189,6 +193,8 @@ pub struct StoneInstance {
     /// Texture seed, material kind, roughness cap (0.0 for the default), limb
     /// darkening (0.0 keeps the outer ring fully bright).
     pub params: [f32; 4],
+    /// Uniform lens and shadow scale; 1.0 is a played stone.
+    pub scale: f32,
 }
 
 /// A stone material.
@@ -458,6 +464,11 @@ fn vertex_layouts() -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
                     format: wgpu::VertexFormat::Float32x4,
                     offset: 24,
                     shader_location: 4,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 40,
+                    shader_location: 5,
                 },
             ],
         }),
@@ -887,16 +898,23 @@ impl Renderer {
                 module: &shadow_module,
                 entry_point: Some("vs_shadow"),
                 compilation_options: Default::default(),
-                // Only the instance centre is read; the quad comes from the
-                // vertex index.
+                // The quad comes from the vertex index; the instance supplies
+                // its centre and scale.
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<StoneInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: 0,
-                        shader_location: 2,
-                    }],
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 40,
+                            shader_location: 5,
+                        },
+                    ],
                 })],
             },
             primitive: wgpu::PrimitiveState {

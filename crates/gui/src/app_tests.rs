@@ -168,6 +168,48 @@ fn exit_flushes_a_pending_settings_save() {
 }
 
 #[test]
+fn window_position_round_trips_through_settings_into_window_attributes() {
+    let files = Files::new("window-position-round-trip");
+    let mut previous = app();
+    previous.record_window_position(winit::dpi::PhysicalPosition::new(120, 64), 1.0);
+    files.write_settings(&mut previous);
+
+    let loaded = gomoku_core::load_settings(&files.path("settings.toml")).settings;
+    assert_eq!(loaded.window.x, Some(120.0));
+    assert_eq!(loaded.window.y, Some(64.0));
+
+    let restored = App::new(loaded, gomoku_core::Game::new(), None, None);
+    let attributes = restored.window_attributes();
+    let Some(winit::dpi::Position::Logical(position)) = attributes.position else {
+        panic!("a complete saved position is restored in logical pixels");
+    };
+    assert_eq!(position.x, 120.0);
+    assert_eq!(position.y, 64.0);
+}
+
+#[test]
+fn window_moves_are_recorded_in_logical_pixels() {
+    let mut app = app();
+
+    app.record_window_position(winit::dpi::PhysicalPosition::new(240, 128), 2.0);
+
+    assert_eq!(app.geometry.x, Some(120.0));
+    assert_eq!(app.geometry.y, Some(64.0));
+}
+
+#[test]
+fn incomplete_saved_window_positions_are_not_restored() {
+    for (x, y) in [(None, None), (Some(120.0), None), (None, Some(64.0))] {
+        let mut settings = Settings::default();
+        settings.window.x = x;
+        settings.window.y = y;
+        let app = App::new(settings, gomoku_core::Game::new(), None, None);
+
+        assert_eq!(app.window_attributes().position, None);
+    }
+}
+
+#[test]
 fn idle_worker_completion_requests_redraw_without_pointer_input() {
     use std::sync::mpsc;
     let mut app = app();
@@ -677,7 +719,7 @@ fn reopening_a_vanished_corpus_reports_the_error() {
 }
 
 #[test]
-fn explorer_selection_loads_the_record_onto_the_board() {
+fn explorer_single_click_preview_loads_the_record_without_leaving_the_list() {
     let files = Files::new("explorer-select");
     let corpus = psq_corpus(&files);
     let previous = files.path("previous-load");
@@ -705,6 +747,10 @@ fn explorer_selection_loads_the_record_onto_the_board() {
         "a loaded record has no unsaved changes"
     );
     assert_eq!(app.session.explorer().unwrap().selected, Some(0));
+    assert_eq!(
+        app.session.open_panel_section(),
+        crate::session::PanelSection::Explorer
+    );
     assert_eq!(app.session.last_corpus_directory, Some(corpus));
 }
 
@@ -1190,4 +1236,97 @@ fn undo_and_release_restart_thinking() {
     app.prepare_wait();
     let reply = rx.recv_timeout(std::time::Duration::from_secs(30));
     assert!(reply.is_ok(), "the AI starts thinking again after release");
+}
+
+#[test]
+fn visible_stones_add_small_alternating_proof_stones_only_when_enabled() {
+    let mut session = Session::new(&Settings::default());
+    let played = gomoku_core::point(0, 0).unwrap();
+    session.place(played);
+    let line = [
+        gomoku_core::point(6, 6).unwrap(),
+        gomoku_core::point(7, 7).unwrap(),
+        gomoku_core::point(8, 8).unwrap(),
+    ];
+    session.threat_cache = Some(crate::session::ThreatSequenceCache {
+        position: session.game().board_snapshot(),
+        proof: Some(engine::Proof {
+            winner: gomoku_core::Color::White,
+            line: line.to_vec(),
+        }),
+    });
+
+    let without_proof = visible_stone_instances(&session);
+    assert_eq!(without_proof.len(), 1, "the toggle starts off");
+    assert_eq!(without_proof[0].scale, 1.0);
+
+    session.threat_sequences = true;
+    let stones = visible_stone_instances(&session);
+    assert_eq!(stones.len(), 1 + line.len());
+    let expected = [
+        (played, SLATE, 1.0),
+        (line[0], SHELL, 0.5),
+        (line[1], SLATE, 0.5),
+        (line[2], SHELL, 0.5),
+    ];
+    for (stone, (point, material, scale)) in stones.iter().zip(expected) {
+        assert_eq!(stone.centre, [point.col() as f32, point.row() as f32]);
+        assert_eq!(
+            stone.colour,
+            [
+                material.albedo[0],
+                material.albedo[1],
+                material.albedo[2],
+                material.roughness,
+            ]
+        );
+        assert_eq!(stone.params[1], material.kind);
+        assert_eq!(stone.scale, scale);
+    }
+}
+
+#[test]
+fn the_activating_click_is_swallowed_but_the_next_one_lands() {
+    use winit::event::ElementState::{Pressed, Released};
+    let start = std::time::Instant::now();
+    let mut guard = FocusClickGuard::default();
+
+    guard.focused(true, start);
+    assert!(guard.swallows(Pressed, start), "the focus-gaining press");
+    assert!(guard.swallows(Released, start), "and its release");
+
+    let later = start + std::time::Duration::from_millis(80);
+    assert!(
+        !guard.swallows(Pressed, later),
+        "the next deliberate press plays a stone"
+    );
+    assert!(!guard.swallows(Released, later));
+}
+
+#[test]
+fn a_clickless_focus_change_cannot_eat_a_later_click() {
+    use winit::event::ElementState::Pressed;
+    let start = std::time::Instant::now();
+    let mut guard = FocusClickGuard::default();
+
+    guard.focused(true, start); // Cmd-Tab back, no click involved
+    let much_later = start + FOCUS_CLICK_GUARD + std::time::Duration::from_millis(50);
+    assert!(
+        !guard.swallows(Pressed, much_later),
+        "a press long after focus is a real click"
+    );
+}
+
+#[test]
+fn losing_focus_rearms_the_guard() {
+    use winit::event::ElementState::Pressed;
+    let start = std::time::Instant::now();
+    let mut guard = FocusClickGuard::default();
+
+    guard.focused(true, start);
+    guard.focused(false, start);
+    assert!(
+        !guard.swallows(Pressed, start),
+        "the defocused window takes no swallow state with it"
+    );
 }

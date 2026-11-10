@@ -46,6 +46,20 @@ const PUZZLE_CURSOR: Color32 = Color32::from_rgb(50, 232, 90);
 const SLATE_MARK: Color32 = Color32::from_rgb(22, 22, 26);
 /// The colour of a white stone in the move list.
 const SHELL_MARK: Color32 = Color32::from_rgb(246, 246, 250);
+/// The headline evaluation is deliberately larger than any section header.
+const POSITION_VALUE_FONT_SIZE: f32 = 36.0;
+/// Breathing room above and below the headline evaluation.
+const POSITION_VALUE_VERTICAL_SPACE: f32 = 16.0;
+
+/// Format the side-to-move evaluation with an explicit sign and a true minus.
+fn position_value_text(value: f32) -> String {
+    if value < 0.0 {
+        format!("−{:.2}", value.abs())
+    } else {
+        format!("+{value:.2}")
+    }
+}
+
 /// A section body's shapes in the paint list.
 type PanelBodyPaint = (
     PanelSection,
@@ -301,6 +315,17 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             // theme, so no section needs its own dark-theme colour corrections.
             let header_size = SECTION_HEADER_FONT_SIZE;
             let mut body_paints = Vec::new();
+            if let Some(value) = session.position_value {
+                ui.add_space(POSITION_VALUE_VERTICAL_SPACE);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(position_value_text(value))
+                            .font(crate::theme::bold(POSITION_VALUE_FONT_SIZE))
+                            .color(PANEL_INK),
+                    );
+                });
+                ui.add_space(POSITION_VALUE_VERTICAL_SPACE);
+            }
             if panel_section_header(ui, session, PanelSection::Players, "Players", header_size) {
                 body_paints.push(paint_panel_body(ui, PanelSection::Players, |ui| {
                     seats(ui, session)
@@ -784,12 +809,14 @@ fn recents(ui: &mut egui::Ui, session: &mut Session) {
 const BRANCH_ALTERNATIVE_FILL: u8 = 72;
 const BRANCH_ALTERNATIVE_LINE: u8 = 200;
 
+/// The hover halo shares the branch alternatives' translucent stone palette,
+/// with a lighter fill so it reads as a hint rather than a placed stone.
+const HOVER_HALO_FILL: u8 = 48;
+const HOVER_HALO_LINE: u8 = 200;
+
 /// The weakest two of the twenty shades say nothing, so they are not drawn at
 /// all: a candidate at or below this share of the strongest gets no ring.
 const POLICY_RING_FLOOR: f32 = 2.0 / 20.0;
-
-/// Neutral grey behind the black and white threat-sequence numbers.
-const THREAT_CIRCLE: Color32 = Color32::from_rgb(128, 128, 128);
 
 /// One of twenty shades of green for the policy overlay. The value is
 /// relative to the strongest candidate: 1.0 is a deep, saturated green and
@@ -799,9 +826,8 @@ fn policy_colour(value: f32) -> Color32 {
     egui::ecolor::Hsva::new(0.38, 0.30 + 0.65 * v, 0.95 - 0.45 * v, 0.30 + 0.55 * v).into()
 }
 
-/// The ghost stone for an alternative continuation: `alpha` for the fill,
-/// `BRANCH_ALTERNATIVE_LINE` for the outline.
-fn branch_alternative_colour(side: Color, alpha: u8) -> Color32 {
+/// A translucent stone-colored overlay: `alpha` controls the fill or outline.
+fn stone_overlay_colour(side: Color, alpha: u8) -> Color32 {
     let stone = match side {
         Color::Black => SLATE_MARK,
         Color::White => SHELL_MARK,
@@ -823,8 +849,8 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     if session.branch_alternatives && session.is_branch_point() {
         let selected = session.selected_branch();
         let side = session.game().to_move();
-        let fill = branch_alternative_colour(side, BRANCH_ALTERNATIVE_FILL);
-        let line = branch_alternative_colour(side, BRANCH_ALTERNATIVE_LINE);
+        let fill = stone_overlay_colour(side, BRANCH_ALTERNATIVE_FILL);
+        let line = stone_overlay_colour(side, BRANCH_ALTERNATIVE_LINE);
         for (index, point) in session.branch_options().into_iter().enumerate() {
             let centre = to_screen([point.col() as f32, point.row() as f32]);
             let radius = ppc * 0.44 / pixels_per_point;
@@ -835,7 +861,7 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
                 Stroke::new((ppc * 0.03 / pixels_per_point).max(1.5), line),
             );
             if selected == Some(index) {
-                painter.circle_filled(centre, radius * 0.28, branch_alternative_colour(side, 255));
+                painter.circle_filled(centre, radius * 0.28, stone_overlay_colour(side, 255));
             }
         }
     }
@@ -844,11 +870,20 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     // crossing.
     if session.policy_overlay {
         if let Some(rings) = &session.policy_rings {
+            // A crossing that carries a proof stone keeps it unobstructed:
+            // the stones read as standing on top of the policy overlay.
+            let proof_points: &[engine::Move] = session
+                .threat_proof()
+                .map(|proof| proof.line.as_slice())
+                .unwrap_or(&[]);
             for (point, value) in rings {
                 if session.game().stone_at(*point).is_some() {
                     continue;
                 }
                 if *value <= POLICY_RING_FLOOR {
+                    continue;
+                }
+                if proof_points.contains(point) {
                     continue;
                 }
                 let centre = to_screen([point.col() as f32, point.row() as f32]);
@@ -861,20 +896,20 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
         }
     }
 
-    // Threat numbers sit above the policy rings when both overlays are on.
+    // The wgpu pass draws the half-size proof stones; egui adds only their
+    // numbers, in the opposite colour to each stone, above the policy rings.
     if let Some(proof) = session.threat_proof() {
         let radius = ppc * 0.47 * 0.5 / pixels_per_point;
         for (index, point) in proof.line.iter().enumerate() {
             let centre = to_screen([point.col() as f32, point.row() as f32]);
-            painter.circle_filled(centre, radius, THREAT_CIRCLE);
             let side = if index % 2 == 0 {
                 proof.winner
             } else {
                 proof.winner.other()
             };
             let ink = match side {
-                Color::Black => Color32::BLACK,
-                Color::White => Color32::WHITE,
+                Color::Black => Color32::WHITE,
+                Color::White => Color32::BLACK,
             };
             painter.text(
                 centre,
@@ -956,14 +991,19 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
         );
     }
 
-    // The intersection under the pointer, when a placement there is legal.
-    if let Some(point) = session.hover {
-        let centre = to_screen([point.col() as f32, point.row() as f32]);
+    // The pointer halo: snapped to the targeted crossing, gliding smoothly
+    // with the pointer elsewhere on the board. Its translucent fill and
+    // crisp ring follow the stone the player would place.
+    if let Some(pixel) = session.halo_centre() {
+        let centre = egui::Pos2::new(pixel[0] / pixels_per_point, pixel[1] / pixels_per_point);
+        let radius = ppc * 0.44 / pixels_per_point;
+        let side = session.game().to_move();
+        painter.circle_filled(centre, radius, stone_overlay_colour(side, HOVER_HALO_FILL));
         let width = (ppc * 0.035 / pixels_per_point).max(1.0);
         painter.circle_stroke(
             centre,
-            ppc * 0.44 / pixels_per_point,
-            Stroke::new(width, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+            radius,
+            Stroke::new(width, stone_overlay_colour(side, HOVER_HALO_LINE)),
         );
     }
 }
@@ -1735,6 +1775,49 @@ mod tests {
     }
 
     #[test]
+    fn hover_halo_follows_the_side_to_move_color() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        ui_frame(&context, &mut session, vec![])
+            .textures_delta
+            .clear();
+        let scale = context.pixels_per_point();
+        fn crossing(session: &mut Session, point: gomoku_core::Move, scale: f32) -> egui::Pos2 {
+            let pixel = session
+                .camera
+                .to_screen(session.viewport, [point.col() as f32, point.row() as f32]);
+            session.pointer = pixel;
+            egui::Pos2::new(pixel[0] / scale, pixel[1] / scale)
+        }
+        let assert_halo = |output: &egui::FullOutput, centre, stone: Color32| {
+            let fill = Color32::from_rgba_unmultiplied(stone.r(), stone.g(), stone.b(), 48);
+            let line = Color32::from_rgba_unmultiplied(stone.r(), stone.g(), stone.b(), 200);
+            assert!(
+                output.shapes.iter().any(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Circle(circle) if circle.center == centre && circle.fill == fill
+                )),
+                "the translucent halo fill is painted at the snapped crossing"
+            );
+            assert!(output.shapes.iter().any(|shape| matches!(
+                &shape.shape,
+                egui::Shape::Circle(circle) if circle.center == centre && circle.stroke.color == line
+            )), "the crisp halo ring is painted at the snapped crossing");
+        };
+
+        let centre = crossing(&mut session, gomoku_core::point(7, 7).unwrap(), scale);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert_halo(&output, centre, SLATE_MARK);
+        output.textures_delta.clear();
+
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let centre = crossing(&mut session, gomoku_core::point(8, 8).unwrap(), scale);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert_halo(&output, centre, SHELL_MARK);
+        output.textures_delta.clear();
+    }
+
+    #[test]
     fn stationary_board_hover_follows_ownership_and_never_survives_resignation() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
@@ -2219,9 +2302,18 @@ mod tests {
             ui_frame(&context, &mut session, events)
         });
         assert!(session.policy_overlay);
+        let rings = session
+            .policy_rings
+            .as_ref()
+            .expect("the opening prior points at H8");
         assert_eq!(
-            session.policy_rings, None,
-            "the flat opening prior carries no guidance"
+            rings
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).expect("not NaN"))
+                .expect("nonempty")
+                .0,
+            gomoku_core::point(7, 7).expect("inside"),
+            "enabling the overlay computes the opening prior immediately"
         );
         let mut output = ui_frame(&context, &mut session, vec![]);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
@@ -2263,9 +2355,9 @@ mod tests {
         let mut session = branched_session();
         let alternative = session.branch_options()[0];
         let fill = Color32::from_rgba_unmultiplied(246, 246, 250, 72);
-        assert_eq!(branch_alternative_colour(Color::White, 72), fill);
+        assert_eq!(stone_overlay_colour(Color::White, 72), fill);
         assert_eq!(
-            branch_alternative_colour(Color::Black, 72),
+            stone_overlay_colour(Color::Black, 72),
             Color32::from_rgba_unmultiplied(22, 22, 26, 72)
         );
         let circles = |output: &egui::FullOutput| {
@@ -2367,14 +2459,15 @@ mod tests {
     }
 
     #[test]
-    fn threat_sequence_toggle_gates_circle_painting() {
-        fn circle_count(output: &egui::FullOutput) -> usize {
+    fn threat_sequence_toggle_gates_numbers_without_grey_circles() {
+        fn proof_number_count(output: &egui::FullOutput) -> usize {
             output
                 .shapes
                 .iter()
                 .filter(|shape| {
                     matches!(&shape.shape,
-                        egui::Shape::Circle(circle) if circle.fill == THREAT_CIRCLE)
+                        egui::Shape::Text(text)
+                            if ["1", "2", "3"].contains(&text.galley.text()))
                 })
                 .count()
         }
@@ -2391,29 +2484,30 @@ mod tests {
         };
         cache_threat_proof(&mut session, proof.clone());
         let mut output = ui_frame(&context, &mut session, vec![]);
-        let count = circle_count(&output);
+        let count = proof_number_count(&output);
         output.textures_delta.clear();
         assert_eq!(count, 0, "the toggle starts off");
 
         session.threat_sequences = true;
         cache_threat_proof(&mut session, proof);
         let mut output = ui_frame(&context, &mut session, vec![]);
-        let count = circle_count(&output);
-        let radius = output.shapes.iter().find_map(|shape| match &shape.shape {
-            egui::Shape::Circle(circle) if circle.fill == THREAT_CIRCLE => Some(circle.radius),
-            _ => None,
-        });
+        let count = proof_number_count(&output);
+        let grey_circles = output
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape,
+                    egui::Shape::Circle(circle)
+                        if circle.fill == Color32::from_rgb(128, 128, 128))
+            })
+            .count();
         output.textures_delta.clear();
-        assert_eq!(count, 3, "one grey circle paints for every proof move");
-        let expected = session.camera.pixels_per_cell * 0.47 * 0.5 / context.pixels_per_point();
-        assert!(
-            (radius.unwrap() - expected).abs() < f32::EPSILON,
-            "each circle is half a stone"
-        );
+        assert_eq!(count, 3, "one number paints for every proof move");
+        assert_eq!(grey_circles, 0, "the stones belong to the wgpu pass");
     }
 
     #[test]
-    fn threat_sequence_numbers_follow_line_order_and_move_colors() {
+    fn threat_sequence_numbers_follow_line_order_with_opposite_stone_colors() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.threat_sequences = true;
@@ -2432,10 +2526,10 @@ mod tests {
 
         let mut output = ui_frame(&context, &mut session, vec![]);
         for (number, ink) in [
-            ("1", Color32::BLACK),
-            ("2", Color32::WHITE),
-            ("3", Color32::BLACK),
-            ("4", Color32::WHITE),
+            ("1", Color32::WHITE),
+            ("2", Color32::BLACK),
+            ("3", Color32::WHITE),
+            ("4", Color32::BLACK),
         ] {
             let text = output
                 .shapes
@@ -2446,39 +2540,38 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("proof move {number} is painted"));
             assert_eq!(text.galley.job.sections[0].format.color, ink);
+            let centre = text.pos + text.galley.rect.center().to_vec2();
             assert!(
-                output.shapes.iter().any(|shape| {
+                !output.shapes.iter().any(|shape| {
                     matches!(&shape.shape,
-                        egui::Shape::Circle(circle)
-                            if circle.fill == THREAT_CIRCLE
-                                && circle.center
-                                    == text.pos + text.galley.rect.center().to_vec2())
+                        egui::Shape::Circle(circle) if circle.center == centre)
                 }),
-                "proof move {number} is centered in its grey circle"
+                "proof move {number} has no egui circle under it"
             );
             assert!(
                 text.galley.job.sections[0].format.font_id.size
                     <= session.camera.pixels_per_cell * 0.47 * 0.5 / context.pixels_per_point()
                         * 1.2,
-                "the number is scaled to its tiny circle"
+                "the number is scaled to its small stone"
             );
         }
         output.textures_delta.clear();
     }
 
     #[test]
-    fn threat_circles_paint_after_policy_rings() {
+    fn threat_numbers_paint_after_policy_rings() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         let point = gomoku_core::point(8, 8).unwrap();
+        let proven = gomoku_core::point(7, 7).unwrap();
         session.policy_overlay = true;
-        session.policy_rings = Some(vec![(point, 1.0)]);
+        session.policy_rings = Some(vec![(point, 1.0), (proven, 0.9)]);
         session.threat_sequences = true;
         cache_threat_proof(
             &mut session,
             engine::Proof {
                 winner: Color::Black,
-                line: vec![point],
+                line: vec![proven],
             },
         );
 
@@ -2494,16 +2587,20 @@ mod tests {
                 egui::Shape::Circle(circle) if circle.fill == policy_colour(1.0))
         })
         .expect("the policy ring paints");
-        let threat = position(
-            &|shape| matches!(shape, egui::Shape::Circle(circle) if circle.fill == THREAT_CIRCLE),
-        )
-        .expect("the threat circle paints");
+        assert!(
+            position(&|shape| {
+                matches!(shape,
+                    egui::Shape::Circle(circle) if circle.fill == policy_colour(0.9))
+            })
+            .is_none(),
+            "no ring paints where a proof stone stands"
+        );
         let number = position(
             &|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == "1"),
         )
         .expect("the threat number paints");
         output.textures_delta.clear();
-        assert!(ring < threat && threat < number);
+        assert!(ring < number);
     }
 
     #[test]
@@ -2621,6 +2718,50 @@ mod tests {
         let mut output = ui_frame(&context, &mut session, vec![]);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.text() == "Resignation OFF")));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn position_value_is_prominent_above_the_players_header() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.position_value = Some(0.53);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let text_rect = |output: &egui::FullOutput, text: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(painted) if painted.galley.text() == text => Some((
+                        painted.galley.rect.translate(painted.pos.to_vec2()),
+                        painted.galley.job.sections[0].format.font_id.size,
+                    )),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{text} is painted"))
+        };
+        let (value_rect, value_font_size) = text_rect(&output, "+0.53");
+        let (players_rect, _) = text_rect(&output, "Players");
+        assert!(value_rect.bottom() < players_rect.top());
+        assert!(
+            players_rect.top() - value_rect.bottom() >= 12.0,
+            "the headline has generous space before the section header"
+        );
+        assert_eq!(value_font_size, 36.0);
+        let panel_left = session.viewport_points[0] + session.viewport_points[2];
+        assert!(
+            (value_rect.center().x - (panel_left + 1200.0) * 0.5).abs() < 1.0,
+            "the headline is centered in the side panel"
+        );
+        output.textures_delta.clear();
+
+        session.position_value = Some(-0.27);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        text_rect(&output, "−0.27");
+        assert!(!output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "-0.27"
+        )));
         output.textures_delta.clear();
     }
 
@@ -3455,7 +3596,7 @@ mod tests {
     }
 
     #[test]
-    fn explorer_rows_select_on_single_click_without_loading() {
+    fn explorer_rows_request_a_preview_on_single_click_without_leaving_the_list() {
         let context = egui::Context::default();
         let mut session = explorer_session();
         let requests = std::cell::Cell::new(Requests::default());
@@ -3463,12 +3604,12 @@ mod tests {
             explorer_frame(&context, &mut session, &requests, events, None)
         });
         assert_eq!(session.explorer().unwrap().selected, Some(1));
-        assert_eq!(requests.get().explorer_select, None);
-        assert!(session.game().is_empty());
+        assert_eq!(requests.get().explorer_select, Some(1));
+        assert_eq!(session.open_panel_section(), PanelSection::Explorer);
     }
 
     #[test]
-    fn explorer_rows_emit_load_requests_on_double_click() {
+    fn explorer_rows_preview_and_navigate_to_moves_on_double_click() {
         let context = egui::Context::default();
         let mut session = explorer_session();
         let requests = std::cell::Cell::new(Requests::default());
@@ -3476,8 +3617,8 @@ mod tests {
             explorer_frame(&context, &mut session, &requests, events, Some(time))
         });
         assert_eq!(requests.get().explorer_select, Some(1));
+        assert_eq!(session.explorer().unwrap().selected, Some(1));
         assert_eq!(session.open_panel_section(), PanelSection::Moves);
-        assert!(session.game().is_empty());
     }
 
     #[test]

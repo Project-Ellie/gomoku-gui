@@ -14,6 +14,7 @@ struct MeshIn {
     @location(2) centre: vec2<f32>,
     @location(3) colour: vec4<f32>,
     @location(4) params: vec4<f32>,
+    @location(5) scale: f32,
 };
 
 struct VsOut {
@@ -26,7 +27,9 @@ struct VsOut {
 
 @vertex
 fn vs_stone(in: MeshIn) -> VsOut {
-    let world = vec2<f32>(in.position.xy + in.centre);
+    // Scale only the placement. The unscaled local position and normal keep
+    // the proof markers' grain and lighting identical to the played stones.
+    let world = vec2<f32>(in.position.xy * in.scale + in.centre);
     var out: VsOut;
     out.clip = to_clip(project_board(world));
     out.normal = in.normal;

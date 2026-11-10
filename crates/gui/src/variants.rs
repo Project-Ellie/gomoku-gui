@@ -399,6 +399,7 @@ fn lone_stone(kind: f32, roughness: f32, cap: f32, limb: f32) -> Vec<StoneInstan
         ],
         // A fixed seed, so that every take shows the same grain of stone.
         params: [0.618, kind, cap, limb],
+        scale: 1.0,
     }]
 }
 

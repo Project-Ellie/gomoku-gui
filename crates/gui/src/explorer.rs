@@ -133,6 +133,9 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     .interact(egui::Sense::click());
                 if response.clicked() {
                     clicked_record = Some(record.index);
+                    // Preview through the application's usual record-loading
+                    // path, but leave the list open for the next record.
+                    requests.explorer_select = Some(record.index);
                 }
                 if here && scroll_to_selection {
                     ui.scroll_to_rect(response.rect, Some(egui::Align::Center));

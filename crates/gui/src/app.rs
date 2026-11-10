@@ -89,6 +89,42 @@ impl SettingsSave {
 }
 
 /// The application.
+/// How long after focus is regained a press still counts as the
+/// activating click and is swallowed instead of playing a stone.
+const FOCUS_CLICK_GUARD: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Swallows the click that reactivates the window so it cannot also place
+/// a stone or push a button. macOS delivers `Focused(true)` just before
+/// the activating press; that press and its release are consumed. The
+/// guard is time-boxed so a clickless focus change (Cmd-Tab) can only eat
+/// a press that lands within the same gesture.
+#[derive(Default)]
+struct FocusClickGuard {
+    gained: Option<std::time::Instant>,
+    swallow_release: bool,
+}
+
+impl FocusClickGuard {
+    fn focused(&mut self, gained: bool, now: std::time::Instant) {
+        self.gained = gained.then_some(now);
+    }
+
+    /// Whether this button event is part of the activating click and must
+    /// not be processed.
+    fn swallows(&mut self, state: ElementState, now: std::time::Instant) -> bool {
+        match state {
+            ElementState::Pressed => match self.gained.take() {
+                Some(gained) if now.duration_since(gained) < FOCUS_CLICK_GUARD => {
+                    self.swallow_release = true;
+                    true
+                }
+                _ => false,
+            },
+            ElementState::Released => std::mem::take(&mut self.swallow_release),
+        }
+    }
+}
+
 pub struct App {
     // None for previews and headless construction. Started only by run().
     worker: Option<Result<Worker, String>>,
@@ -101,6 +137,9 @@ pub struct App {
     state: Option<State>,
     /// Where the left button went down, if it is down.
     press: Option<[f32; 2]>,
+    /// The click that reactivates the window is for the window, not for
+    /// the board or a button (macOS click-through).
+    focus_click: FocusClickGuard,
     /// The currently held keyboard modifiers.
     modifiers: ModifiersState,
     /// The number of frames to draw before quitting. Used by the smoke test.
@@ -164,6 +203,7 @@ impl App {
             audio,
             state: None,
             press: None,
+            focus_click: FocusClickGuard::default(),
             modifiers: ModifiersState::empty(),
             frame_limit,
             font: None,
@@ -175,6 +215,30 @@ impl App {
             geometry,
             settings_save,
         }
+    }
+
+    fn window_attributes(&self) -> winit::window::WindowAttributes {
+        let attributes = Window::default_attributes()
+            .with_title(self.session.title())
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                self.geometry.width as f64,
+                self.geometry.height as f64,
+            ));
+        if let (Some(x), Some(y)) = (self.geometry.x, self.geometry.y) {
+            attributes.with_position(winit::dpi::LogicalPosition::new(x as f64, y as f64))
+        } else {
+            attributes
+        }
+    }
+
+    fn record_window_position(
+        &mut self,
+        position: winit::dpi::PhysicalPosition<i32>,
+        scale_factor: f64,
+    ) {
+        let logical = position.to_logical::<f32>(scale_factor);
+        self.geometry.x = Some(logical.x);
+        self.geometry.y = Some(logical.y);
     }
 
     /// Open a puzzle file before the window appears, as `--puzzle` asks.
@@ -968,7 +1032,7 @@ pub fn prepare_frame(
     // placed the view for its first frame.
     session.camera.clamp(session.viewport);
     renderer.set_globals(queue, &globals_for(session));
-    renderer.set_stones(queue, &stone_instances(session.game()));
+    renderer.set_stones(queue, &visible_stone_instances(session));
 }
 
 /// The uniform block for a session: the view, the viewport, and the materials.
@@ -1006,29 +1070,59 @@ fn globals_for(session: &Session) -> Globals {
     globals
 }
 
-/// The stones to draw, in play order.
+/// One stone with the material and per-stone grain used by the lens pipeline.
+fn stone_instance(
+    point: gomoku_core::Move,
+    colour: gomoku_core::Color,
+    index: usize,
+    scale: f32,
+) -> StoneInstance {
+    let material = match colour {
+        gomoku_core::Color::Black => SLATE,
+        gomoku_core::Color::White => SHELL,
+    };
+    // A seed per stone, so that the texture of no two stones matches.
+    let seed = ((index as f32 + 1.0) * 0.618_034).fract() * 37.0;
+    StoneInstance {
+        centre: [point.col() as f32, point.row() as f32],
+        colour: [
+            material.albedo[0],
+            material.albedo[1],
+            material.albedo[2],
+            material.roughness,
+        ],
+        params: [seed, material.kind, material.cap, material.limb],
+        scale,
+    }
+}
+
+/// The played stones to draw, in play order.
 pub fn stone_instances(game: &gomoku_core::Game) -> Vec<StoneInstance> {
     game.stones()
         .enumerate()
-        .map(|(index, (point, colour))| {
-            let material = match colour {
-                gomoku_core::Color::Black => SLATE,
-                gomoku_core::Color::White => SHELL,
-            };
-            // A seed per stone, so that the texture of no two stones matches.
-            let seed = ((index as f32 + 1.0) * 0.618_034).fract() * 37.0;
-            StoneInstance {
-                centre: [point.col() as f32, point.row() as f32],
-                colour: [
-                    material.albedo[0],
-                    material.albedo[1],
-                    material.albedo[2],
-                    material.roughness,
-                ],
-                params: [seed, material.kind, material.cap, material.limb],
-            }
-        })
+        .map(|(index, (point, colour))| stone_instance(point, colour, index, 1.0))
         .collect()
+}
+
+/// The played stones plus half-size stones for the visible certified proof.
+///
+/// The proof alternates sides from its winner, just as the numbered overlay
+/// does. Keeping this construction pure makes the GPU input testable without
+/// a graphics adapter.
+pub fn visible_stone_instances(session: &Session) -> Vec<StoneInstance> {
+    let mut stones = stone_instances(session.game());
+    if let Some(proof) = session.threat_proof() {
+        let first_proof_index = stones.len();
+        stones.extend(proof.line.iter().enumerate().map(|(index, point)| {
+            let side = if index % 2 == 0 {
+                proof.winner
+            } else {
+                proof.winner.other()
+            };
+            stone_instance(*point, side, first_proof_index + index, 0.5)
+        }));
+    }
+    stones
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -1040,13 +1134,7 @@ impl ApplicationHandler<AppEvent> for App {
         if self.state.is_some() {
             return;
         }
-        let attributes = Window::default_attributes()
-            .with_title(self.session.title())
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                self.geometry.width as f64,
-                self.geometry.height as f64,
-            ));
-        let window = match event_loop.create_window(attributes) {
+        let window = match event_loop.create_window(self.window_attributes()) {
             Ok(window) => Arc::new(window),
             Err(error) => {
                 log::error!("cannot open a window: {error}");
@@ -1074,7 +1162,23 @@ impl ApplicationHandler<AppEvent> for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        // The interface sees every event first.
+        // The interface sees every event first — except the activating
+        // click, which belongs to the window alone.
+        if let WindowEvent::MouseInput {
+            state: button_state,
+            ..
+        } = &event
+        {
+            if self
+                .focus_click
+                .swallows(*button_state, std::time::Instant::now())
+            {
+                return;
+            }
+        }
+        if let WindowEvent::Focused(gained) = &event {
+            self.focus_click.focused(*gained, std::time::Instant::now());
+        }
         if let Some(state) = &mut self.state {
             let response = state.egui_state.on_window_event(&state.window, &event);
             if response.repaint {
@@ -1124,9 +1228,16 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.request_redraw();
             }
+            WindowEvent::Focused(_) => {
+                self.request_redraw();
+            }
             WindowEvent::Moved(position) => {
-                self.geometry.x = Some(position.x as f32);
-                self.geometry.y = Some(position.y as f32);
+                let scale_factor = self
+                    .state
+                    .as_ref()
+                    .map(|state| state.window.scale_factor())
+                    .unwrap_or(1.0);
+                self.record_window_position(position, scale_factor);
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(state) = &self.state {

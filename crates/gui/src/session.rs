@@ -55,6 +55,11 @@ const THREAT_SEARCH_BUDGET: engine::SearchBudget = engine::SearchBudget {
     max_depth: 9,
 };
 
+/// The pointer must be this close to a crossing's screen-space centre for the
+/// hover halo to appear. The distance is measured in logical pixels (points),
+/// so the snap target stays the same physical size on high-DPI displays.
+const HOVER_SNAP_RADIUS_POINTS: f32 = 10.0;
+
 /// A proof (or an exhausted search) tied to the exact visible position.
 #[derive(Debug, Clone)]
 pub(crate) struct ThreatSequenceCache {
@@ -68,7 +73,8 @@ pub struct ExplorerSession {
     /// The indexed records.
     pub records: Vec<gomoku_core::IndexEntry>,
     /// The selected, highlighted record, if any. Loading it onto the board is
-    /// a separate action, triggered by arrow-key live preview, double-click, or Jump Go.
+    /// a separate action, triggered by click or arrow-key preview, double-click,
+    /// or Jump Go.
     pub selected: Option<usize>,
     /// Filter text from the user.
     pub filter: String,
@@ -205,6 +211,9 @@ pub struct Session {
     /// The policy overlay: crossings and their relative value (0..=1, relative
     /// to the strongest candidate). None hides the overlay.
     pub policy_rings: Option<Vec<(Move, f32)>>,
+    /// The baseline value for the visible position, from the side-to-move's
+    /// perspective. None when that position is terminal.
+    pub position_value: Option<f32>,
     /// True when the window title should be refreshed.
     pub title_stale: bool,
     /// The cell to mark with the puzzle-start cursor ring, if a puzzle is
@@ -270,6 +279,7 @@ impl Session {
             threat_cache: None,
             initiative_override: false,
             policy_rings: None,
+            position_value: None,
             title_stale: true,
             puzzle_cursor: None,
             viewport: crate::camera::Viewport::window(1180, 950),
@@ -296,7 +306,12 @@ impl Session {
     /// flat: every crossing weighs the same and there is nothing to point at.
     const POLICY_FLAT_EPSILON: f32 = 1e-6;
 
-    /// Compute the baseline prior for the side to move at the visible cursor.
+    /// Compute the baseline evaluation for the side to move at the visible cursor.
+    ///
+    /// The value is always retained, even when the policy overlay is off.
+    /// `mcts::EvalResult::value` is explicitly from the current player's point
+    /// of view; baseline's readout implements that contract by treating the
+    /// side to move as "own", so a positive value means the side to move is better.
     ///
     /// The overlay spreads the prior over its own range: shift by the
     /// weakest candidate, then scale by the span, so the strongest crossing
@@ -305,12 +320,41 @@ impl Session {
     /// keeps float noise from being amplified into fake rings.
     fn refresh_policy_rings(&mut self) {
         self.policy_rings = None;
-        if !self.policy_overlay
-            || (self.game.outcome() != Outcome::Ongoing && !self.game.is_rewound())
-        {
+        self.position_value = None;
+        if self.game.outcome() != Outcome::Ongoing && !self.game.is_rewound() {
             return;
         }
-        let prior = baseline::prior(&self.game.board_snapshot());
+        let board = self.game.board_snapshot();
+        let legal: Vec<_> = board.empty_moves().collect();
+        if legal.is_empty() {
+            return;
+        }
+        let mut evaluator = baseline::BaselineEvaluator::new(baseline::Device::flex());
+        let evaluation = mcts::Evaluator::evaluate(
+            &mut evaluator,
+            mcts::EvalRequest {
+                planes: engine::encode(&board),
+                legal: legal.clone(),
+            },
+        );
+        self.position_value = Some(evaluation.value);
+        if !self.policy_overlay {
+            return;
+        }
+
+        // Match baseline::prior's masked softmax and deterministic ordering,
+        // but reuse the evaluation that supplied the headline value.
+        let mut prior = mcts::masked_softmax(&evaluation.policy, &legal);
+        let center_distance = |mv: engine::Move| {
+            let row = mv.row().abs_diff(7);
+            let col = mv.col().abs_diff(7);
+            row * row + col * col
+        };
+        prior.sort_by(|(a_move, a_probability), (b_move, b_probability)| {
+            b_probability
+                .total_cmp(a_probability)
+                .then_with(|| center_distance(*a_move).cmp(&center_distance(*b_move)))
+        });
         let (Some((_, strongest)), Some((_, weakest))) =
             (prior.first().copied(), prior.last().copied())
         else {
@@ -784,17 +828,65 @@ impl Session {
 
     /// Work out which intersection the pointer is over.
     pub fn update_hover(&mut self) {
-        let cell = self.camera.intersection(self.viewport, self.pointer);
-        self.hover = cell
-            .and_then(|cell| gomoku_core::point(cell[1], cell[0]))
-            .filter(|point| {
-                self.on_board()
-                    && self.game.stone_at(*point).is_none()
-                    && self.game.can_play()
-                    && self.owner(self.game.to_move()) == SeatOwner::Human
-                    && self.unblocked()
-                    && !(self.branch_alternatives && self.branch_option_index(*point).is_some())
-            });
+        let board = self.camera.to_board(self.viewport, self.pointer);
+        let column = board[0].round();
+        let row = board[1].round();
+        let cell = if (0.0..=14.0).contains(&column) && (0.0..=14.0).contains(&row) {
+            gomoku_core::point(row as u8, column as u8)
+        } else {
+            None
+        };
+        self.hover = cell.filter(|point| {
+            let crossing = self
+                .camera
+                .to_screen(self.viewport, [point.col() as f32, point.row() as f32]);
+            let delta = [self.pointer[0] - crossing[0], self.pointer[1] - crossing[1]];
+            let radius = HOVER_SNAP_RADIUS_POINTS * self.pixels_per_point;
+            delta[0] * delta[0] + delta[1] * delta[1] <= radius * radius
+                && self.on_board()
+                && self.game.stone_at(*point).is_none()
+                && self.game.can_play()
+                && self.owner(self.game.to_move()) == SeatOwner::Human
+                && self.unblocked()
+                && !(self.branch_alternatives && self.branch_option_index(*point).is_some())
+        });
+    }
+
+    /// Where the pointer halo is drawn, in screen pixels. Near a legal
+    /// crossing the halo snaps to it (`hover`); elsewhere on the board it
+    /// glides smoothly with the pointer. None when no stone could be
+    /// placed at all (the AI's turn, a modal, a finished game), when the
+    /// pointer is off the playable area, or within the snap radius of a
+    /// crossing that is not placeable — an occupied point or a branch
+    /// ghost — where floating over the stone would mislead.
+    pub fn halo_centre(&self) -> Option<[f32; 2]> {
+        if let Some(point) = self.hover {
+            return Some(
+                self.camera
+                    .to_screen(self.viewport, [point.col() as f32, point.row() as f32]),
+            );
+        }
+        let placeable = self.game.can_play()
+            && self.owner(self.game.to_move()) == SeatOwner::Human
+            && self.unblocked();
+        if !placeable {
+            return None;
+        }
+        let board = self.camera.to_board(self.viewport, self.pointer);
+        if !(-0.5..=14.5).contains(&board[0]) || !(-0.5..=14.5).contains(&board[1]) {
+            return None;
+        }
+        let column = board[0].round();
+        let row = board[1].round();
+        if (0.0..=14.0).contains(&column) && (0.0..=14.0).contains(&row) {
+            let crossing = self.camera.to_screen(self.viewport, [column, row]);
+            let delta = [self.pointer[0] - crossing[0], self.pointer[1] - crossing[1]];
+            let radius = HOVER_SNAP_RADIUS_POINTS * self.pixels_per_point;
+            if delta[0] * delta[0] + delta[1] * delta[1] <= radius * radius {
+                return None;
+            }
+        }
+        Some(self.pointer)
     }
 
     /// Recover from an explicit autosave location, without touching global files.
@@ -1588,13 +1680,86 @@ mod tests {
         assert_eq!(session.policy_rings, expected);
     }
 
+    fn assert_current_value(session: &Session) {
+        let board = session.game().board_snapshot();
+        let legal: Vec<_> = board.empty_moves().collect();
+        let mut evaluator = baseline::BaselineEvaluator::new(baseline::Device::flex());
+        let expected = mcts::Evaluator::evaluate(
+            &mut evaluator,
+            mcts::EvalRequest {
+                planes: engine::encode(&board),
+                legal,
+            },
+        )
+        .value;
+        assert_eq!(session.position_value, Some(expected));
+    }
+
     #[test]
-    fn a_flat_opening_prior_paints_no_rings() {
+    fn position_value_tracks_commit_seek_and_undo_with_policy_overlay_off() {
+        let mut session = Session::new(&Settings::default());
+        assert!(!session.policy_overlay);
+        assert_eq!(session.policy_rings, None);
+        assert_current_value(&session);
+
+        session.place_now(gomoku_core::point(7, 7).unwrap());
+        assert_current_value(&session);
+        session.place_now(gomoku_core::point(7, 8).unwrap());
+        assert_current_value(&session);
+
+        session.undo();
+        assert_current_value(&session);
+        session.place_now(gomoku_core::point(7, 8).unwrap());
+        session.seek(0);
+        assert_current_value(&session);
+        session.forward();
+        assert_current_value(&session);
+        session.seek(usize::MAX);
+        assert_current_value(&session);
+        assert_eq!(session.policy_rings, None);
+    }
+
+    #[test]
+    fn position_value_clears_on_a_terminal_position() {
+        let mut session = Session::new(&Settings::default());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        assert!(
+            session.apply_ai_reply(request.reply(Ok(crate::ai::AiPlayerDecision {
+                action: DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                    candidates: 1,
+                }),
+                search: None,
+                guard: None,
+                resignation: None,
+            })))
+        );
+
+        assert_ne!(session.game().outcome(), Outcome::Ongoing);
+        assert_eq!(session.position_value, None);
+    }
+
+    #[test]
+    fn the_opening_prior_points_at_the_center() {
         let session = policy_session();
 
-        assert!(
-            session.policy_rings.is_none(),
-            "an empty board weighs every crossing the same: nothing to point at"
+        let rings = session
+            .policy_rings
+            .as_ref()
+            .expect("the opening prior points at H8");
+        let strongest = rings
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).expect("not NaN"))
+            .expect("nonempty");
+        assert_eq!(strongest.0, gomoku_core::point(7, 7).expect("inside"));
+        assert_eq!(strongest.1, 1.0, "full strength after normalization");
+        assert_eq!(
+            rings
+                .iter()
+                .filter(|(_, strength)| *strength >= 0.1)
+                .count(),
+            1,
+            "only the center earns a visible ring"
         );
         assert_current_policy(&session);
     }
@@ -1722,9 +1887,17 @@ mod tests {
         assert_current_policy(&session);
         session.seek(0);
         assert_current_policy(&session);
+        let rings = session
+            .policy_rings
+            .as_ref()
+            .expect("the rewound opening board still points at H8");
         assert_eq!(
-            session.policy_rings, None,
-            "the rewound opening board is flat: nothing to point at"
+            rings
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).expect("not NaN"))
+                .expect("nonempty")
+                .0,
+            gomoku_core::point(7, 7).expect("inside")
         );
         session.seek(usize::MAX);
         assert_current_policy(&session);
@@ -2451,6 +2624,85 @@ mod tests {
 
         assert_eq!(session.game().cursor(), 2);
         assert_eq!(session.game().stone_at(empty), Some(Color::White));
+    }
+
+    #[test]
+    fn hover_snaps_only_within_ten_logical_pixels() {
+        let mut session = Session::new(&Settings::default());
+        session.viewport = crate::camera::Viewport::window(900, 900);
+        session.place_view(session.viewport);
+        session.pixels_per_point = 2.0;
+        let point = gomoku_core::point(7, 7).expect("inside");
+        let crossing = session.camera.to_screen(session.viewport, [7.0, 7.0]);
+
+        session.pointer = [crossing[0] + 9.9 * 2.0, crossing[1]];
+        session.update_hover();
+        assert_eq!(session.hover, Some(point), "just inside the snap radius");
+
+        session.pointer = [crossing[0] + 10.1 * 2.0, crossing[1]];
+        session.update_hover();
+        assert_eq!(session.hover, None, "just outside the snap radius");
+    }
+
+    #[test]
+    fn the_halo_glides_with_the_pointer_and_snaps_near_a_crossing() {
+        let mut session = Session::new(&Settings::default());
+        session.viewport = crate::camera::Viewport::window(900, 900);
+        session.place_view(session.viewport);
+        session.pixels_per_point = 2.0;
+        let crossing = session.camera.to_screen(session.viewport, [7.0, 7.0]);
+
+        let half = session.camera.pixels_per_cell * 0.5;
+        session.pointer = [crossing[0] + half, crossing[1] + half];
+        session.update_hover();
+        assert_eq!(session.hover, None, "mid-cell is too far to snap");
+        assert_eq!(
+            session.halo_centre(),
+            Some(session.pointer),
+            "the halo glides with the pointer"
+        );
+
+        session.pointer = [crossing[0] + 5.0 * 2.0, crossing[1]];
+        session.update_hover();
+        assert_eq!(
+            session.halo_centre(),
+            Some(crossing),
+            "within the snap radius the halo sits on the crossing"
+        );
+    }
+
+    #[test]
+    fn the_halo_hides_where_no_stone_could_be_placed() {
+        let mut session = Session::new(&Settings::default());
+        session.viewport = crate::camera::Viewport::window(900, 900);
+        session.place_view(session.viewport);
+        session.pixels_per_point = 2.0;
+        let crossing = session.camera.to_screen(session.viewport, [7.0, 7.0]);
+
+        // Off the playable area: no halo at all.
+        session.pointer = [
+            crossing[0] + 8.0 * 2.0,
+            crossing[1] - 7.5 * session.camera.pixels_per_cell,
+        ];
+        session.update_hover();
+        assert_eq!(session.halo_centre(), None, "above the top row");
+
+        // Near an occupied crossing the halo hides rather than hover over the stone.
+        let occupied = gomoku_core::point(7, 7).expect("inside");
+        session.board_click(occupied);
+        session.board_click(gomoku_core::point(0, 0).expect("inside"));
+        // Black to move again; (7,7) holds the first stone.
+        session.pointer = [crossing[0] + 5.0 * 2.0, crossing[1]];
+        session.update_hover();
+        assert_eq!(session.hover, None, "occupied");
+        assert_eq!(session.halo_centre(), None, "not floating over a stone");
+
+        // While the AI owns the turn there is no halo either.
+        session.release_seat(gomoku_core::Color::Black);
+        let half = session.camera.pixels_per_cell * 0.5;
+        session.pointer = [crossing[0] + half, crossing[1] + half];
+        session.update_hover();
+        assert_eq!(session.halo_centre(), None, "the AI's turn");
     }
 
     #[test]
