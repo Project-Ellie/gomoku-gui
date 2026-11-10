@@ -1,22 +1,24 @@
-//! The game record: writes JSON schema v2, reads v1 and v2.
+//! The game record: writes JSON schema v3, reads linear v1/v2 and tree v3.
 
 use engine::{Color, Move};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::error::RecordError;
+use crate::error::{GameError, RecordError};
 use crate::game::{Game, Outcome, WinMethod};
 
 /// The value of the `format` field of a record.
 pub const FORMAT_MARKER: &str = "gomoku-gui/record";
-/// The record schema version this build writes. It also reads v1.
-pub const FORMAT_VERSION: u32 = 2;
+/// The record schema version this build writes. It also reads v1 and v2.
+pub const FORMAT_VERSION: u32 = 3;
 /// The board size this application plays.
 pub const BOARD_SIZE: u32 = 15;
 /// The rule set this application plays.
 pub const RULESET: &str = "freestyle";
 /// The number of cells on a 15x15 board.
 const CELLS: usize = 225;
+/// A defensive bound on total branches, not on a single 225-cell line.
+const MAX_TREE_NODES: usize = 10_000;
 
 /// The player names of a record.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,12 +118,26 @@ impl From<StoredOutcome> for Outcome {
     }
 }
 
+/// One node in a version 3 move tree. Node zero is the empty-board root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRecord {
+    /// Parent node ID, or null for the root.
+    pub parent: Option<u32>,
+    /// The move as `[column, row]`, or null for the root.
+    pub point: Option<[u8; 2]>,
+    /// The child followed by redo, or null for a leaf.
+    pub current: Option<u32>,
+    /// The side that resigned at this node, if this branch ended by resignation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resigned: Option<StoredColor>,
+}
+
 /// A game record as it is stored on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     /// The format marker. Always [`FORMAT_MARKER`].
     pub format: String,
-    /// The schema version: 1 or 2 on read; [`FORMAT_VERSION`] for new records.
+    /// The schema version: 1, 2 or 3 on read; [`FORMAT_VERSION`] for new records.
     pub version: u32,
     /// The board size. Always [`BOARD_SIZE`].
     pub size: u32,
@@ -133,14 +149,18 @@ pub struct Record {
     /// When the game started, in UTC.
     #[serde(with = "time::serde::rfc3339")]
     pub created: OffsetDateTime,
-    /// The result of the game.
+    /// The result at the selected branch's tip.
     pub result: StoredOutcome,
-    /// The moves as `[column, row]` pairs. Column 0 is left, row 0 is the top.
+    /// The selected branch as `[column, row]` pairs. In v1/v2 this is the
+    /// complete linear game; in v3 it is checked against `tree`.
     pub moves: Vec<[u8; 2]>,
+    /// All nodes, in parent-before-child order. Empty in linear v1/v2 files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tree: Vec<NodeRecord>,
 }
 
 impl Record {
-    /// Build a v2 record of the full history and result, even during review.
+    /// Build a v3 record of the full tree and current branch, even during review.
     ///
     /// # Errors
     /// `RecordError::FromPosition` if the game was loaded from a puzzle
@@ -149,6 +169,11 @@ impl Record {
     pub fn from_game(game: &Game) -> Result<Record, RecordError> {
         if game.is_from_position() {
             return Err(RecordError::FromPosition);
+        }
+        if game.tree_nodes().len() > MAX_TREE_NODES {
+            return Err(RecordError::TooManyNodes {
+                count: game.tree_nodes().len(),
+            });
         }
         let meta = game.meta();
         Ok(Record {
@@ -163,6 +188,16 @@ impl Record {
             created: meta.created,
             result: meta.outcome.into(),
             moves: game.moves().iter().map(|mv| [mv.col(), mv.row()]).collect(),
+            tree: game
+                .tree_nodes()
+                .iter()
+                .map(|node| NodeRecord {
+                    parent: node.parent.map(|id| id as u32),
+                    point: node.point.map(|mv| [mv.col(), mv.row()]),
+                    current: node.current_child.map(|id| id as u32),
+                    resigned: node.resigned.map(StoredColor::from),
+                })
+                .collect(),
         })
     }
 
@@ -190,10 +225,17 @@ impl Record {
     /// Turn the record into a game, after checking every field.
     ///
     /// # Errors
-    /// The `RecordError` of the first check that fails, in the order
-    /// documented in `docs/architecture/03_PERSISTENCE.md`.
+    /// A `RecordError` when the header, moves, tree links or result are invalid.
     pub fn into_game(self) -> Result<Game, RecordError> {
         self.check_header()?;
+        if self.version == 3 {
+            self.into_tree_game()
+        } else {
+            self.into_linear_game()
+        }
+    }
+
+    fn into_linear_game(self) -> Result<Game, RecordError> {
         let mut game = Game::started_at(self.created);
         game.set_players(self.players.black, self.players.white);
         for (index, &[col, row]) in self.moves.iter().enumerate() {
@@ -220,6 +262,91 @@ impl Record {
         Ok(game)
     }
 
+    fn into_tree_game(self) -> Result<Game, RecordError> {
+        if self.tree.is_empty() {
+            return Err(RecordError::InvalidTree("the root node is missing".into()));
+        }
+        if self.tree[0].parent.is_some() || self.tree[0].point.is_some() {
+            return Err(RecordError::InvalidTree(
+                "node zero must be the root".into(),
+            ));
+        }
+        let mut game = Game::started_at(self.created);
+        game.set_players(self.players.black, self.players.white);
+        for (index, node) in self.tree.iter().enumerate().skip(1) {
+            let parent = node
+                .parent
+                .ok_or_else(|| RecordError::InvalidTree(format!("node {index} has no parent")))?
+                as usize;
+            if parent >= index {
+                return Err(RecordError::InvalidTree(format!(
+                    "node {index} has a parent that does not precede it"
+                )));
+            }
+            let [col, row] = node
+                .point
+                .ok_or_else(|| RecordError::InvalidTree(format!("node {index} has no move")))?;
+            let point = Move::new(row, col).ok_or(RecordError::PointOutOfRange { index })?;
+            let restored = game
+                .restore_child(parent, point)
+                .map_err(|error| match error {
+                    GameError::Occupied => RecordError::RepeatedPoint { index },
+                    _ => RecordError::IllegalMove { index },
+                })?;
+            if restored != index {
+                return Err(RecordError::InvalidTree(format!(
+                    "node {index} repeats its sibling's move"
+                )));
+            }
+        }
+        for (index, node) in self.tree.iter().enumerate() {
+            let child_count = game.tree_nodes()[index].children.len();
+            let current = node.current.map(|id| id as usize);
+            if (child_count == 0) != current.is_none()
+                || current.is_some_and(|child| {
+                    self.tree
+                        .get(child)
+                        .is_none_or(|child| child.parent != Some(index as u32))
+                })
+            {
+                return Err(RecordError::InvalidTree(format!(
+                    "node {index} has an invalid current child"
+                )));
+            }
+            if !game.restore_current_child(index, current) {
+                return Err(RecordError::InvalidTree(format!(
+                    "node {index} has an invalid current child"
+                )));
+            }
+            if let Some(resigned) = node.resigned {
+                let board = game.board_at_node(index).ok_or_else(|| {
+                    RecordError::InvalidTree(format!("node {index} has no legal board"))
+                })?;
+                if child_count != 0
+                    || board.status() != engine::Status::Ongoing
+                    || Color::from(resigned) != board.to_move()
+                {
+                    return Err(RecordError::ResultMismatch);
+                }
+                if !game.restore_resignation(index, resigned.into()) {
+                    return Err(RecordError::InvalidTree(format!(
+                        "node {index} has an invalid resignation"
+                    )));
+                }
+            }
+        }
+        if !game.finish_restore() {
+            return Err(RecordError::InvalidTree(
+                "the selected branch cannot be restored".into(),
+            ));
+        }
+        let selected: Vec<[u8; 2]> = game.moves().iter().map(|mv| [mv.col(), mv.row()]).collect();
+        if selected != self.moves || Outcome::from(self.result) != game.outcome() {
+            return Err(RecordError::ResultMismatch);
+        }
+        Ok(game)
+    }
+
     /// Check the header fields, which do not depend on the moves.
     fn check_header(&self) -> Result<(), RecordError> {
         if self.format != FORMAT_MARKER {
@@ -227,7 +354,7 @@ impl Record {
                 found: self.format.clone(),
             });
         }
-        if !matches!(self.version, 1 | 2) {
+        if !matches!(self.version, 1..=3) {
             return Err(RecordError::UnsupportedVersion(self.version));
         }
         if self.size != BOARD_SIZE {
@@ -239,6 +366,11 @@ impl Record {
         if self.moves.len() > CELLS {
             return Err(RecordError::TooManyMoves {
                 count: self.moves.len(),
+            });
+        }
+        if self.tree.len() > MAX_TREE_NODES {
+            return Err(RecordError::TooManyNodes {
+                count: self.tree.len(),
             });
         }
         Ok(())
@@ -360,7 +492,7 @@ mod tests {
         record.version = FORMAT_VERSION + 1;
         assert!(matches!(
             record.into_game(),
-            Err(RecordError::UnsupportedVersion(3))
+            Err(RecordError::UnsupportedVersion(4))
         ));
     }
 
@@ -397,6 +529,7 @@ mod tests {
     #[test]
     fn a_record_refuses_a_point_outside_the_board() {
         let mut record = record();
+        record.version = 2;
         record.moves.push([15, 0]);
         assert!(matches!(
             record.into_game(),
@@ -407,6 +540,7 @@ mod tests {
     #[test]
     fn a_record_refuses_a_repeated_point() {
         let mut record = record();
+        record.version = 2;
         record.moves.push([7, 7]);
         assert!(matches!(
             record.into_game(),
@@ -417,6 +551,7 @@ mod tests {
     #[test]
     fn a_record_refuses_a_move_after_the_game_ended() {
         let mut record = Record::from_game(&won_game()).expect("a normal game encodes");
+        record.version = 2;
         record.moves.push([10, 10]);
         assert!(matches!(
             record.into_game(),

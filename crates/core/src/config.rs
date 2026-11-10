@@ -69,7 +69,7 @@ impl Default for ViewSettings {
     }
 }
 
-/// The four board overlays.
+/// The board and analysis overlays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OverlaySettings {
@@ -81,6 +81,12 @@ pub struct OverlaySettings {
     pub last_move: bool,
     /// Mark the winning line.
     pub win_line: bool,
+    /// Show the live policy rings.
+    pub policy_overlay: bool,
+    /// Show certified threat-sequence numbers.
+    pub threat_sequences: bool,
+    /// Show and allow selection of branch alternatives on the board.
+    pub branch_alternatives: bool,
 }
 
 impl Default for OverlaySettings {
@@ -90,6 +96,9 @@ impl Default for OverlaySettings {
             move_numbers: false,
             last_move: true,
             win_line: true,
+            policy_overlay: false,
+            threat_sequences: false,
+            branch_alternatives: false,
         }
     }
 }
@@ -102,6 +111,8 @@ pub struct PanelSettings {
     pub width: f32,
     /// True when the panel is collapsed.
     pub collapsed: bool,
+    /// The open section: "players", "moves", or "explorer".
+    pub section: String,
 }
 
 impl Default for PanelSettings {
@@ -109,22 +120,26 @@ impl Default for PanelSettings {
         PanelSettings {
             width: 240.0,
             collapsed: false,
+            section: "players".to_string(),
         }
     }
 }
 
 /// The board material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BoardSettings {
     /// The name of the material preset.
     pub material: String,
+    /// The brightness multiplier on the wood photograph, from 1.0 to 6.0.
+    pub gain: f32,
 }
 
 impl Default for BoardSettings {
     fn default() -> BoardSettings {
         BoardSettings {
             material: "aged_wood".to_string(),
+            gain: 2.8,
         }
     }
 }
@@ -164,13 +179,67 @@ impl Default for AudioSettings {
     }
 }
 
+/// One seat: who owns it, and the AI settings retained for it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SeatSettings {
+    /// True when the AI owns the seat.
+    pub ai: bool,
+    /// Simulations per decision, from 1 through 50,000.
+    pub simulations: u32,
+    /// Sampling temperature, from 0 through 2 in steps of 0.1.
+    pub temperature: f32,
+    /// The own-side proof probe.
+    pub own_tss: bool,
+    /// The defensive guard.
+    pub guard: bool,
+    /// The heuristic concession decision.
+    pub resign: bool,
+}
+
+/// The two seats of the board.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlayersSettings {
+    /// The Black seat: the human's by default.
+    pub black: SeatSettings,
+    /// The White seat: the AI's by default.
+    pub white: SeatSettings,
+}
+
+impl Default for SeatSettings {
+    fn default() -> SeatSettings {
+        SeatSettings {
+            ai: true,
+            simulations: 4000,
+            temperature: 0.0,
+            own_tss: true,
+            guard: true,
+            resign: true,
+        }
+    }
+}
+
+impl Default for PlayersSettings {
+    fn default() -> PlayersSettings {
+        PlayersSettings {
+            black: SeatSettings {
+                ai: false,
+                ..SeatSettings::default()
+            },
+            white: SeatSettings::default(),
+        }
+    }
+}
+
 /// The file settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FileSettings {
     /// The directory of the last save or open.
     pub last_directory: Option<PathBuf>,
-    /// The directory of the last successfully opened Explorer corpus.
+    /// Where the Explorer last loaded from: the opened corpus folder or the
+    /// containing directory of a loaded record.
     pub last_corpus_directory: Option<PathBuf>,
     /// The most recently used record paths, newest first.
     pub recent: Vec<PathBuf>,
@@ -194,6 +263,8 @@ pub struct Settings {
     pub stones: StoneSettings,
     /// The sound settings.
     pub audio: AudioSettings,
+    /// The two seats and their AI settings.
+    pub players: PlayersSettings,
     /// The file settings.
     pub files: FileSettings,
 }
@@ -210,6 +281,20 @@ impl Settings {
             self.audio.volume = AudioSettings::default().volume;
         }
         self.audio.volume = self.audio.volume.clamp(0.0, 1.0);
+
+        if !self.board.gain.is_finite() {
+            self.board.gain = BoardSettings::default().gain;
+        }
+        self.board.gain = self.board.gain.clamp(1.0, 6.0);
+
+        for seat in [&mut self.players.black, &mut self.players.white] {
+            seat.simulations = seat.simulations.clamp(1, 50_000);
+            if !seat.temperature.is_finite() {
+                seat.temperature = SeatSettings::default().temperature;
+            }
+            let tenths = (seat.temperature.clamp(0.0, 2.0) * 10.0).round();
+            seat.temperature = tenths / 10.0;
+        }
 
         let mut recent: Vec<PathBuf> = Vec::with_capacity(self.files.recent.len());
         for path in &self.files.recent {
@@ -312,6 +397,9 @@ mod tests {
         assert!(!settings.overlays.move_numbers);
         assert!(settings.overlays.last_move);
         assert!(settings.overlays.win_line);
+        assert!(!settings.overlays.policy_overlay);
+        assert!(!settings.overlays.threat_sequences);
+        assert!(!settings.overlays.branch_alternatives);
         assert_eq!(settings.panel.width, 240.0);
         assert!(!settings.panel.collapsed);
         assert_eq!(settings.board.material, "aged_wood");
@@ -320,6 +408,15 @@ mod tests {
         assert_eq!(settings.audio.volume, 0.7);
         assert!(settings.files.last_corpus_directory.is_none());
         assert!(settings.files.recent.is_empty());
+        assert_eq!(settings.board.gain, 2.8);
+        assert_eq!(settings.panel.section, "players");
+        assert!(!settings.players.black.ai, "Black is the human's seat");
+        assert!(settings.players.white.ai, "White is the AI's seat");
+        assert_eq!(settings.players.white.simulations, 4000);
+        assert_eq!(settings.players.white.temperature, 0.0);
+        assert!(settings.players.white.own_tss);
+        assert!(settings.players.white.guard);
+        assert!(settings.players.white.resign);
     }
 
     #[test]
@@ -351,13 +448,18 @@ mod tests {
                 move_numbers: true,
                 last_move: false,
                 win_line: false,
+                policy_overlay: true,
+                threat_sequences: true,
+                branch_alternatives: true,
             },
             panel: PanelSettings {
                 width: 320.0,
                 collapsed: true,
+                section: "moves".to_string(),
             },
             board: BoardSettings {
                 material: "walnut".to_string(),
+                gain: 4.5,
             },
             stones: StoneSettings {
                 set: "obsidian_crystal".to_string(),
@@ -365,6 +467,24 @@ mod tests {
             audio: AudioSettings {
                 enabled: false,
                 volume: 0.25,
+            },
+            players: PlayersSettings {
+                black: SeatSettings {
+                    ai: true,
+                    simulations: 12_000,
+                    temperature: 1.2,
+                    own_tss: false,
+                    guard: true,
+                    resign: false,
+                },
+                white: SeatSettings {
+                    ai: false,
+                    simulations: 800,
+                    temperature: 0.4,
+                    own_tss: true,
+                    guard: false,
+                    resign: true,
+                },
             },
             files: FileSettings {
                 last_directory: Some(std::path::PathBuf::from("/games")),

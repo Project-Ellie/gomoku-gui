@@ -68,7 +68,8 @@ fn undo_clears_resignation_before_removing_any_stone_even_from_review() {
     assert!(game.can_play());
     assert!(game.undo());
     assert_eq!(game.len(), before.len() - 1);
-    assert!(!game.forward(), "ordinary undo has no redo");
+    assert_eq!(game.cursor(), before.len() - 1);
+    assert!(!game.forward(), "deleting the live tip leaves no redo");
     game.play(*before.moves().last().unwrap()).unwrap();
     assert_eq!(game, before, "the removed move can be played again");
     game.resign().unwrap();
@@ -130,7 +131,10 @@ fn only_a_successful_branch_discards_the_old_resignation() {
     );
     assert!(!game.is_rewound());
     assert!(game.can_play());
-    assert!(!game.forward(), "old history and result cannot be replayed");
+    assert!(!game.forward());
+    game.seek(2);
+    assert!(game.select_branch(0), "the resigned sibling still exists");
+    assert_eq!(game.outcome(), result, "branching preserves the old result");
 }
 
 #[test]
@@ -172,12 +176,14 @@ fn undoing_resignation_from_a_reviewed_puzzle_root_preserves_all_played_moves() 
         "resignation undo precedes the puzzle-root guard"
     );
     assert_eq!(game, before);
-    assert!(game.undo(), "ordinary undo now removes the played move");
+    assert!(game.undo(), "ordinary undo now deletes the played move");
     assert_eq!(
         game.stones().collect::<Vec<_>>(),
         vec![(point(7, 7).unwrap(), Color::Black)]
     );
+    assert!(game.is_empty(), "the undone move is gone");
     assert!(!game.undo(), "imported stones cannot be undone");
+    assert!(!game.forward(), "the deleted move cannot be redone");
 }
 
 #[test]

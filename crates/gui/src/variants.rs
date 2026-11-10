@@ -20,9 +20,7 @@ use anyhow::{Context as _, Result};
 use crate::audio::{self, Mode, Modes, Voicing};
 use crate::camera;
 use crate::preview::HeadlessGpu;
-use crate::render::{
-    self, GlyphTexture, Renderer, SHELL, SLATE, StoneInstance, StoneShape, WoodTexture,
-};
+use crate::render::{self, BoardImages, Renderer, SHELL, SLATE, StoneInstance, StoneShape};
 use crate::sound;
 
 /// The rate the sounds are written at.
@@ -429,8 +427,7 @@ struct SheetRow {
 /// Render one take at both zooms and return its row.
 fn render_take(
     gpu: &HeadlessGpu,
-    wood: &WoodTexture,
-    glyphs: &GlyphTexture,
+    images: &BoardImages,
     kind: f32,
     take: &StoneVariant,
     directory: &Path,
@@ -440,8 +437,7 @@ fn render_take(
         &gpu.queue,
         crate::preview::PREVIEW_FORMAT,
         SAMPLES,
-        wood,
-        glyphs,
+        images,
         &take.shape,
     );
     renderer.set_stones(
@@ -477,8 +473,7 @@ fn render_take(
 /// crossing, and return its row.
 fn render_dimple(
     gpu: &HeadlessGpu,
-    wood: &WoodTexture,
-    glyphs: &GlyphTexture,
+    images: &BoardImages,
     take: &DimpleVariant,
     directory: &Path,
 ) -> Result<SheetRow> {
@@ -487,8 +482,7 @@ fn render_dimple(
         &gpu.queue,
         crate::preview::PREVIEW_FORMAT,
         SAMPLES,
-        wood,
-        glyphs,
+        images,
         &render::STONE_SHAPE,
     );
     renderer.set_stones(&gpu.queue, &[]);
@@ -542,8 +536,7 @@ pub fn audition(directory: &Path) -> Result<()> {
         .with_context(|| format!("cannot create {}", directory.display()))?;
 
     let gpu = HeadlessGpu::new()?;
-    let wood = WoodTexture::load_wood()?;
-    let glyphs = GlyphTexture::load_glyphs()?;
+    let images = BoardImages::load()?;
 
     // The reference: the look the game ships with, rendered like a take.
     let slate_now = StoneVariant {
@@ -569,24 +562,20 @@ pub fn audition(directory: &Path) -> Result<()> {
         limb: 0.0,
     };
 
-    let mut slate = vec![render_take(
-        &gpu, &wood, &glyphs, 0.0, &slate_now, directory,
-    )?];
+    let mut slate = vec![render_take(&gpu, &images, 0.0, &slate_now, directory)?];
     for take in slate_variants() {
-        slate.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
+        slate.push(render_take(&gpu, &images, 0.0, &take, directory)?);
         log::info!("slate {} rendered", take.name);
     }
-    let mut shell = vec![render_take(
-        &gpu, &wood, &glyphs, 1.0, &shell_now, directory,
-    )?];
+    let mut shell = vec![render_take(&gpu, &images, 1.0, &shell_now, directory)?];
     for take in shell_variants() {
-        shell.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
+        shell.push(render_take(&gpu, &images, 1.0, &take, directory)?);
         log::info!("shell {} rendered", take.name);
     }
 
     let mut dimples = Vec::new();
     for take in dimple_variants() {
-        dimples.push(render_dimple(&gpu, &wood, &glyphs, &take, directory)?);
+        dimples.push(render_dimple(&gpu, &images, &take, directory)?);
         log::info!("dimple {} rendered", take.name);
     }
 
@@ -594,32 +583,32 @@ pub fn audition(directory: &Path) -> Result<()> {
     // moving away from the stone as it plays now.
     let mut grain_black = Vec::new();
     for take in grain_variants(true) {
-        grain_black.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
+        grain_black.push(render_take(&gpu, &images, 0.0, &take, directory)?);
         log::info!("grain {} rendered", take.name);
     }
     let mut grain_white = Vec::new();
     for take in grain_variants(false) {
-        grain_white.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
+        grain_white.push(render_take(&gpu, &images, 1.0, &take, directory)?);
         log::info!("grain {} rendered", take.name);
     }
     let mut edge_black = Vec::new();
     for take in edge_variants(true) {
-        edge_black.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
+        edge_black.push(render_take(&gpu, &images, 0.0, &take, directory)?);
         log::info!("edge {} rendered", take.name);
     }
     let mut edge_white = Vec::new();
     for take in edge_variants(false) {
-        edge_white.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
+        edge_white.push(render_take(&gpu, &images, 1.0, &take, directory)?);
         log::info!("edge {} rendered", take.name);
     }
     let mut limb_black = Vec::new();
     for take in limb_variants(true) {
-        limb_black.push(render_take(&gpu, &wood, &glyphs, 0.0, &take, directory)?);
+        limb_black.push(render_take(&gpu, &images, 0.0, &take, directory)?);
         log::info!("limb {} rendered", take.name);
     }
     let mut limb_white = Vec::new();
     for take in limb_variants(false) {
-        limb_white.push(render_take(&gpu, &wood, &glyphs, 1.0, &take, directory)?);
+        limb_white.push(render_take(&gpu, &images, 1.0, &take, directory)?);
         log::info!("limb {} rendered", take.name);
     }
 

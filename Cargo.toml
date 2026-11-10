@@ -11,10 +11,10 @@ rust-version = "1.85"
 [workspace.dependencies]
 # One upstream revision for the rules and future AI crates; no sibling checkout.
 # Only engine is consumed in M0. See docs/plans/2026-11-07-rust-ml-integration.md.
-engine = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
-mcts = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
-player = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
-baseline = { git = "https://github.com/Project-Ellie/rust-ml", rev = "158b6114029d8708fe5d55394b2930f5e4fd1d8c" }
+engine = { git = "https://github.com/Project-Ellie/rust-ml", rev = "c7ea3b5110157938427228e2cc2e627fa1c6b5bd" }
+mcts = { git = "https://github.com/Project-Ellie/rust-ml", rev = "c7ea3b5110157938427228e2cc2e627fa1c6b5bd" }
+player = { git = "https://github.com/Project-Ellie/rust-ml", rev = "c7ea3b5110157938427228e2cc2e627fa1c6b5bd" }
+baseline = { git = "https://github.com/Project-Ellie/rust-ml", rev = "c7ea3b5110157938427228e2cc2e627fa1c6b5bd" }
 gomoku-core = { path = "crates/core" }
 anyhow = "1"
 log = "0.4"

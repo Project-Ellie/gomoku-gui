@@ -13,6 +13,8 @@ use wgpu::util::DeviceExt as _;
 pub const WOOD_PNG: &[u8] = include_bytes!("../assets/wood-left.png");
 /// The engraved coordinate labels, generated offline as a signed-distance field.
 pub const GLYPH_PNG: &[u8] = include_bytes!("../assets/glyphs.png");
+/// The table's marble: a photograph of a cream slab, from the owner's collection.
+pub const MARBLE_PNG: &[u8] = include_bytes!("../assets/marble.png");
 
 /// A decoded RGBA8 image, used for the wood photograph and the glyph atlas.
 pub struct RgbaTexture {
@@ -28,6 +30,32 @@ pub struct RgbaTexture {
 pub type WoodTexture = RgbaTexture;
 /// The decoded glyph atlas.
 pub type GlyphTexture = RgbaTexture;
+/// The decoded marble photograph.
+pub type MarbleTexture = RgbaTexture;
+
+/// The three decoded images the board pass samples.
+pub struct BoardImages {
+    /// The wooden board photograph.
+    pub wood: WoodTexture,
+    /// The coordinate-label atlas.
+    pub glyphs: GlyphTexture,
+    /// The marble table photograph.
+    pub marble: MarbleTexture,
+}
+
+impl BoardImages {
+    /// Decode the three embedded images.
+    ///
+    /// # Errors
+    /// An error when an embedded image is not a readable PNG.
+    pub fn load() -> anyhow::Result<BoardImages> {
+        Ok(BoardImages {
+            wood: RgbaTexture::load_wood()?,
+            glyphs: RgbaTexture::load_glyphs()?,
+            marble: RgbaTexture::load_marble()?,
+        })
+    }
+}
 
 impl RgbaTexture {
     /// Decode the embedded wood photograph.
@@ -44,6 +72,14 @@ impl RgbaTexture {
     /// An error when the embedded image is not a readable PNG.
     pub fn load_glyphs() -> anyhow::Result<RgbaTexture> {
         Self::load(GLYPH_PNG)
+    }
+
+    /// Decode the embedded marble photograph.
+    ///
+    /// # Errors
+    /// An error when the embedded image is not a readable PNG.
+    pub fn load_marble() -> anyhow::Result<RgbaTexture> {
+        Self::load(MARBLE_PNG)
     }
 
     /// Decode an embedded PNG photograph or glyph atlas.
@@ -472,10 +508,14 @@ impl Renderer {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         sample_count: u32,
-        wood: &WoodTexture,
-        glyphs: &GlyphTexture,
+        images: &BoardImages,
         shape: &StoneShape,
     ) -> Renderer {
+        let BoardImages {
+            wood,
+            glyphs,
+            marble,
+        } = images;
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -599,6 +639,52 @@ impl Renderer {
             ..Default::default()
         });
 
+        // The marble, as an sRGB texture like the wood photograph. The shader
+        // mirrors the tiles, so the sampler simply repeats.
+        let marble_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("marble"),
+            size: wgpu::Extent3d {
+                width: marble.width,
+                height: marble.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &marble_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &marble.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * marble.width),
+                rows_per_image: Some(marble.height),
+            },
+            wgpu::Extent3d {
+                width: marble.width,
+                height: marble.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let marble_view = marble_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let marble_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("marble"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         let board_textures_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("board textures layout"),
@@ -635,6 +721,22 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
         let board_textures_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -656,6 +758,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&glyph_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&marble_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&marble_sampler),
                 },
             ],
         });

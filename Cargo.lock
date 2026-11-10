@@ -336,7 +336,7 @@ dependencies = [
 [[package]]
 name = "baseline"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=158b6114029d8708fe5d55394b2930f5e4fd1d8c#158b6114029d8708fe5d55394b2930f5e4fd1d8c"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=c7ea3b5110157938427228e2cc2e627fa1c6b5bd#c7ea3b5110157938427228e2cc2e627fa1c6b5bd"
 dependencies = [
  "burn",
  "engine",
@@ -1523,7 +1523,7 @@ dependencies = [
 [[package]]
 name = "engine"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=158b6114029d8708fe5d55394b2930f5e4fd1d8c#158b6114029d8708fe5d55394b2930f5e4fd1d8c"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=c7ea3b5110157938427228e2cc2e627fa1c6b5bd#c7ea3b5110157938427228e2cc2e627fa1c6b5bd"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -2709,7 +2709,7 @@ dependencies = [
 [[package]]
 name = "mcts"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=158b6114029d8708fe5d55394b2930f5e4fd1d8c#158b6114029d8708fe5d55394b2930f5e4fd1d8c"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=c7ea3b5110157938427228e2cc2e627fa1c6b5bd#c7ea3b5110157938427228e2cc2e627fa1c6b5bd"
 dependencies = [
  "engine",
  "rand 0.10.3",
@@ -3446,7 +3446,7 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 [[package]]
 name = "patterns"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=158b6114029d8708fe5d55394b2930f5e4fd1d8c#158b6114029d8708fe5d55394b2930f5e4fd1d8c"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=c7ea3b5110157938427228e2cc2e627fa1c6b5bd#c7ea3b5110157938427228e2cc2e627fa1c6b5bd"
 dependencies = [
  "burn",
  "engine",
@@ -3512,7 +3512,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "player"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=158b6114029d8708fe5d55394b2930f5e4fd1d8c#158b6114029d8708fe5d55394b2930f5e4fd1d8c"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=c7ea3b5110157938427228e2cc2e627fa1c6b5bd#c7ea3b5110157938427228e2cc2e627fa1c6b5bd"
 dependencies = [
  "engine",
  "mcts",
@@ -4472,7 +4472,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",

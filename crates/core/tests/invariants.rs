@@ -106,12 +106,6 @@ fn check(game: &Game) {
         game.cursor() <= game.len(),
         "I1: the cursor is inside the move list"
     );
-    assert_eq!(
-        game.pending_truncation(),
-        game.len() - game.cursor(),
-        "the truncation count is the length of the tail"
-    );
-
     // I2: the visible board is the replay of the first `cursor` moves.
     let visible = replay(game, game.cursor());
     for row in 0..15u8 {
@@ -197,7 +191,7 @@ proptest! {
     }
 
     #[test]
-    fn play_while_rewound_truncates_the_tail(steps in prop::collection::vec(any_step(), 0..40), point in any_move()) {
+    fn play_while_rewound_selects_or_creates_a_branch(steps in prop::collection::vec(any_step(), 0..40), point in any_move()) {
         let mut game = Game::new();
         for step in steps {
             apply(&mut game, step);
@@ -206,13 +200,26 @@ proptest! {
         let legal = game.stone_at(point).is_none()
             && game.status() == Status::Ongoing
             && (game.is_rewound() || game.outcome() == Outcome::Ongoing);
+        let followed_existing = game.branch_options().contains(&point);
         match game.play(point) {
             Ok(()) => {
-                prop_assert_eq!(game.len(), cursor + 1);
+                prop_assert!(game.len() > cursor);
                 prop_assert_eq!(game.cursor(), cursor + 1);
-                prop_assert!(!game.is_rewound());
+                prop_assert_eq!(game.is_rewound(), followed_existing && game.len() > cursor + 1);
                 prop_assert_eq!(game.last_move(), Some(point));
-                prop_assert_eq!(game.outcome(), expected_outcome(&game));
+                // I6: the outcome follows the tip's board, unless the side to
+                // move there resigned on an ongoing board — following a branch
+                // back into a resigned tip keeps its resignation.
+                let expected = expected_outcome(&game);
+                let resigned_tip = expected == Outcome::Ongoing
+                    && matches!(
+                        game.outcome(),
+                        Outcome::Won {
+                            method: gomoku_core::WinMethod::Resignation,
+                            ..
+                        }
+                    );
+                prop_assert!(resigned_tip || game.outcome() == expected);
             }
             // A refused placement is only allowed when the guard above agrees.
             Err(_) => prop_assert!(!legal, "a legal placement was refused"),

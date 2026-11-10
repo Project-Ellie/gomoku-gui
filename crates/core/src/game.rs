@@ -1,14 +1,15 @@
-//! The game aggregate: one move list, one board, one review cursor.
+//! The game aggregate: one move tree, one board, one review cursor.
 //!
-//! The imported root plus `moves` describe the stone history. `board` is
-//! always the root with `moves[..cursor]` applied, and `cursor <= moves.len()`
-//! holds. The whole-game outcome also records resignation without a move.
-//! Every change goes through the methods of `Game`.
+//! The imported root plus the current branch describe the visible history.
+//! `board` is always the root with `moves[..cursor]` applied. Sibling branches
+//! remain in the tree when play continues from an earlier position. Every
+//! change goes through the methods of `Game`.
 
 use engine::{Board, Color, Move, Status};
 use time::OffsetDateTime;
 
 use crate::error::{GameError, PositionError};
+use crate::history::{History, HistoryNode};
 
 /// How a game was won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +45,7 @@ pub struct MetaData {
     pub white: Option<String>,
     /// When the game started, in UTC.
     pub created: OffsetDateTime,
-    /// The result of the whole game, including a possible resignation.
+    /// The result of the selected branch, including a possible resignation.
     pub outcome: Outcome,
 }
 
@@ -52,9 +53,8 @@ pub struct MetaData {
 /// cursor, and the metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Game {
-    moves: Vec<Move>,
+    history: History,
     board: Board,
-    cursor: usize,
     meta: MetaData,
     /// Stones that were present before any move in `moves`, with their
     /// absolute colors. Empty for a normal game; populated by
@@ -84,9 +84,8 @@ impl Game {
 
     fn from_board(board: Board, created: OffsetDateTime) -> Game {
         Game {
-            moves: Vec::new(),
+            history: History::new(),
             board,
-            cursor: 0,
             meta: MetaData {
                 black: None,
                 white: None,
@@ -175,10 +174,10 @@ impl Game {
         self.board.status()
     }
 
-    /// The result of the game.
+    /// The result of the selected branch.
     ///
-    /// The result describes the game, not the view. A rewound view keeps
-    /// the result of the game.
+    /// The result describes the branch tip, not the view. A rewound view keeps
+    /// the result of the branch.
     pub fn outcome(&self) -> Outcome {
         self.meta.outcome
     }
@@ -195,44 +194,61 @@ impl Game {
         self.board.to_move()
     }
 
-    /// The moves of the game.
+    /// The moves on the selected branch, from its root to its tip.
     pub fn moves(&self) -> &[Move] {
-        &self.moves
+        self.history.moves()
     }
 
-    /// Every stone played after the loaded position, in play order, including
-    /// any move after the cursor. Use this to list the game; use `stones` for
-    /// the board.
+    /// Whether each move on the selected branch has a sibling in the tree.
+    ///
+    /// The flags are parallel to [`Game::moves`], so the flag at index zero
+    /// describes move number one.
+    pub fn moves_with_siblings(&self) -> Vec<bool> {
+        self.history.moves_with_siblings()
+    }
+
+    /// Every stone on the selected branch, in play order, including any move
+    /// after the cursor. Use this to list the branch; use `stones` for the board.
     pub fn record(&self) -> impl Iterator<Item = (Move, Color)> + '_ {
-        self.moves
+        self.moves()
             .iter()
             .enumerate()
             .map(|(index, &point)| (point, color_of(index, self.initial_to_move)))
     }
 
-    /// The number of moves in the game.
+    /// The number of moves on the selected branch.
     pub fn len(&self) -> usize {
-        self.moves.len()
+        self.moves().len()
     }
 
-    /// True when the game has no move.
+    /// True when the selected branch has no move.
     pub fn is_empty(&self) -> bool {
-        self.moves.is_empty()
+        self.moves().is_empty()
     }
 
     /// The number of moves applied to the visible board.
     pub fn cursor(&self) -> usize {
-        self.cursor
+        self.history.cursor()
     }
 
     /// True when the view is behind the latest move.
     pub fn is_rewound(&self) -> bool {
-        self.cursor < self.moves.len()
+        self.cursor() < self.len()
     }
 
-    /// The number of moves that a placement would delete.
-    pub fn pending_truncation(&self) -> usize {
-        self.moves.len() - self.cursor
+    /// Whether more than one child continues from the cursor position.
+    pub fn is_branch_point(&self) -> bool {
+        self.history.is_branch_point()
+    }
+
+    /// The child moves at the cursor, in creation order.
+    pub fn branch_options(&self) -> Vec<Move> {
+        self.history.branch_options()
+    }
+
+    /// The selected child index at the cursor, if it has a selected child.
+    pub fn selected_branch(&self) -> Option<usize> {
+        self.history.selected_branch()
     }
 
     /// The last move of the visible board.
@@ -261,19 +277,16 @@ impl Game {
         if !self.can_play() {
             return Err(GameError::GameOver);
         }
-        self.meta.outcome = Outcome::Won {
-            winner: self.to_move().other(),
-            method: WinMethod::Resignation,
-        };
+        self.history.resign_at_tip(self.to_move());
+        self.refresh_outcome();
         Ok(())
     }
 
     /// Play a stone at `point`.
     ///
-    /// When the view is rewound, the moves after the cursor are deleted as
-    /// part of the placement, and any old resignation is discarded. A rejected
-    /// placement changes nothing. Read `pending_truncation` before calling,
-    /// and confirm with the user when it is not zero.
+    /// At a reviewed position this follows an identical existing child or
+    /// silently creates a sibling branch. No existing node is deleted. A
+    /// rejected placement changes nothing.
     ///
     /// # Errors
     /// `GameError::Occupied` if the point holds a stone.
@@ -287,94 +300,164 @@ impl Game {
             return Err(GameError::GameOver);
         }
         self.board.play(point).map_err(GameError::from)?;
-        self.moves.truncate(self.cursor);
-        self.moves.push(point);
-        self.cursor += 1;
-        self.meta.outcome = outcome_of(self.board.status());
+        self.history.play(point);
+        self.refresh_outcome();
         Ok(())
     }
 
-    /// Clear a resignation, or otherwise delete the last move of the game.
+    /// Clear a resignation, delete the live tip, or rewind a reviewed position.
     ///
-    /// Clearing resignation returns to live without removing a stone. A
-    /// subsequent undo removes a move, with no redo stack. Returns false
-    /// when there is neither a resignation nor a move to undo at this root.
+    /// Clearing resignation returns to live without removing a stone. At the
+    /// live tip, ordinary undo deletes the last node and cannot be redone. While
+    /// reviewing, it only steps back; `forward` still replays the selected line.
     pub fn undo(&mut self) -> bool {
-        if matches!(
-            self.outcome(),
-            Outcome::Won {
-                method: WinMethod::Resignation,
-                ..
-            }
-        ) {
+        if self.history.resigned_at_tip().is_some() {
             self.live();
-            self.meta.outcome = outcome_of(self.board.status());
+            self.history.clear_resignation();
+            self.refresh_outcome();
             return true;
         }
-        if self.moves.is_empty() {
+        if self.is_rewound() {
+            return self.rewind();
+        }
+        if !self.history.delete_tip() {
             return false;
         }
-        // For a game loaded from a position, the root is the loaded position,
-        // not an empty board. Rewinding to the root must not let undo erase
-        // the loaded stones.
-        if self.from_position && self.cursor == 0 {
-            return false;
-        }
-        // Undo acts on the last move of the game, so leave a rewound view.
-        self.live();
-        self.moves.pop();
-        // The board holds exactly `cursor` moves, and that is at least one.
         self.board.undo();
-        self.cursor -= 1;
-        self.meta.outcome = outcome_of(self.board.status());
+        self.refresh_outcome();
         true
     }
 
-    /// Step the view back one move. Returns false at the first move.
+    /// Step the view back one move. Returns false at the branch root.
     pub fn rewind(&mut self) -> bool {
-        if self.cursor == 0 {
+        if !self.history.rewind() {
             return false;
         }
         self.board.undo();
-        self.cursor -= 1;
         true
     }
 
-    /// Step the view forward one move. Returns false at the latest move.
+    /// Step forward along the selected child branch. Returns false at its tip.
     pub fn forward(&mut self) -> bool {
-        if self.cursor == self.moves.len() {
+        let Some(mv) = self.history.move_after_cursor() else {
             return false;
-        }
-        let mv = self.moves[self.cursor];
-        // The move was legal when it was played, and the board is that same
-        // position, so the engine cannot reject it here.
+        };
+        // Every stored child was legal at this position when inserted.
         self.board
             .play(mv)
             .expect("replaying a recorded move is legal");
-        self.cursor += 1;
+        assert!(self.history.forward(), "a move implies a forward cursor");
         true
     }
 
-    /// Move the view to a move number, clamped to the game length.
+    /// Change the selected child without entering it.
+    ///
+    /// The board and cursor stay put, while `forward` and the visible record
+    /// follow the new continuation. Returns false for an invalid or unchanged
+    /// selection.
+    pub fn set_current_child(&mut self, index: usize) -> bool {
+        if !self.history.set_current_child(index) {
+            return false;
+        }
+        self.refresh_outcome();
+        true
+    }
+
+    /// Select and enter one child branch by its index in `branch_options`.
+    ///
+    /// The choice is remembered for subsequent redo. Returns false without
+    /// changing the game when the index does not exist.
+    pub fn select_branch(&mut self, index: usize) -> bool {
+        let Some(point) = self.history.select_branch(index) else {
+            return false;
+        };
+        self.board
+            .play(point)
+            .expect("replaying a selected branch is legal");
+        self.refresh_outcome();
+        true
+    }
+
+    /// Move the view to a move number, clamped to the current branch length.
     ///
     /// Returns false when the view does not move.
     pub fn seek(&mut self, index: usize) -> bool {
-        let target = index.min(self.moves.len());
-        if target == self.cursor {
+        let target = index.min(self.len());
+        if target == self.cursor() {
             return false;
         }
-        while self.cursor < target {
+        while self.cursor() < target {
             self.forward();
         }
-        while self.cursor > target {
+        while self.cursor() > target {
             self.rewind();
         }
         true
     }
 
-    /// Return the view to the latest move.
+    /// Return the view to the selected branch's latest move.
     pub fn live(&mut self) -> bool {
-        self.seek(self.moves.len())
+        self.seek(self.len())
+    }
+
+    fn refresh_outcome(&mut self) {
+        let mut tip = self.board.clone();
+        for &point in &self.moves()[self.cursor()..] {
+            tip.play(point)
+                .expect("the selected branch replays legally");
+        }
+        self.meta.outcome = match self.history.resigned_at_tip() {
+            Some(resigned) => Outcome::Won {
+                winner: resigned.other(),
+                method: WinMethod::Resignation,
+            },
+            None => outcome_of(tip.status()),
+        };
+    }
+
+    pub(crate) fn tree_nodes(&self) -> &[HistoryNode] {
+        self.history.nodes()
+    }
+
+    pub(crate) fn board_at_node(&self, node: usize) -> Option<Board> {
+        let mut board = Board::new();
+        for point in self.history.path_to_node(node)? {
+            board.play(point).ok()?;
+        }
+        Some(board)
+    }
+
+    pub(crate) fn restore_child(&mut self, parent: usize, point: Move) -> Result<usize, GameError> {
+        let mut board = self.board_at_node(parent).ok_or(GameError::GameOver)?;
+        if board.stone_at(point).is_some() {
+            return Err(GameError::Occupied);
+        }
+        board.play(point).map_err(GameError::from)?;
+        self.history
+            .restore_child(parent, point)
+            .ok_or(GameError::GameOver)
+    }
+
+    pub(crate) fn restore_current_child(&mut self, node: usize, child: Option<usize>) -> bool {
+        self.history.restore_current_child(node, child)
+    }
+
+    pub(crate) fn restore_resignation(&mut self, node: usize, side: Color) -> bool {
+        self.history.restore_resignation(node, side)
+    }
+
+    pub(crate) fn finish_restore(&mut self) -> bool {
+        if !self.history.finish_restore() {
+            return false;
+        }
+        self.board = Board::new();
+        for point in self.moves().to_vec() {
+            self.board
+                .play(point)
+                .expect("a validated record branch replays legally");
+        }
+        self.refresh_outcome();
+        true
     }
 }
 
@@ -486,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn undo_removes_the_last_move() {
+    fn undo_deletes_the_live_tip() {
         let mut game = game();
         game.play(point(7, 7)).expect("empty cell");
         game.play(point(7, 8)).expect("empty cell");
@@ -495,6 +578,7 @@ mod tests {
         assert_eq!(game.cursor(), 1);
         assert_eq!(game.stone_at(point(7, 8)), None);
         assert_eq!(game.to_move(), Color::White);
+        assert!(!game.forward());
     }
 
     #[test]
@@ -505,13 +589,16 @@ mod tests {
     }
 
     #[test]
-    fn undo_reopens_a_won_game() {
+    fn undo_a_winning_move_allows_a_replacement() {
         let mut game = near_win();
         assert!(game.undo());
-        assert_eq!(game.outcome(), Outcome::Ongoing);
         assert_eq!(game.status(), Status::Ongoing);
-        game.play(point(7, 2)).expect("empty cell");
+        game.play(point(10, 10)).expect("empty cell");
         assert_eq!(game.len(), 9);
+        assert_eq!(game.outcome(), Outcome::Ongoing);
+        game.seek(8);
+        assert_eq!(game.branch_options(), vec![point(10, 10)]);
+        assert!(!game.is_branch_point(), "the winning child was deleted");
     }
 
     #[test]
@@ -529,14 +616,14 @@ mod tests {
     }
 
     #[test]
-    fn undo_leaves_a_rewound_view_first() {
+    fn undo_steps_back_from_the_current_view() {
         let mut game = game();
         game.play(point(7, 7)).expect("empty cell");
         game.play(point(7, 8)).expect("empty cell");
         game.rewind();
         assert!(game.undo());
-        assert_eq!(game.len(), 1);
-        assert_eq!(game.cursor(), 1);
+        assert_eq!(game.len(), 2);
+        assert_eq!(game.cursor(), 0);
     }
 
     #[test]
@@ -595,18 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_truncation_reports_the_moves_after_the_cursor() {
-        let mut game = game();
-        for col in 0..4 {
-            game.play(point(7, col)).expect("empty cell");
-        }
-        assert_eq!(game.pending_truncation(), 0);
-        game.seek(1);
-        assert_eq!(game.pending_truncation(), 3);
-    }
-
-    #[test]
-    fn play_while_rewound_deletes_the_moves_after_the_cursor() {
+    fn play_while_rewound_creates_a_sibling_branch() {
         let mut game = game();
         game.play(point(7, 7)).expect("empty cell");
         game.play(point(7, 8)).expect("empty cell");
@@ -620,6 +696,9 @@ mod tests {
         assert_eq!(game.stone_at(point(7, 8)), None);
         assert_eq!(game.stone_at(point(9, 9)), None);
         assert_eq!(game.stone_at(point(3, 3)), Some(Color::White));
+        game.seek(1);
+        assert!(game.select_branch(0));
+        assert_eq!(game.moves(), &[point(7, 7), point(7, 8), point(9, 9)]);
     }
 
     #[test]

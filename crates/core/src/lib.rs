@@ -9,6 +9,7 @@ mod config;
 mod error;
 mod format;
 mod game;
+mod history;
 mod index;
 mod notation;
 mod psq;
@@ -18,8 +19,8 @@ mod storage;
 
 pub use config::{
     AudioSettings, BoardSettings, ConfigLoad, ConfigNotice, FileSettings, MAX_PANEL_WIDTH,
-    MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, Settings, StoneSettings,
-    ViewSettings, WindowSettings, load_settings, save_settings,
+    MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, PlayersSettings, SeatSettings,
+    Settings, StoneSettings, ViewSettings, WindowSettings, load_settings, save_settings,
 };
 pub use engine::{Color, Move, Status};
 pub use error::{ConfigError, GameError, PositionError, RecordError};
@@ -33,8 +34,8 @@ pub use notation::label;
 pub use psq::PsqFormat;
 pub use puzzle::{Puzzle, PuzzleError, load_puzzles};
 pub use record::{
-    BOARD_SIZE, FORMAT_MARKER, FORMAT_VERSION, Players, Record, StoredColor, StoredMethod,
-    StoredOutcome,
+    BOARD_SIZE, FORMAT_MARKER, FORMAT_VERSION, NodeRecord, Players, Record, StoredColor,
+    StoredMethod, StoredOutcome,
 };
 pub use storage::{load, save, write_atomic};
 

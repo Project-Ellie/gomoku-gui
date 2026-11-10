@@ -9,17 +9,18 @@ use gomoku_core::{Color, Outcome, WinMethod, label};
 
 use crate::ai::SeatOwner;
 use crate::render::WOOD;
-use crate::session::{After, Dialog, PanelSection, Session, name_of, winning_line};
+use crate::session::{Dialog, PanelSection, Session, name_of, winning_line};
 use crate::theme::{
-    BANNER, BANNER_FONT_SIZE, MENU_BAR_HEIGHT, MENU_FONT_SIZE, MUTED, PANEL, PANEL_CURRENT,
-    PANEL_INK, PANEL_MARGIN, SECTION_HEADER_FONT_SIZE, SURFACE,
+    BANNER, BANNER_FONT_SIZE, MENU_BAR_HEIGHT, MENU_FONT_SIZE, MOVE_LIST_FONT_SIZE,
+    MOVE_LIST_STONE_DOT_SIZE, MUTED, PANEL, PANEL_CURRENT, PANEL_HEADER, PANEL_INK, PANEL_MARGIN,
+    RECENT_FONT_SIZE, SECTION_HEADER_FONT_SIZE, STONE_DOT_SIZE, SURFACE,
 };
 
 /// What the interface asks the application to do once the frame is drawn. The
 /// application owns the file dialogs and the window, so it performs these.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Requests {
-    /// Start a new game, after the unsaved-changes check.
+    /// Start a new game immediately.
     pub new_game: bool,
     /// Ask for a file and open it.
     pub open: bool,
@@ -27,6 +28,8 @@ pub struct Requests {
     pub open_puzzle: bool,
     /// Ask for a corpus folder and open it in the Lab Explorer.
     pub open_explorer: bool,
+    /// Reopen the last corpus folder without asking for one.
+    pub reopen_explorer: bool,
     /// Save to the open file, or ask for one.
     pub save: bool,
     /// Ask for a file and save to it.
@@ -81,23 +84,45 @@ fn panel_section_header(
     title: &str,
     font_size: f32,
 ) -> bool {
-    let indicator = if session.open_panel_section() == section {
-        "▾"
-    } else {
-        "▸"
-    };
-    let response = ui.add(
-        egui::Label::new(
-            RichText::new(format!("{indicator} {title}"))
-                .font(FontId::proportional(font_size))
-                .color(PANEL_INK),
-        )
-        .sense(egui::Sense::click()),
+    // A full-width strip, so the header reads as a control. It ignores the
+    // panel's padding and runs from border to border.
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), font_size * 1.9),
+        egui::Sense::hover(),
     );
+    let strip = rect.expand2(Vec2::new(PANEL_MARGIN as f32, 0.0));
+    ui.painter()
+        .rect_filled(strip, egui::CornerRadius::ZERO, PANEL_HEADER);
+    let response = ui
+        .put(
+            rect.shrink2(Vec2::new(2.0, 0.0)),
+            egui::Label::new(
+                RichText::new(title)
+                    .font(crate::theme::bold(font_size))
+                    .color(Color32::WHITE),
+            )
+            .sense(egui::Sense::click()),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
         session.toggle_panel_section(section);
     }
     session.open_panel_section() == section
+}
+
+/// Draw a full-width boolean option and report whether it was clicked.
+/// Every boolean option looks like this: twice the body size, 40 points tall.
+fn on_off_button(ui: &mut egui::Ui, label: &str, state: bool, hover: &str) -> bool {
+    let state = if state { "ON" } else { "OFF" };
+    ui.add_sized(
+        [ui.available_width(), 40.0],
+        egui::Button::new(
+            RichText::new(format!("{label} {state}")).size(crate::theme::BODY_FONT_SIZE * 2.0),
+        ),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    .on_hover_text(hover)
+    .clicked()
 }
 
 /// Draw the whole interface and return what the application should do next.
@@ -120,6 +145,9 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                 .inner_margin(egui::Margin::symmetric(12, 0)),
         )
         .show(ui, |ui| {
+            // Let the menu row fill the bar's height, so its labels center
+            // vertically instead of hugging the top edge.
+            ui.spacing_mut().interact_size.y = MENU_BAR_HEIGHT;
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button(menu_text("File"), |ui| {
                     if ui.button(menu_text("New game")).clicked() {
@@ -150,7 +178,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     }
                 });
                 ui.menu_button(menu_text("Edit"), |ui| {
-                    if ui.button(menu_text("Undo, and the move is gone")).clicked() {
+                    if ui.button(menu_text("Undo")).clicked() {
                         session.undo();
                         ui.close();
                     }
@@ -209,9 +237,36 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                         requests.open_explorer = true;
                         ui.close();
                     }
+                    let reopen = session
+                        .last_corpus_directory
+                        .as_ref()
+                        .and_then(|path| path.file_name())
+                        .map(|name| format!("Reopen {}", name.to_string_lossy()));
+                    if ui
+                        .add_enabled(
+                            reopen.is_some(),
+                            egui::Button::new(menu_text(
+                                reopen.unwrap_or_else(|| "Reopen last corpus".into()),
+                            )),
+                        )
+                        .on_hover_text(
+                            "Open the last corpus folder again, without the folder picker.",
+                        )
+                        .clicked()
+                    {
+                        requests.reopen_explorer = true;
+                        ui.close();
+                    }
                 });
-                ui.separator();
-                ui.label(RichText::new(status_line(session)).color(MUTED));
+                // The status line anchors to the right end of the bar, above
+                // the side panel, at the same size as the menu entries.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(status_line(session))
+                            .font(FontId::proportional(MENU_FONT_SIZE))
+                            .color(MUTED),
+                    );
+                });
             });
         });
 
@@ -257,6 +312,41 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     move_list(ui, session);
                 }));
             }
+            ui.separator();
+            if panel_section_header(
+                ui,
+                session,
+                PanelSection::Policy,
+                "Display options",
+                header_size,
+            ) {
+                body_paints.push(paint_panel_body(ui, PanelSection::Policy, |ui| {
+                    if on_off_button(
+                        ui,
+                        "Policy overlay",
+                        session.policy_overlay,
+                        "Show the baseline prior for the side to move on empty crossings.",
+                    ) {
+                        session.set_policy_overlay(!session.policy_overlay);
+                    }
+                    if on_off_button(
+                        ui,
+                        "Threat sequences",
+                        session.threat_sequences,
+                        "Show certified forced-win threat sequences as numbered circles.",
+                    ) {
+                        session.threat_sequences = !session.threat_sequences;
+                    }
+                    if on_off_button(
+                        ui,
+                        "Branch alternatives",
+                        session.branch_alternatives,
+                        "Show branch alternatives as translucent stones and select them on the board.",
+                    ) {
+                        session.branch_alternatives = !session.branch_alternatives;
+                    }
+                }));
+            }
             // The Explorer header appears only while its corpus is available.
             if session.explorer().is_some() {
                 ui.separator();
@@ -289,6 +379,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             recents(ui, session);
         });
     session.panel_width = panel.response.rect.width();
+    session.refresh_threat_sequences();
 
     egui::CentralPanel::default()
         .frame(Frame::NONE)
@@ -314,9 +405,10 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                 // The first frame that knows the area is the one that places the
                 // view, so that the overlays below already use it.
                 session.place_view(session.viewport);
-            } else if area_changed && session.follows_window {
-                // The board's size belongs to the window: while the tie holds,
-                // the board grows and shrinks with the area it is drawn into.
+            } else if area_changed {
+                // The board's size belongs to the window: the board grows and
+                // shrinks with the area it is drawn into, always fitted, with
+                // a margin of the marble table around it.
                 session.camera.refit(session.viewport);
             }
             // Turn/ownership changes also refresh a stationary pointer.
@@ -327,7 +419,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             // and the application tests for it with `Session::on_board`.
         });
 
-    dialogs(ui.ctx(), session, &mut requests, Session::resume_autosave);
+    dialogs(ui.ctx(), session);
     requests
 }
 
@@ -371,23 +463,17 @@ fn status_line(session: &Session) -> String {
                 "White"
             };
             if session.owner(session.game().to_move()) == SeatOwner::Ai
-                && session.automation_running()
                 && !session.game().is_rewound()
             {
                 return format!("{side} · Thinking…");
             }
-            let paused = if !session.automation_running() {
-                " — AI paused"
-            } else {
-                ""
-            };
             let notice = session
                 .notice
                 .as_ref()
                 .map(|text| format!(" — {text}"))
                 .unwrap_or_default();
             format!(
-                "{side} to play — move {}{paused}{review}{notice}",
+                "{side} to play — move {}{review}{notice}",
                 session.game().len() + 1
             )
         }
@@ -416,87 +502,116 @@ fn status_line(session: &Session) -> String {
 /// Seat intent is separate from editable player metadata. Only actual widget
 /// changes commit options: repainting must never invalidate a search.
 fn seats(ui: &mut egui::Ui, session: &mut Session) {
-    ui.spacing_mut().interact_size.y = 26.0;
-    for (side, label) in [(Color::Black, "Black"), (Color::White, "White")] {
-        ui.push_id(label, |ui| {
-            Frame::NONE.show(ui, |ui| {
-                let human = session.owner(side) == SeatOwner::Human;
-                ui.horizontal(|ui| {
-                    stone_dot(ui, side);
-                    ui.label(RichText::new(label).strong().color(PANEL_INK));
-                    ui.label(if human { "Human" } else { "AI · baseline" });
-                });
-                let mut name = match side {
-                    Color::Black => session.game().meta().black.clone(),
-                    Color::White => session.game().meta().white.clone(),
-                }.unwrap_or_default();
-                if ui.add(egui::TextEdit::singleline(&mut name)
-                    .id_salt("name")
-                    .desired_width(ui.available_width())
-                    .hint_text("Player name"))
-                    .on_hover_text(format!("{label} player name (saved with the game)"))
-                    .changed()
-                {
-                    let name = (!name.trim().is_empty()).then(|| name.trim().to_owned());
-                    let meta = session.game().meta();
-                    let (black, white) = match side {
-                        Color::Black => (name, meta.white.clone()),
-                        Color::White => (meta.black.clone(), name),
-                    };
-                    session.set_players(black, white);
-                }
-                let action = if human { "Release" } else { "Take" };
-                let help = if human {
-                    format!("Release {label} to the baseline AI. Turns run automatically; both colors may be AI.")
-                } else {
-                    format!("Take {label} for human play, even while thinking. Discards any pending decision for this seat.")
-                };
-                if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(format!("{action} {label}")))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(help).clicked()
-                {
-                    if human { session.release_seat(side); } else { session.take_seat(side); }
-                }
-                let mut options = session.ai_options(side);
-                let before = options;
-                let field_width = (ui.available_width() - 12.0) / 2.0;
-                egui::Grid::new("options").spacing([12.0, 3.0]).show(ui, |ui| {
-                    ui.label("Sims").on_hover_text("Retained for this color, even while human. 1–10,000 simulations per decision.");
-                    ui.label("Temp");
-                    ui.end_row();
-                    ui.add_sized([field_width, 26.0], egui::DragValue::new(&mut options.simulations).range(1..=10_000).speed(1));
-                    ui.add_sized([field_width, 26.0], egui::DragValue::new(&mut options.temperature).range(0.0..=2.0)
-                        .speed(0.1).fixed_decimals(1))
-                        .on_hover_text("Sampling temperature: 0 (deterministic) to 2, in steps of 0.1.");
-                    ui.end_row();
-                });
-                options.temperature = (options.temperature * 10.0).round() / 10.0;
-                if options != before {
-                    if let Err(error) = session.set_ai_options(side, options) {
-                        session.notice = Some(error.to_string());
+    // The Players body reads at twice the body size; only the section title
+    // above stays as is. The scope keeps the enlargement from leaking into
+    // the panel sections painted after this one.
+    ui.scope(|ui| {
+        for font in ui.style_mut().text_styles.values_mut() {
+            font.size *= 2.0;
+        }
+        ui.spacing_mut().interact_size.y = 40.0;
+        for (side, label) in [(Color::Black, "Black"), (Color::White, "White")] {
+            ui.push_id(label, |ui| {
+                Frame::NONE.show(ui, |ui| {
+                    let human = session.owner(side) == SeatOwner::Human;
+                    ui.horizontal(|ui| {
+                        stone_dot(ui, side, STONE_DOT_SIZE);
+                        ui.label(RichText::new(label).strong().color(PANEL_INK));
+                        ui.label(if human {
+                            "Human"
+                        } else if session.ai_thinking(side) {
+                            "AI · thinking…"
+                        } else {
+                            "AI · baseline"
+                        });
+                    });
+                    let mut name = match side {
+                        Color::Black => session.game().meta().black.clone(),
+                        Color::White => session.game().meta().white.clone(),
+                    }.unwrap_or_default();
+                    if ui.add(egui::TextEdit::singleline(&mut name)
+                        .id_salt("name")
+                        .desired_width(ui.available_width())
+                        .hint_text("Player name"))
+                        .on_hover_text(format!("{label} player name (saved with the game)"))
+                        .changed()
+                    {
+                        let name = (!name.trim().is_empty()).then(|| name.trim().to_owned());
+                        let meta = session.game().meta();
+                        let (black, white) = match side {
+                            Color::Black => (name, meta.white.clone()),
+                            Color::White => (meta.black.clone(), name),
+                        };
+                        session.set_players(black, white);
                     }
-                }
+                    let action = if human { "Release" } else { "Take" };
+                    let help = if human {
+                        format!("Release {label} to the baseline AI. Turns run automatically; both colors may be AI.")
+                    } else {
+                        format!("Take {label} for human play, even while thinking. Discards any pending decision for this seat.")
+                    };
+                    if ui.add_sized([ui.available_width(), 40.0], egui::Button::new(format!("{action} {label}")))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(help).clicked()
+                    {
+                        if human { session.release_seat(side); } else { session.take_seat(side); }
+                    }
+                    let mut options = session.ai_options(side);
+                    let before = options;
+                    let field_width = (ui.available_width() - 12.0) / 2.0;
+                    egui::Grid::new("options").spacing([12.0, 3.0]).show(ui, |ui| {
+                        ui.label("Sims").on_hover_text("Retained for this color, even while human. 1–50,000 simulations per decision.");
+                        ui.label("Temp");
+                        ui.end_row();
+                        ui.add_sized([field_width, 40.0], egui::DragValue::new(&mut options.simulations).range(1..=50_000).speed(1));
+                        ui.add_sized([field_width, 40.0], egui::DragValue::new(&mut options.temperature).range(0.0..=2.0)
+                            .speed(0.1).fixed_decimals(1))
+                            .on_hover_text("Sampling temperature: 0 (deterministic) to 2, in steps of 0.1.");
+                        ui.end_row();
+                    });
+                    options.temperature = (options.temperature * 10.0).round() / 10.0;
+                    if options != before {
+                        if let Err(error) = session.set_ai_options(side, options) {
+                            session.notice = Some(error.to_string());
+                        }
+                    }
+                });
             });
-        });
-        ui.separator();
-    }
-    ui.label(RichText::new("Resignation ON").small())
-        .on_hover_text("Baseline resignation is enabled for both AI seats by default. It is a heuristic concession, not a proof of a forced win.");
-    if !session.automation_running() {
-        ui.label("AI paused").on_hover_text("Undo and history review pause automatic turns. Return to the latest move, then Resume AI.");
-    }
-    if !session.automation_running()
-        && !session.game().is_rewound()
-        && session.game().outcome() == Outcome::Ongoing
-        && session.owner(session.game().to_move()) == SeatOwner::Ai
-        && ui
-            .add_sized([ui.available_width(), 28.0], egui::Button::new("Resume AI"))
+            ui.separator();
+        }
+        let initiative_side = session.game().to_move();
+        let initiative_label = if initiative_side == Color::Black {
+            "AI plays Black"
+        } else {
+            "AI plays White"
+        };
+        let can_move = session.game().outcome() == Outcome::Ongoing && session.game().can_play();
+        if ui
+            .add_enabled(
+                can_move,
+                egui::Button::new(initiative_label)
+                    .min_size(egui::vec2(ui.available_width(), 40.0)),
+            )
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Resume continuous automatic turns, not a single step.")
+            .on_hover_text(
+                "Hands the side to move to the AI and starts thinking immediately: \
+                 abandons any stuck flight and works even mid-review.",
+            )
             .clicked()
-    {
-        session.resume_automation();
-    }
+        {
+            session.hand_initiative_to_ai();
+        }
+        let resignation = session.resignation_enabled();
+        if on_off_button(
+            ui,
+            "Resignation",
+            resignation,
+            "Resignation is a heuristic concession by the AI, not a proof of a forced win. \
+             This switch applies to both AI seats.",
+        ) {
+            session.set_resignation(!resignation);
+        }
+    });
 }
 
 /// The list of moves, one row each, with a click to look at that position.
@@ -506,23 +621,83 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
         ui.label(RichText::new(format!("Live result: {}", status_line(session))).color(PANEL_INK));
     }
     let cursor = session.game().cursor();
+    let branch_options = session.is_branch_point().then(|| session.branch_options());
+    let selected_branch = session.selected_branch();
+    let branch_colour = session.game().to_move();
     let mut seek = None;
+    let mut select_branch = None;
     // The whole game, so that the moves ahead of the cursor stay visible. They
     // are dimmed, because they are not on the board yet.
     let record: Vec<(gomoku_core::Move, Color)> = session.game().record().collect();
+    let siblings = session.game().moves_with_siblings();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .max_height((ui.available_height() - 150.0).max(80.0))
         .show(ui, |ui| {
             for (index, (point, colour)) in record.into_iter().enumerate() {
                 let number = index + 1;
+                if index == cursor {
+                    if let Some(options) = &branch_options {
+                        // Replace the selected line's next row with all child choices,
+                        // rather than drawing its selected child a second time.
+                        for (branch, point) in options.iter().enumerate() {
+                            let ink = RichText::new(format!("{number:>4}"))
+                                .size(MOVE_LIST_FONT_SIZE)
+                                .color(MUTED);
+                            let place = RichText::new(format!("[{branch}] {}", label(*point)))
+                                .size(MOVE_LIST_FONT_SIZE)
+                                .color(PANEL_INK);
+                            // The whole row is the click target, including its text.
+                            let row = if selected_branch == Some(branch) {
+                                Frame::NONE
+                                    .fill(PANEL_CURRENT)
+                                    .inner_margin(2.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                egui::Label::new(ink.strong()).selectable(false),
+                                            );
+                                            stone_dot(ui, branch_colour, MOVE_LIST_STONE_DOT_SIZE);
+                                            ui.add(
+                                                egui::Label::new(place.strong()).selectable(false),
+                                            );
+                                        });
+                                    })
+                                    .response
+                            } else {
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::Label::new(ink).selectable(false));
+                                    stone_dot(ui, branch_colour, MOVE_LIST_STONE_DOT_SIZE);
+                                    ui.add(egui::Label::new(place).selectable(false));
+                                })
+                                .response
+                            };
+                            if row.interact(egui::Sense::click()).clicked() {
+                                select_branch = Some(branch);
+                            }
+                        }
+                        continue;
+                    }
+                }
                 let here = number == cursor;
                 let ink = if number > cursor {
-                    RichText::new(format!("{number:>4}")).color(MUTED)
+                    RichText::new(format!("{number:>4}"))
+                        .size(MOVE_LIST_FONT_SIZE)
+                        .color(MUTED)
                 } else {
-                    RichText::new(format!("{number:>4}")).color(PANEL_INK)
+                    RichText::new(format!("{number:>4}"))
+                        .size(MOVE_LIST_FONT_SIZE)
+                        .color(PANEL_INK)
                 };
-                let place = RichText::new(label(point)).color(PANEL_INK);
+                // A move that was one of several options carries ",…".
+                let marker = if siblings.get(index).copied().unwrap_or(false) {
+                    ",…"
+                } else {
+                    ""
+                };
+                let place = RichText::new(format!("{}{marker}", label(point)))
+                    .size(MOVE_LIST_FONT_SIZE)
+                    .color(PANEL_INK);
                 if here {
                     let row = Frame::NONE
                         .fill(PANEL_CURRENT)
@@ -530,7 +705,7 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(ink.strong());
-                                stone_dot(ui, colour);
+                                stone_dot(ui, colour, MOVE_LIST_STONE_DOT_SIZE);
                                 ui.label(place.strong());
                             });
                         });
@@ -540,7 +715,7 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                 } else {
                     let row = ui.horizontal(|ui| {
                         ui.label(ink);
-                        stone_dot(ui, colour);
+                        stone_dot(ui, colour, MOVE_LIST_STONE_DOT_SIZE);
                         ui.label(place);
                     });
                     if row.response.interact(egui::Sense::click()).clicked() {
@@ -549,6 +724,9 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                 }
             }
         });
+    if let Some(branch) = select_branch {
+        session.select_branch(branch);
+    }
     if let Some(number) = seek {
         session.seek(number);
     }
@@ -559,8 +737,8 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
 /// It is drawn rather than typed: the interface font has no filled circle glyph,
 /// so typing one shows an empty box. A drawn circle can also carry the thin
 /// outline that each stone needs against the row behind it.
-fn stone_dot(ui: &mut egui::Ui, colour: Color) {
-    let size = 13.0;
+fn stone_dot(ui: &mut egui::Ui, colour: Color, size: f32) {
+    let scale = size / STONE_DOT_SIZE;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     let radius = size * 0.42;
     let centre = rect.center();
@@ -570,7 +748,7 @@ fn stone_dot(ui: &mut egui::Ui, colour: Color) {
         Color::White => (SHELL_MARK, Color32::from_rgb(64, 64, 70)),
     };
     painter.circle_filled(centre, radius, fill);
-    painter.circle_stroke(centre, radius, Stroke::new(0.8, outline));
+    painter.circle_stroke(centre, radius, Stroke::new(0.8 * scale, outline));
 }
 
 /// The recently used files.
@@ -581,26 +759,132 @@ fn recents(ui: &mut egui::Ui, session: &mut Session) {
     // The divider belongs to this section, so that it does not hang in the air
     // when there are no recent files.
     ui.separator();
-    ui.label(RichText::new("Recent").color(PANEL_INK));
+    ui.label(
+        RichText::new("Recent")
+            .font(FontId::proportional(SECTION_HEADER_FONT_SIZE))
+            .color(PANEL_INK),
+    );
     let mut open = None;
     for path in session.recent.clone().into_iter().take(6) {
-        if ui.link(name_of(&path)).clicked() {
+        if ui
+            .link(RichText::new(name_of(&path)).size(RECENT_FONT_SIZE))
+            .clicked()
+        {
             open = Some(path);
         }
     }
     if let Some(path) = open {
-        session.attempt(After::OpenRecent(path));
+        session.open(&path);
     }
+}
+
+/// Branch alternatives are navigation hints, not stones: a present but
+/// translucent fill keeps them clearly below the real stones, and a crisp
+/// outline keeps them legible at any zoom.
+const BRANCH_ALTERNATIVE_FILL: u8 = 72;
+const BRANCH_ALTERNATIVE_LINE: u8 = 200;
+
+/// The weakest two of the twenty shades say nothing, so they are not drawn at
+/// all: a candidate at or below this share of the strongest gets no ring.
+const POLICY_RING_FLOOR: f32 = 2.0 / 20.0;
+
+/// Neutral grey behind the black and white threat-sequence numbers.
+const THREAT_CIRCLE: Color32 = Color32::from_rgb(128, 128, 128);
+
+/// One of twenty shades of green for the policy overlay. The value is
+/// relative to the strongest candidate: 1.0 is a deep, saturated green and
+/// weaker candidates fade towards a pale whisper.
+fn policy_colour(value: f32) -> Color32 {
+    let v = value.clamp(0.0, 1.0);
+    egui::ecolor::Hsva::new(0.38, 0.30 + 0.65 * v, 0.95 - 0.45 * v, 0.30 + 0.55 * v).into()
+}
+
+/// The ghost stone for an alternative continuation: `alpha` for the fill,
+/// `BRANCH_ALTERNATIVE_LINE` for the outline.
+fn branch_alternative_colour(side: Color, alpha: u8) -> Color32 {
+    let stone = match side {
+        Color::Black => SLATE_MARK,
+        Color::White => SHELL_MARK,
+    };
+    Color32::from_rgba_unmultiplied(stone.r(), stone.g(), stone.b(), alpha)
 }
 
 /// The markers and the winning line, drawn on top of the board.
 fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     let ppc = session.camera.pixels_per_cell;
-    let font = FontId::monospace((ppc * 0.40 / pixels_per_point).clamp(9.0, 28.0));
+    let font = FontId::monospace((ppc * 0.40 * 0.6 / pixels_per_point).clamp(5.4, 16.8));
     let to_screen = |board: [f32; 2]| -> egui::Pos2 {
         let pixel = session.camera.to_screen(session.viewport, board);
         egui::Pos2::new(pixel[0] / pixels_per_point, pixel[1] / pixels_per_point)
     };
+
+    // Alternative continuations look like translucent stones with a crisp
+    // outline; the one the move list currently follows wears a solid pupil.
+    if session.branch_alternatives && session.is_branch_point() {
+        let selected = session.selected_branch();
+        let side = session.game().to_move();
+        let fill = branch_alternative_colour(side, BRANCH_ALTERNATIVE_FILL);
+        let line = branch_alternative_colour(side, BRANCH_ALTERNATIVE_LINE);
+        for (index, point) in session.branch_options().into_iter().enumerate() {
+            let centre = to_screen([point.col() as f32, point.row() as f32]);
+            let radius = ppc * 0.44 / pixels_per_point;
+            painter.circle_filled(centre, radius, fill);
+            painter.circle_stroke(
+                centre,
+                radius,
+                Stroke::new((ppc * 0.03 / pixels_per_point).max(1.5), line),
+            );
+            if selected == Some(index) {
+                painter.circle_filled(centre, radius * 0.28, branch_alternative_colour(side, 255));
+            }
+        }
+    }
+
+    // The policy overlay: a translucent green circle on each empty candidate
+    // crossing.
+    if session.policy_overlay {
+        if let Some(rings) = &session.policy_rings {
+            for (point, value) in rings {
+                if session.game().stone_at(*point).is_some() {
+                    continue;
+                }
+                if *value <= POLICY_RING_FLOOR {
+                    continue;
+                }
+                let centre = to_screen([point.col() as f32, point.row() as f32]);
+                painter.circle_filled(
+                    centre,
+                    ppc * 0.3525 / pixels_per_point,
+                    policy_colour(*value),
+                );
+            }
+        }
+    }
+
+    // Threat numbers sit above the policy rings when both overlays are on.
+    if let Some(proof) = session.threat_proof() {
+        let radius = ppc * 0.47 * 0.5 / pixels_per_point;
+        for (index, point) in proof.line.iter().enumerate() {
+            let centre = to_screen([point.col() as f32, point.row() as f32]);
+            painter.circle_filled(centre, radius, THREAT_CIRCLE);
+            let side = if index % 2 == 0 {
+                proof.winner
+            } else {
+                proof.winner.other()
+            };
+            let ink = match side {
+                Color::Black => Color32::BLACK,
+                Color::White => Color32::WHITE,
+            };
+            painter.text(
+                centre,
+                Align2::CENTER_CENTER,
+                (index + 1).to_string(),
+                FontId::monospace(radius * 1.2),
+                ink,
+            );
+        }
+    }
 
     if session.toggles.win_line {
         if let Some([from, to]) = winning_line(session.game()) {
@@ -626,17 +910,35 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     }
 
     if session.toggles.move_numbers {
+        let siblings = session.game().moves_with_siblings();
+        // Imported puzzle stones have numbers but no move-tree nodes.
+        let initial_stones = session
+            .game()
+            .stones()
+            .count()
+            .saturating_sub(session.game().cursor());
+        let sibling_font = FontId::monospace(font.size * 0.75);
         for (index, (point, colour)) in session.game().stones().enumerate() {
             let centre = to_screen([point.col() as f32, point.row() as f32]);
             let ink = match colour {
                 Color::Black => Color32::from_rgb(235, 235, 240),
                 Color::White => Color32::from_rgb(30, 30, 36),
             };
+            let has_siblings = index
+                .checked_sub(initial_stones)
+                .and_then(|move_index| siblings.get(move_index))
+                .copied()
+                .unwrap_or(false);
+            let (label, label_font) = if has_siblings {
+                (format!("{},…", index + 1), sibling_font.clone())
+            } else {
+                ((index + 1).to_string(), font.clone())
+            };
             painter.text(
                 centre + Vec2::new(0.0, 0.0),
                 Align2::CENTER_CENTER,
-                format!("{}", index + 1),
-                font.clone(),
+                label,
+                label_font,
                 ink,
             );
         }
@@ -667,97 +969,12 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
 }
 
 /// The dialogs that wait for an answer.
-fn dialogs(
-    ctx: &egui::Context,
-    session: &mut Session,
-    requests: &mut Requests,
-    resume: impl FnOnce(&mut Session),
-) {
+fn dialogs(ctx: &egui::Context, session: &mut Session) {
     let Some(dialog) = session.dialog().cloned() else {
         return;
     };
     let mut close = false;
     match &dialog {
-        Dialog::Truncate { count, point: _ } => {
-            let response = egui::Modal::new(egui::Id::new("truncate")).show(ctx, |ui| {
-                ui.set_max_width(360.0);
-                ui.heading("Delete the moves after this one?");
-                ui.label(format!(
-                    "You are looking at an earlier position. Playing here deletes {count} \
-                     move{}. The move cannot be brought back.",
-                    if *count == 1 { "" } else { "s" }
-                ));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Place, and delete them").clicked() {
-                        session.confirm_truncation();
-                        close = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
-            });
-            if response.should_close() {
-                close = true;
-            }
-        }
-        Dialog::Unsaved { then } => {
-            let response = egui::Modal::new(egui::Id::new("unsaved")).show(ctx, |ui| {
-                ui.set_max_width(380.0);
-                ui.heading("This game has changes that are not saved");
-                ui.label(match then {
-                    After::NewGame => "Start a new game anyway?",
-                    After::Open | After::OpenRecent(_) => "Open another game anyway?",
-                    After::OpenPuzzle => "Load a puzzle anyway?",
-                    After::Quit => "Quit anyway?",
-                });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Save first").clicked() {
-                        session.defer_after_save(then.clone());
-                        requests.save = true;
-                        close = true;
-                    }
-                    if ui.button("Discard the changes").clicked() {
-                        session.defer_action(then.clone());
-                        close = true;
-                    }
-                });
-            });
-            if response.should_close() {
-                close = true;
-            }
-        }
-        Dialog::Resume { source } => {
-            let response = egui::Modal::new(egui::Id::new("resume")).show(ctx, |ui| {
-                ui.set_max_width(380.0);
-                ui.heading("An unfinished game was found");
-                ui.label(match source {
-                    Some(path) => format!(
-                        "{} was not finished, and there is a newer autosave of it.",
-                        name_of(path)
-                    ),
-                    None => {
-                        "There is an autosaved game that was never saved to a file.".to_string()
-                    }
-                });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Continue it").clicked() {
-                        resume(session);
-                        close = true;
-                    }
-                    if ui.button("Start fresh").clicked() {
-                        session.discard_autosave();
-                        close = true;
-                    }
-                });
-            });
-            if response.should_close() {
-                close = true;
-            }
-        }
         Dialog::Message { title, body } => {
             let response = egui::Modal::new(egui::Id::new("message")).show(ctx, |ui| {
                 ui.set_max_width(420.0);
@@ -1059,7 +1276,7 @@ mod tests {
                 }
                 _ => None,
             })
-            .expect("the requested action is drawn");
+            .unwrap_or_else(|| panic!("the requested action is drawn: {text}"));
         output.textures_delta.clear();
         for click in 0..clicks {
             for (step, pressed) in [true, false].into_iter().enumerate() {
@@ -1101,6 +1318,7 @@ mod tests {
     #[test]
     fn a_resigned_game_names_the_win_method() {
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.release_seat(Color::White);
         session.place(gomoku_core::point(7, 7).unwrap());
         let request = session.next_ai_request().unwrap();
         session.apply_ai_reply(request.reply(Ok(player::Decision {
@@ -1109,6 +1327,7 @@ mod tests {
             }),
             search: None,
             guard: None,
+            resignation: None,
         })));
         assert_eq!(status_line(&session), "White resigned — Black wins");
         assert!(session.title().contains("White resigned — Black wins"));
@@ -1122,6 +1341,7 @@ mod tests {
             }),
             search: None,
             guard: None,
+            resignation: None,
         })));
         assert_eq!(status_line(&session), "Black resigned — White wins");
         assert!(session.title().contains("Black resigned — White wins"));
@@ -1164,6 +1384,20 @@ mod tests {
     }
 
     #[test]
+    fn edit_menu_undo_deletes_the_live_tip() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.place(gomoku_core::point(7, 7).unwrap());
+
+        click_text("Edit", |events| ui_frame(&context, &mut session, events));
+        click_text("Undo", |events| ui_frame(&context, &mut session, events));
+
+        assert!(session.game().is_empty());
+        let mut deleted = session.game().clone();
+        assert!(!deleted.forward());
+    }
+
+    #[test]
     fn seat_buttons_transfer_both_colors_without_renaming_or_paint_churn() {
         use crate::ai::SeatOwner;
         let context = egui::Context::default();
@@ -1173,8 +1407,8 @@ mod tests {
         for (label, side, owner) in [
             ("Release Black", Color::Black, SeatOwner::Ai),
             ("Take Black", Color::Black, SeatOwner::Human),
-            ("Take White", Color::White, SeatOwner::Human),
             ("Release White", Color::White, SeatOwner::Ai),
+            ("Take White", Color::White, SeatOwner::Human),
         ] {
             click_text(label, |events| ui_frame(&context, &mut session, events));
             assert_eq!(session.owner(side), owner);
@@ -1230,18 +1464,15 @@ mod tests {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.toggle_panel_section(PanelSection::Players);
-        edit_value(&context, &mut session, "400", "900");
+        edit_value(&context, &mut session, "4000", "900");
         edit_value(&context, &mut session, "0.0", "0.7");
         assert_eq!(session.ai_options(Color::Black).simulations, 900);
         assert_eq!(session.ai_options(Color::Black).temperature, 0.7);
-        edit_value(&context, &mut session, "400", "700");
+        edit_value(&context, &mut session, "4000", "700");
         edit_value(&context, &mut session, "0.0", "1.2");
         assert_eq!(session.ai_options(Color::White).simulations, 700);
         assert_eq!(session.ai_options(Color::White).temperature, 1.2);
         assert!(!session.changed(), "AI settings are not game metadata");
-        click_text("Take White", |events| {
-            ui_frame(&context, &mut session, events)
-        });
         click_text("Release White", |events| {
             ui_frame(&context, &mut session, events)
         });
@@ -1262,7 +1493,10 @@ mod tests {
             action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
             search: None,
             guard: None,
+            resignation: None,
         }))));
+        // The AI's move opened the Moves section; return to the Players seat.
+        session.toggle_panel_section(PanelSection::Players);
         click_text("Release Black", |events| {
             ui_frame(&context, &mut session, events)
         });
@@ -1272,15 +1506,142 @@ mod tests {
     }
 
     #[test]
-    fn resume_is_continuous_and_take_is_active_while_thinking_but_not_modal() {
+    fn the_initiative_button_hands_the_side_to_move_to_the_ai() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
+        assert_eq!(session.owner(Color::Black), SeatOwner::Human);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        output.textures_delta.clear();
+
+        click_text("AI plays Black", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(session.owner(Color::Black), SeatOwner::Ai);
+        let request = session
+            .next_ai_request()
+            .expect("the kick reserves a flight immediately");
+        assert_eq!(request.side, Color::Black);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "AI · thinking…")),
+            "the seat row reads thinking right after the kick"
+        );
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_initiative_button_is_disabled_when_the_game_is_decided() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.take_seat(Color::White);
+        // Black plays out a vertical five on column 7.
+        for (row, col) in [
+            (7, 7),
+            (0, 0),
+            (8, 7),
+            (0, 1),
+            (9, 7),
+            (0, 2),
+            (10, 7),
+            (0, 3),
+            (11, 7),
+        ] {
+            session.place(gomoku_core::point(row, col).unwrap());
+        }
+        assert_ne!(session.game().outcome(), Outcome::Ongoing);
+        session.toggle_panel_section(PanelSection::Players);
+        let generation = session.generation();
+        click_text("AI plays White", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(
+            session.generation(),
+            generation,
+            "a decided game ignores the kick"
+        );
+        assert!(session.next_ai_request().is_none());
+    }
+
+    #[test]
+    fn release_black_with_black_to_move_starts_thinking() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
+        assert_eq!(
+            session.game().board_snapshot().to_move(),
+            Color::Black,
+            "fresh game: Black moves first"
+        );
+        assert_eq!(session.owner(Color::Black), SeatOwner::Human);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        output.textures_delta.clear();
+
+        click_text("Release Black", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(session.owner(Color::Black), SeatOwner::Ai);
+        // prepare_wait reconciles after the click frame settles.
+        let request = session
+            .next_ai_request()
+            .expect("releasing the side to move reserves a flight");
+        assert_eq!(request.side, Color::Black);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "AI · thinking…")),
+            "the seat row reads thinking right after the release"
+        );
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_seat_row_reports_thinking_while_a_flight_computes() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.release_seat(Color::White);
+        session.place(gomoku_core::point(7, 7).unwrap());
+        // A played move opens the Moves section; bring the seats back into view.
+        session.toggle_panel_section(PanelSection::Players);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let seat_line = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == "AI · thinking…")
+            })
+        };
+        assert!(
+            !seat_line(&output),
+            "no flight is outstanding before the first request"
+        );
+        output.textures_delta.clear();
+
+        let _flight = session.next_ai_request().unwrap();
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(seat_line(&output), "the seat row reports thinking");
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn release_reactivates_reviewed_ai_and_take_is_active_while_thinking_but_not_modal() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.toggle_panel_section(PanelSection::Players);
         session.place(gomoku_core::point(7, 7).unwrap());
         session.seek(0);
-        assert!(status_line(&session).contains("AI paused"));
         session.seek(usize::MAX);
-        click_text("Resume AI", |events| {
+        assert_eq!(session.owner(Color::White), SeatOwner::Human);
+        assert!(!status_line(&session).contains("AI paused"));
+        session.toggle_panel_section(PanelSection::Players);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        output.textures_delta.clear();
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Resume AI"
+                || text.galley.text() == "AI paused")));
+        click_text("Release White", |events| {
             ui_frame(&context, &mut session, events)
         });
         session.notice = Some("stale file notice".into());
@@ -1303,6 +1664,7 @@ mod tests {
             action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
             search: None,
             guard: None,
+            resignation: None,
         }))));
         click_text("Release White", |events| {
             ui_frame(&context, &mut session, events)
@@ -1312,7 +1674,10 @@ mod tests {
             action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
             search: None,
             guard: None,
+            resignation: None,
         }))));
+        // The AI's move opened the Moves section; return to the Players seat.
+        session.toggle_panel_section(PanelSection::Players);
         click_text("Release Black", |events| {
             ui_frame(&context, &mut session, events)
         });
@@ -1326,6 +1691,7 @@ mod tests {
     fn resignation_is_a_live_result_not_a_stone_even_while_reviewing() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.release_seat(Color::White);
         session.place(gomoku_core::point(7, 7).unwrap());
         session.knock.take();
         let request = session.next_ai_request().unwrap();
@@ -1335,6 +1701,7 @@ mod tests {
             }),
             search: None,
             guard: None,
+            resignation: None,
         })));
         session.notice = Some("old notice".into());
         assert!(session.title().contains("White resigned — Black wins"));
@@ -1343,6 +1710,7 @@ mod tests {
         assert!(session.knock.is_none());
         assert!(winning_line(session.game()).is_none());
         session.seek(0);
+        session.toggle_panel_section(PanelSection::Moves);
         let mut output = ui_frame(&context, &mut session, vec![]);
         output.textures_delta.clear();
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
@@ -1370,6 +1738,7 @@ mod tests {
     fn stationary_board_hover_follows_ownership_and_never_survives_resignation() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
+        session.release_seat(Color::White);
         ui_frame(&context, &mut session, vec![])
             .textures_delta
             .clear();
@@ -1396,6 +1765,7 @@ mod tests {
             }),
             search: None,
             guard: None,
+            resignation: None,
         })));
         ui_frame(&context, &mut session, vec![])
             .textures_delta
@@ -1409,11 +1779,11 @@ mod tests {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.toggle_panel_section(PanelSection::Players);
-        edit_value(&context, &mut session, "400", "10001");
+        edit_value(&context, &mut session, "4000", "50001");
         edit_value(&context, &mut session, "0.0", "0.74");
-        assert_eq!(session.ai_options(Color::Black).simulations, 10000);
+        assert_eq!(session.ai_options(Color::Black).simulations, 50000);
         assert_eq!(session.ai_options(Color::Black).temperature, 0.7);
-        edit_value(&context, &mut session, "400", "0");
+        edit_value(&context, &mut session, "4000", "0");
         edit_value(&context, &mut session, "0.0", "3");
         assert_eq!(session.ai_options(Color::White).simulations, 1);
         assert_eq!(session.ai_options(Color::White).temperature, 2.0);
@@ -1423,7 +1793,6 @@ mod tests {
     fn menu_bar_and_submenu_entries_use_double_sized_fonts() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
-        let former_size = egui::Style::default().text_styles[&egui::TextStyle::Button].size;
         let mut output = ui_frame(&context, &mut session, vec![]);
         let file = output
             .shapes
@@ -1435,7 +1804,12 @@ mod tests {
             .expect("the File menu is drawn");
         let file_size = file.galley.job.sections[0].format.font_id.size;
         output.textures_delta.clear();
-        assert_eq!(file_size, former_size * 2.0);
+        assert_eq!(file_size, MENU_FONT_SIZE);
+        let center_y = file.pos.y + file.galley.rect.height() / 2.0;
+        assert!(
+            (center_y - MENU_BAR_HEIGHT / 2.0).abs() < 2.0,
+            "the menu label is vertically centered in the bar: {center_y}"
+        );
 
         click_text("File", |events| ui_frame(&context, &mut session, events))
             .textures_delta
@@ -1451,7 +1825,58 @@ mod tests {
             .expect("the open File menu draws its entries");
         let new_game_size = new_game.galley.job.sections[0].format.font_id.size;
         output.textures_delta.clear();
-        assert_eq!(new_game_size, former_size * 2.0);
+        assert_eq!(new_game_size, MENU_FONT_SIZE);
+    }
+
+    #[test]
+    fn the_board_refits_when_the_area_changes_even_after_a_hand_zoom() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        ui_frame_sized(&context, &mut session, vec![], egui::vec2(1200.0, 900.0))
+            .textures_delta
+            .clear();
+        session.camera.zoom_about(
+            session.viewport,
+            [session.viewport.width * 0.5, session.viewport.height * 0.5],
+            2.0,
+        );
+        ui_frame_sized(&context, &mut session, vec![], egui::vec2(700.0, 600.0))
+            .textures_delta
+            .clear();
+        assert!(
+            (session.camera.pixels_per_cell - crate::camera::Camera::fit_scale(session.viewport))
+                .abs()
+                < 1e-3,
+            "the board follows the window again: {}",
+            session.camera.pixels_per_cell
+        );
+    }
+
+    #[test]
+    fn the_status_line_anchors_right_at_menu_size() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let status = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Black to play — move 1" => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .expect("the status line is drawn in the bar");
+        assert_eq!(
+            status.galley.job.sections[0].format.font_id.size,
+            MENU_FONT_SIZE
+        );
+        assert!(
+            status.pos.x > 600.0,
+            "the status anchors to the right half of the 1200-wide window: {:?}",
+            status.pos
+        );
+        output.textures_delta.clear();
     }
 
     #[test]
@@ -1558,52 +1983,724 @@ mod tests {
         output.textures_delta.clear();
     }
 
+    fn branched_session() -> Session {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.take_seat(Color::Black);
+        session.take_seat(Color::White);
+        session.place(gomoku_core::point(7, 7).unwrap());
+        session.place(gomoku_core::point(8, 7).unwrap());
+        session.seek(1);
+        session.place(gomoku_core::point(7, 8).unwrap());
+        session.seek(1);
+        session
+    }
+
     #[test]
-    fn panel_headers_open_exclusively_at_double_body_size() {
+    fn move_numbers_mark_only_stones_with_branch_alternatives() {
+        let context = egui::Context::default();
+        let mut branched = branched_session();
+        branched.seek(usize::MAX);
+        branched.toggles.move_numbers = true;
+        let mut output = ui_frame(&context, &mut branched, vec![]);
+        let marker = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "2,…" => Some(text),
+            _ => None,
+        });
+        output.textures_delta.clear();
+        assert!(marker.is_some(), "the siblinged second move is marked");
+
+        let mut linear = Session::new(&gomoku_core::Settings::default());
+        linear.take_seat(Color::Black);
+        linear.take_seat(Color::White);
+        linear.place(gomoku_core::point(7, 7).unwrap());
+        linear.place(gomoku_core::point(8, 7).unwrap());
+        linear.toggles.move_numbers = true;
+        let mut output = ui_frame(&context, &mut linear, vec![]);
+        let has_marker = output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains(",…"))
+        });
+        output.textures_delta.clear();
+        assert!(!has_marker, "a linear game has no branch markers");
+    }
+
+    #[test]
+    fn move_list_shows_branch_options_only_at_branch_points() {
+        let context = egui::Context::default();
+        let mut session = branched_session();
+        assert!(session.is_branch_point());
+        assert_eq!(session.branch_options().len(), 2);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect();
+        let counts = [
+            texts.iter().filter(|text| **text == "[0] H7").count(),
+            texts.iter().filter(|text| **text == "[1] I8").count(),
+        ];
+        output.textures_delta.clear();
+        assert_eq!(counts, [1, 1], "each branch option is drawn exactly once");
+
+        let mut linear = Session::new(&gomoku_core::Settings::default());
+        linear.take_seat(Color::Black);
+        linear.take_seat(Color::White);
+        linear.place(gomoku_core::point(7, 7).unwrap());
+        linear.place(gomoku_core::point(8, 7).unwrap());
+        linear.seek(1);
+        let mut output = ui_frame(&context, &mut linear, vec![]);
+        let has_branch_affordance = output.shapes.iter().any(|shape| {
+            matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text().starts_with('['))
+        });
+        output.textures_delta.clear();
+        assert!(
+            !has_branch_affordance,
+            "a single continuation is an ordinary move row, not a branch option"
+        );
+    }
+
+    #[test]
+    fn move_list_marks_moves_that_have_branch_alternatives() {
+        let context = egui::Context::default();
+        let mut session = branched_session();
+        // Live view: the selected second move is an ordinary row again.
+        session.seek(usize::MAX);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect();
+        output.textures_delta.clear();
+        assert!(
+            texts.contains(&"I8,\u{2026}"),
+            "the siblinged second move carries the marker, got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains("H8,")),
+            "the only-child first move stays plain"
+        );
+
+        let mut linear = Session::new(&gomoku_core::Settings::default());
+        linear.take_seat(Color::Black);
+        linear.take_seat(Color::White);
+        linear.place(gomoku_core::point(7, 7).unwrap());
+        linear.place(gomoku_core::point(8, 7).unwrap());
+        let mut output = ui_frame(&context, &mut linear, vec![]);
+        let marked = output.shapes.iter().any(|shape| {
+            matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text().contains(",\u{2026}"))
+        });
+        output.textures_delta.clear();
+        assert!(!marked, "a linear history has no markers");
+    }
+
+    #[test]
+    fn selected_branch_option_uses_the_current_row_highlight() {
+        let context = egui::Context::default();
+        let mut session = branched_session();
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let highlighted = |label| {
+            let centre = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.pos + text.galley.rect.center().to_vec2())
+                    }
+                    _ => None,
+                })
+                .expect("the branch option is drawn");
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape,
+                    egui::Shape::Rect(rect)
+                        if rect.fill == PANEL_CURRENT && rect.rect.contains(centre))
+            })
+        };
+        let selected = highlighted("[1] I8");
+        let unselected = highlighted("[0] H7");
+        output.textures_delta.clear();
+        assert!(selected, "the remembered child is visibly selected");
+        assert!(!unselected, "the other branch is not marked as selected");
+    }
+
+    #[test]
+    fn clicking_a_branch_option_enters_it_and_updates_the_move_list() {
+        let context = egui::Context::default();
+        let mut session = branched_session();
+        click_text("[0] H7", |events| ui_frame(&context, &mut session, events));
+
+        assert_eq!(session.game().cursor(), 2, "selection enters the child");
+        assert_eq!(
+            session.game().last_move(),
+            gomoku_core::point(8, 7),
+            "the clicked sibling becomes the visible move"
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let list_follows = output.shapes.iter().any(|shape| {
+            matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "H7,\u{2026}")
+        }) && !output.shapes.iter().any(|shape| {
+            matches!(&shape.shape,
+                egui::Shape::Text(text)
+                    if text.galley.text() == "I8" || text.galley.text().starts_with('['))
+        });
+        output.textures_delta.clear();
+        assert!(
+            list_follows,
+            "the ordinary move rows show the chosen branch"
+        );
+
+        session.rewind();
+        assert_eq!(
+            session.selected_branch(),
+            Some(0),
+            "the choice is remembered at the branch point"
+        );
+    }
+
+    #[test]
+    fn move_rows_use_one_and_a_half_times_body_font() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.take_seat(Color::White);
+        session.place(gomoku_core::point(7, 7).unwrap());
+        session.place(gomoku_core::point(7, 8).unwrap());
+        session.seek(1);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        for label in ["   1", "H8", "   2", "I8"] {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => Some(text),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("move-row text is drawn: {label}"));
+            assert_eq!(
+                text.galley.job.sections[0].format.font_id.size,
+                crate::theme::BODY_FONT_SIZE * 1.5,
+                "{label} is enlarged in both current and future move rows"
+            );
+        }
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn display_options_section_offers_policy_overlay_on_off_button() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Policy);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let button = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Policy overlay OFF" => Some(text),
+                _ => None,
+            })
+            .expect("the open Display options section contains its ON/OFF button");
+        assert_eq!(
+            button.galley.job.sections[0].format.font_id.size,
+            crate::theme::BODY_FONT_SIZE * 2.0,
+            "the display option matches the Resignation switch: twice the body size"
+        );
+        output.textures_delta.clear();
+
+        click_text("Policy overlay OFF", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert!(session.policy_overlay);
+        assert_eq!(
+            session.policy_rings, None,
+            "the flat opening prior carries no guidance"
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Policy overlay ON")));
+        output.textures_delta.clear();
+
+        click_text("Policy overlay ON", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert!(!session.policy_overlay);
+        assert_eq!(session.policy_rings, None);
+    }
+
+    #[test]
+    fn display_options_section_offers_the_branch_alternatives_toggle() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Policy);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Display options")));
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Branch alternatives OFF")));
+        assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Policy")));
+        output.textures_delta.clear();
+
+        click_text("Branch alternatives OFF", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+
+        assert!(session.branch_alternatives);
+    }
+
+    #[test]
+    fn branch_alternative_toggle_gates_translucent_stone_painting() {
+        let context = egui::Context::default();
+        let mut session = branched_session();
+        let alternative = session.branch_options()[0];
+        let fill = Color32::from_rgba_unmultiplied(246, 246, 250, 72);
+        assert_eq!(branch_alternative_colour(Color::White, 72), fill);
+        assert_eq!(
+            branch_alternative_colour(Color::Black, 72),
+            Color32::from_rgba_unmultiplied(22, 22, 26, 72)
+        );
+        let circles = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Circle(circle) if circle.fill == fill => Some(circle),
+                    _ => None,
+                })
+                .count()
+        };
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert_eq!(circles(&output), 0, "the toggle starts off");
+        output.textures_delta.clear();
+
+        session.branch_alternatives = true;
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert_eq!(circles(&output), 2, "every continuation paints");
+        let selected = session
+            .selected_branch()
+            .expect("a branch point has a current child");
+        let pupil = Color32::from_rgba_unmultiplied(246, 246, 250, 255);
+        let pupil_at = |point: gomoku_core::Move, output: &egui::FullOutput| {
+            let pixel = session
+                .camera
+                .to_screen(session.viewport, [point.col() as f32, point.row() as f32]);
+            let centre = egui::Pos2::new(
+                pixel[0] / context.pixels_per_point(),
+                pixel[1] / context.pixels_per_point(),
+            );
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape,
+                    egui::Shape::Circle(circle)
+                        if circle.fill == pupil
+                            && circle.center == centre
+                            && (circle.radius
+                                - session.camera.pixels_per_cell * 0.44 * 0.28
+                                    / context.pixels_per_point())
+                                .abs() < 0.01)
+            })
+        };
+        assert!(
+            pupil_at(session.branch_options()[selected], &output),
+            "the continuation the move list follows wears a pupil"
+        );
+        assert!(
+            !pupil_at(session.branch_options()[1 - selected], &output),
+            "the unselected alternative wears none"
+        );
+        let circle = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Circle(circle) if circle.fill == fill => Some(circle),
+                _ => None,
+            })
+            .expect("the alternative stone is painted");
+        let pixel = session.camera.to_screen(
+            session.viewport,
+            [alternative.col() as f32, alternative.row() as f32],
+        );
+        let expected_centre = egui::Pos2::new(
+            pixel[0] / context.pixels_per_point(),
+            pixel[1] / context.pixels_per_point(),
+        );
+        assert_eq!(circle.center, expected_centre);
+        assert_eq!(
+            circle.radius,
+            session.camera.pixels_per_cell * 0.44 / context.pixels_per_point()
+        );
+        output.textures_delta.clear();
+    }
+
+    fn cache_threat_proof(session: &mut Session, proof: engine::Proof) {
+        session.threat_cache = Some(crate::session::ThreatSequenceCache {
+            position: session.game().board_snapshot(),
+            proof: Some(proof),
+        });
+    }
+
+    #[test]
+    fn display_options_section_offers_the_threat_sequences_toggle() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Policy);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Threat sequences OFF")));
+        output.textures_delta.clear();
+
+        click_text("Threat sequences OFF", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+
+        assert!(session.threat_sequences);
+    }
+
+    #[test]
+    fn threat_sequence_toggle_gates_circle_painting() {
+        fn circle_count(output: &egui::FullOutput) -> usize {
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape,
+                        egui::Shape::Circle(circle) if circle.fill == THREAT_CIRCLE)
+                })
+                .count()
+        }
+
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let proof = engine::Proof {
+            winner: Color::Black,
+            line: vec![
+                gomoku_core::point(6, 6).unwrap(),
+                gomoku_core::point(7, 7).unwrap(),
+                gomoku_core::point(8, 8).unwrap(),
+            ],
+        };
+        cache_threat_proof(&mut session, proof.clone());
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let count = circle_count(&output);
+        output.textures_delta.clear();
+        assert_eq!(count, 0, "the toggle starts off");
+
+        session.threat_sequences = true;
+        cache_threat_proof(&mut session, proof);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let count = circle_count(&output);
+        let radius = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Circle(circle) if circle.fill == THREAT_CIRCLE => Some(circle.radius),
+            _ => None,
+        });
+        output.textures_delta.clear();
+        assert_eq!(count, 3, "one grey circle paints for every proof move");
+        let expected = session.camera.pixels_per_cell * 0.47 * 0.5 / context.pixels_per_point();
+        assert!(
+            (radius.unwrap() - expected).abs() < f32::EPSILON,
+            "each circle is half a stone"
+        );
+    }
+
+    #[test]
+    fn threat_sequence_numbers_follow_line_order_and_move_colors() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.threat_sequences = true;
+        cache_threat_proof(
+            &mut session,
+            engine::Proof {
+                winner: Color::Black,
+                line: vec![
+                    gomoku_core::point(6, 6).unwrap(),
+                    gomoku_core::point(7, 7).unwrap(),
+                    gomoku_core::point(8, 8).unwrap(),
+                    gomoku_core::point(9, 9).unwrap(),
+                ],
+            },
+        );
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        for (number, ink) in [
+            ("1", Color32::BLACK),
+            ("2", Color32::WHITE),
+            ("3", Color32::BLACK),
+            ("4", Color32::WHITE),
+        ] {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == number => Some(text),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("proof move {number} is painted"));
+            assert_eq!(text.galley.job.sections[0].format.color, ink);
+            assert!(
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape,
+                        egui::Shape::Circle(circle)
+                            if circle.fill == THREAT_CIRCLE
+                                && circle.center
+                                    == text.pos + text.galley.rect.center().to_vec2())
+                }),
+                "proof move {number} is centered in its grey circle"
+            );
+            assert!(
+                text.galley.job.sections[0].format.font_id.size
+                    <= session.camera.pixels_per_cell * 0.47 * 0.5 / context.pixels_per_point()
+                        * 1.2,
+                "the number is scaled to its tiny circle"
+            );
+        }
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn threat_circles_paint_after_policy_rings() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let point = gomoku_core::point(8, 8).unwrap();
+        session.policy_overlay = true;
+        session.policy_rings = Some(vec![(point, 1.0)]);
+        session.threat_sequences = true;
+        cache_threat_proof(
+            &mut session,
+            engine::Proof {
+                winner: Color::Black,
+                line: vec![point],
+            },
+        );
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let position = |predicate: &dyn Fn(&egui::Shape) -> bool| {
+            output
+                .shapes
+                .iter()
+                .position(|shape| predicate(&shape.shape))
+        };
+        let ring = position(&|shape| {
+            matches!(shape,
+                egui::Shape::Circle(circle) if circle.fill == policy_colour(1.0))
+        })
+        .expect("the policy ring paints");
+        let threat = position(
+            &|shape| matches!(shape, egui::Shape::Circle(circle) if circle.fill == THREAT_CIRCLE),
+        )
+        .expect("the threat circle paints");
+        let number = position(
+            &|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == "1"),
+        )
+        .expect("the threat number paints");
+        output.textures_delta.clear();
+        assert!(ring < threat && threat < number);
+    }
+
+    #[test]
+    fn policy_overlay_toggle_gates_ring_painting() {
+        fn ring_count(output: &egui::FullOutput) -> usize {
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape,
+                        egui::Shape::Circle(circle) if circle.fill == policy_colour(1.0))
+                })
+                .count()
+        }
+
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.policy_rings = Some(vec![(gomoku_core::point(8, 8).unwrap(), 1.0)]);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let count = ring_count(&output);
+        output.textures_delta.clear();
+        assert_eq!(count, 0, "the toggle starts off");
+
+        session.policy_overlay = true;
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let count = ring_count(&output);
+        let radius = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Circle(circle) if circle.fill == policy_colour(1.0) => Some(circle.radius),
+            _ => None,
+        });
+        output.textures_delta.clear();
+        assert_eq!(count, 1, "the toggle reveals the rings");
+        let expected = session.camera.pixels_per_cell * 0.3525 / context.pixels_per_point();
+        assert!(
+            (radius.unwrap() - expected).abs() < f32::EPSILON,
+            "the ring is 75% of its former size"
+        );
+    }
+
+    #[test]
+    fn policy_rings_suppress_the_weakest_two_shades() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.policy_overlay = true;
+        // Shades one and two of twenty (0.05, 0.10) are too faint to matter;
+        // shade three (0.15) and the strongest (1.0) must still paint.
+        session.policy_rings = Some(vec![
+            (gomoku_core::point(6, 6).unwrap(), 0.05),
+            (gomoku_core::point(7, 7).unwrap(), 0.10),
+            (gomoku_core::point(8, 8).unwrap(), 0.15),
+            (gomoku_core::point(9, 9).unwrap(), 1.0),
+        ]);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let painted = |fill| {
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape,
+                        egui::Shape::Circle(circle) if circle.fill == fill)
+                })
+                .count()
+        };
+        assert_eq!(painted(policy_colour(0.05)), 0, "shade one is suppressed");
+        assert_eq!(painted(policy_colour(0.10)), 0, "shade two is suppressed");
+        assert_eq!(painted(policy_colour(0.15)), 1, "shade three paints");
+        assert_eq!(painted(policy_colour(1.0)), 1, "the strongest paints");
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn policy_rings_never_paint_over_stones() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let occupied = gomoku_core::point(7, 7).unwrap();
+        session.place(occupied);
+        session.policy_overlay = true;
+        session.policy_rings = Some(vec![
+            (occupied, 1.0),
+            (gomoku_core::point(8, 8).unwrap(), 1.0),
+        ]);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let count = output
+            .shapes
+            .iter()
+            .filter(|shape| {
+                matches!(&shape.shape,
+                    egui::Shape::Circle(circle) if circle.fill == policy_colour(1.0))
+            })
+            .count();
+        output.textures_delta.clear();
+        assert_eq!(count, 1, "only the empty crossing has a policy ring");
+    }
+
+    #[test]
+    fn resignation_button_toggles_both_ai_seats() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         let mut output = ui_frame(&context, &mut session, vec![]);
-        let body_size = egui::Style::default().text_styles[&egui::TextStyle::Body].size;
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Resignation ON")));
+        output.textures_delta.clear();
+
+        let mut output = click_text("Resignation ON", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+
+        assert!(!session.resignation_enabled());
+        assert!(!session.ai_options(Color::Black).resign);
+        assert!(!session.ai_options(Color::White).resign);
+        output.textures_delta.clear();
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Resignation OFF")));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn panel_headers_open_exclusively_at_header_size() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        assert_eq!(
+            session.open_panel_section(),
+            crate::session::PanelSection::Players,
+            "the Players section is open from the start"
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
         let header = output
             .shapes
             .iter()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text() == "▸ Players" => Some(text),
+                egui::Shape::Text(text) if text.galley.text() == "Players" => Some(text),
                 _ => None,
             })
-            .expect("the closed Players header is drawn");
+            .expect("the open Players header is drawn");
         assert_eq!(
             header.galley.job.sections[0].format.font_id.size,
-            body_size * 2.0
+            SECTION_HEADER_FONT_SIZE
+        );
+        assert_eq!(
+            header.galley.job.sections[0].format.color,
+            Color32::WHITE,
+            "the header text is white on its grey strip"
         );
         output.textures_delta.clear();
 
-        click_text("▸ Players", |events| {
-            ui_frame(&context, &mut session, events)
-        });
+        session.place(gomoku_core::point(7, 7).unwrap());
+        assert_eq!(
+            session.open_panel_section(),
+            crate::session::PanelSection::Moves,
+            "a played move opens the Moves section"
+        );
+        let mut output = click_text("Players", |events| ui_frame(&context, &mut session, events));
         assert_eq!(
             session.open_panel_section(),
             crate::session::PanelSection::Players
         );
-        let mut output = ui_frame(&context, &mut session, vec![]);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Text(text) if text.galley.text() == "▾ Players")));
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Text(text) if text.galley.text() == "▸ Moves")));
-        output.textures_delta.clear();
-
-        session.place(gomoku_core::point(7, 7).unwrap());
-        let mut output = click_text("▸ Moves", |events| {
-            ui_frame(&context, &mut session, events)
-        });
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Text(text) if text.galley.text() == "H8")));
+            egui::Shape::Text(text) if text.galley.text() == "Resignation ON")));
         assert!(
             !output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Text(text) if text.galley.text() == "Resignation ON")),
-            "the superseded Players body must not render in the switching frame"
+                egui::Shape::Text(text) if text.galley.text() == "H8")),
+            "the superseded Moves body must not render in the switching frame"
         );
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn panel_headers_are_full_width_grey_strips() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let strips: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == crate::theme::PANEL_HEADER => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        output.textures_delta.clear();
+        assert_eq!(
+            strips.len(),
+            3,
+            "Players, Moves and Display options each get a grey strip"
+        );
+        for strip in strips {
+            assert!(
+                (strip.max.x - 1200.0).abs() < 1.0,
+                "the strip reaches the window's right border, got {strip:?}"
+            );
+        }
     }
 
     #[test]
@@ -1613,6 +2710,7 @@ mod tests {
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.toggle_panel_section(PanelSection::Players);
         session.panel_width = 180.0;
+        session.release_seat(Color::White);
         session
             .set_ai_options(
                 Color::Black,
@@ -1653,7 +2751,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_is_absent_for_review_human_turns_and_finished_games() {
+    fn paused_controls_are_absent_for_review_human_turns_and_finished_games() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.seek(0);
@@ -1661,14 +2759,15 @@ mod tests {
             let mut output = ui_frame(&context, session, vec![]);
             output.textures_delta.clear();
             assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
-                egui::Shape::Text(text) if text.galley.text() == "Resume AI")));
+                egui::Shape::Text(text) if text.galley.text() == "Resume AI"
+                    || text.galley.text() == "AI paused")));
         };
-        absent(&mut session); // paused but Human Black
+        absent(&mut session); // Human Black
         session.place(gomoku_core::point(7, 7).unwrap());
         session.seek(0);
         absent(&mut session); // reviewing
         session.seek(usize::MAX);
-        session.resume_automation();
+        session.release_seat(Color::White);
         let request = session.next_ai_request().unwrap();
         session.apply_ai_reply(request.reply(Ok(player::Decision {
             action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
@@ -1676,6 +2775,7 @@ mod tests {
             }),
             search: None,
             guard: None,
+            resignation: None,
         })));
         session.seek(usize::MAX);
         absent(&mut session); // live but finished
@@ -1713,52 +2813,21 @@ mod tests {
     }
 
     #[test]
-    fn continuing_an_unreadable_autosave_keeps_its_error_visible() {
+    fn clicking_a_recent_file_opens_it_without_an_unsaved_prompt() {
         let context = egui::Context::default();
+        crate::theme::install(&context);
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.place(gomoku_core::point(7, 7).unwrap());
-        let before = session.game().clone();
-        session.set_dialog(Dialog::Resume { source: None });
-        let path =
-            std::env::temp_dir().join(format!("gomoku-failed-resume-{}.json", std::process::id()));
-        std::fs::write(&path, "not a game").unwrap();
-        let frame = |session: &mut Session, events| {
-            context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1200.0, 900.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    dialogs(ui.ctx(), session, &mut Requests::default(), |session| {
-                        session.resume_autosave_from(&path, None);
-                    });
-                },
-            )
-        };
-        click_text("Continue it", |events| frame(&mut session, events));
-        assert!(
-            matches!(session.dialog(), Some(Dialog::Message { title, .. }) if title == "The autosaved game could not be read")
-        );
-        assert_eq!(session.game(), &before);
-        assert!(session.automation_running());
-        frame(&mut session, vec![]).textures_delta.clear();
-        assert!(matches!(session.dialog(), Some(Dialog::Message { .. })));
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn clicking_a_recent_file_does_not_bypass_unsaved_confirmation() {
-        let context = egui::Context::default();
-        let mut session = Session::new(&gomoku_core::Settings::default());
-        session.place(gomoku_core::point(7, 7).unwrap());
-        let before = session.game().clone();
-        let path = PathBuf::from("recent-unsaved-game.json");
+        let path = std::env::temp_dir().join(format!(
+            "gomoku-recent-no-prompt-{}.json",
+            std::process::id()
+        ));
+        let mut expected = gomoku_core::Game::new();
+        expected.play(gomoku_core::point(3, 3).unwrap()).unwrap();
+        gomoku_core::save(&path, &expected).unwrap();
         session.recent = vec![path.clone()];
-        click_text("recent-unsaved-game.json", |events| {
+        let label = name_of(&path);
+        click_text(&label, |events| {
             context.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -1771,26 +2840,16 @@ mod tests {
                 |ui| recents(ui, &mut session),
             )
         });
-        assert_eq!(
-            session.dialog(),
-            Some(&Dialog::Unsaved {
-                then: After::OpenRecent(path)
-            })
-        );
-        assert_eq!(session.game(), &before);
-        assert!(session.take_action().is_none());
+        assert!(session.dialog().is_none());
+        assert_eq!(session.game(), &expected);
+        assert!(!session.changed());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn every_dialog_draws() {
         let point = gomoku_core::point(7, 7).expect("inside the board");
         let dialogs = [
-            Dialog::Truncate { count: 3, point },
-            Dialog::Unsaved { then: After::Quit },
-            Dialog::Resume {
-                source: Some(PathBuf::from("/tmp/game.json")),
-            },
-            Dialog::Resume { source: None },
             Dialog::Message {
                 title: "The game could not be opened".to_string(),
                 body: "the record has no marker".to_string(),
@@ -1838,6 +2897,7 @@ mod tests {
             before: Box::new(crate::session::BeforePuzzle::from(&session)),
         });
         let context = egui::Context::default();
+        crate::theme::install(&context);
         // Open File, then click its first action, well outside the picker.
         for (position, pressed) in [
             (egui::pos2(20.0, 14.0), None),
@@ -1932,6 +2992,7 @@ mod tests {
     fn resigned_session(resigner: Color) -> Session {
         let mut session = Session::new(&gomoku_core::Settings::default());
         if resigner == Color::White {
+            session.release_seat(Color::White);
             session.place(gomoku_core::point(7, 7).unwrap());
         } else {
             session.release_seat(Color::Black);
@@ -1943,6 +3004,7 @@ mod tests {
             }),
             search: None,
             guard: None,
+            resignation: None,
         })));
         session
     }
@@ -1978,7 +3040,7 @@ mod tests {
             assert_eq!(text.galley.text(), line);
             let format = &text.galley.job.sections[0].format;
             assert!(
-                format.font_id.size >= 24.0,
+                format.font_id.size >= crate::theme::BODY_FONT_SIZE * 2.0,
                 "the banner shouts: {}pt",
                 format.font_id.size
             );
@@ -2067,7 +3129,7 @@ mod tests {
     fn the_banner_wraps_when_the_window_is_narrow() {
         let context = egui::Context::default();
         let mut session = resigned_session(Color::White);
-        let mut output = ui_frame_sized(&context, &mut session, vec![], egui::vec2(360.0, 900.0));
+        let mut output = ui_frame_sized(&context, &mut session, vec![], egui::vec2(240.0, 900.0));
         let (_, text) = banner(&output).expect("the banner shows at any width");
         output.textures_delta.clear();
         assert!(
@@ -2135,6 +3197,43 @@ mod tests {
                 });
             },
         )
+    }
+
+    #[test]
+    fn reopening_the_last_corpus_is_a_lab_menu_request() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let requests = std::cell::Cell::new(Requests::default());
+        session.remember_corpus_directory(std::path::Path::new("/games/Freestyle15_1"));
+
+        click_text("Lab", |events| {
+            explorer_frame(&context, &mut session, &requests, events, None)
+        });
+        click_text("Reopen Freestyle15_1", |events| {
+            explorer_frame(&context, &mut session, &requests, events, None)
+        });
+        assert!(
+            requests.get().reopen_explorer,
+            "the menu item requests a pickerless reload"
+        );
+    }
+
+    #[test]
+    fn reopen_last_corpus_is_disabled_without_a_corpus() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let requests = std::cell::Cell::new(Requests::default());
+
+        click_text("Lab", |events| {
+            explorer_frame(&context, &mut session, &requests, events, None)
+        });
+        click_text("Reopen last corpus", |events| {
+            explorer_frame(&context, &mut session, &requests, events, None)
+        });
+        assert!(
+            !requests.get().reopen_explorer,
+            "a disabled item never requests"
+        );
     }
 
     #[test]

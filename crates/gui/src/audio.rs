@@ -31,6 +31,16 @@ pub const MAX_MODES: usize = 6;
 /// A silent mode, used for the entries that are not needed.
 const SILENT: Mode = (0.0, 0.0, 0.0);
 
+/// Raise a frequency by the current pitch shift.
+const fn pitch(f: f32) -> f32 {
+    f * 6.4
+}
+
+/// Shorten a time constant by the current duration shift.
+const fn haste(t: f32) -> f32 {
+    t * 0.25
+}
+
 /// The modes of one part of a knock: the body of the board, or the stone.
 ///
 /// The list is of a fixed size so that a voicing costs nothing to copy and can be
@@ -125,20 +135,28 @@ pub type Parts = Vec<(f32, Voicing)>;
 /// tail and a flatter landing: the modes ring for forty-five hundredths of their
 /// first tuning, the file runs for fifty-five, the landing takes six
 /// milliseconds, and the contact is at sixty-five hundredths.
+///
+/// A later retune raised every frequency by 60% and halved every time constant
+/// to make the knock shorter and less like bricks stacked on each other. A second
+/// listening pass asked for more of the same: every frequency is now at 6.4 times
+/// its first tuning, and every time constant at a quarter.
 pub const SET_DOWN: Voicing = Voicing {
     contact: 0.27898,
-    contact_centre: 1258.125,
-    contact_decay: 0.002808,
-    contact_rise: 0.00105,
-    attack: 0.006,
-    body: Modes::new(&[(136.64, 0.01787625, 0.70), (302.56, 0.010215, 0.35)]),
-    stone: Modes::new(&[(2000.0, 0.0063, 0.15)]),
-    tone: 3200.0,
+    contact_centre: pitch(1258.125),
+    contact_decay: haste(0.002808),
+    contact_rise: haste(0.00105),
+    attack: haste(0.006),
+    body: Modes::new(&[
+        (pitch(136.64), haste(0.01787625), 0.70),
+        (pitch(302.56), haste(0.010215), 0.35),
+    ]),
+    stone: Modes::new(&[(pitch(2000.0), haste(0.0063), 0.15)]),
+    tone: pitch(3200.0),
     roughness: 0.34,
     glide: 0.018,
     spread: 0.03,
     whisper: 0.09,
-    length: 0.0858495,
+    length: haste(0.0858495),
 };
 
 /// The ringing stone that the game did not use on its own.
@@ -148,20 +166,26 @@ pub const SET_DOWN: Voicing = Voicing {
 /// is what gives the quiet knock a trace of the stone. It carries the same K10
 /// retuning as the quiet half: shorter modes, a short landing of its own, and a
 /// quieter contact.
+///
+/// The latest retunes applied to this half as well, so the two halves stay
+/// matched: 6.4 times the frequency, a quarter of the duration.
 pub const STONE_RING: Voicing = Voicing {
     contact: 0.585,
-    contact_centre: 2000.0,
-    contact_decay: 0.0012,
+    contact_centre: pitch(2000.0),
+    contact_decay: haste(0.0012),
     contact_rise: 0.0,
-    attack: 0.0024,
-    body: Modes::new(&[(200.0, 0.009, 0.45)]),
-    stone: Modes::new(&[(2700.0, 0.0135, 0.40), (4100.0, 0.0081, 0.20)]),
-    tone: 6500.0,
+    attack: haste(0.0024),
+    body: Modes::new(&[(pitch(200.0), haste(0.009), 0.45)]),
+    stone: Modes::new(&[
+        (pitch(2700.0), haste(0.0135), 0.40),
+        (pitch(4100.0), haste(0.0081), 0.20),
+    ]),
+    tone: pitch(6500.0),
     roughness: 0.2,
     glide: 0.0,
     spread: 0.0,
     whisper: 0.0,
-    length: 0.0605,
+    length: haste(0.0605),
 };
 
 /// The share of the quiet sound in what is played.
@@ -179,6 +203,9 @@ pub const STONE_RING_SHARE: f32 = 0.2;
 ///
 /// The shares are written out rather than worked out from one another, so that
 /// what the game plays is exactly the file that was listened to.
+///
+/// Both halves were retuned together in the latest passes: every frequency is at
+/// 6.4 times its first tuning, and every time constant at a quarter.
 pub fn in_use() -> Parts {
     vec![(SET_DOWN_SHARE, SET_DOWN), (STONE_RING_SHARE, STONE_RING)]
 }
@@ -630,9 +657,9 @@ mod tests {
             "the peak must be in the first 15 ms"
         );
 
-        // A 420 Hz mode with a 55 ms decay is still audible at 150 ms, so the
-        // tail is compared against the peak rather than against silence. The
-        // fade-out at the very end is covered by the edges test.
+        // A 220 Hz mode with a nine-millisecond decay is quiet long before the
+        // file ends, so the tail is compared against the peak rather than against
+        // silence. The fade-out at the very end is covered by the edges test.
         let level = |slice: &[f32]| slice.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
         let peak = level(&samples);
         let last_five_ms = &samples[samples.len() - 48_000 * 5 / 1000..];
@@ -688,7 +715,22 @@ mod tests {
     #[test]
     fn a_longer_landing_arrives_more_gently() {
         // The level of the first millisecond against the peak of the whole knock:
-        // this is the number the owner's ear was complaining about.
+        // this is the number the owner's ear was complaining about. A fixed low
+        // mode keeps the measure independent of how the sound in use is tuned: at
+        // a high tuning several cycles fit in the window, and the peak no longer
+        // says anything about the landing.
+        let landing = Voicing {
+            contact: 0.0,
+            body: Modes::new(&[(400.0, 0.100, 1.0)]),
+            stone: Modes::new(&[]),
+            roughness: 0.0,
+            glide: 0.0,
+            spread: 0.0,
+            whisper: 0.0,
+            tone: 20000.0,
+            length: 0.15,
+            ..SET_DOWN
+        };
         let opening = |voicing: &Voicing| {
             let samples = render_click(48_000, 5, false, voicing);
             let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
@@ -699,11 +741,11 @@ mod tests {
         };
         let hard = Voicing {
             attack: 0.0,
-            ..SET_DOWN
+            ..landing
         };
         let soft = Voicing {
             attack: 0.004,
-            ..SET_DOWN
+            ..landing
         };
         assert!(
             opening(&soft) < opening(&hard) * 0.5,

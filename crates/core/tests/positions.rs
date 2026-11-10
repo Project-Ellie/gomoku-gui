@@ -120,14 +120,14 @@ fn imported_nearly_full_root_draws_rewinds_replays_and_undoes() {
     assert!(game.forward(), "review redo replays the final move");
     assert_eq!(game.status(), Status::Draw);
 
-    assert!(game.undo(), "destructive undo reopens the game");
+    assert!(game.undo(), "undo deletes back to the imported root");
     assert_eq!(game.status(), Status::Ongoing);
     assert_eq!(game.outcome(), Outcome::Ongoing);
     assert_eq!(game.to_move(), Color::Black);
-    assert!(game.moves().is_empty());
+    assert!(game.is_empty());
     assert_eq!(game.stones().collect::<Vec<_>>(), root_stones);
     assert!(!game.undo());
-    assert!(!game.forward(), "destructive undo has no redo stack");
+    assert!(!game.forward(), "the deleted move has no redo");
     game.play(last).unwrap();
     assert_eq!(game.status(), Status::Draw);
 }

@@ -125,6 +125,7 @@ mod tests {
 
     fn session() -> Session {
         let mut session = Session::new(&Settings::default());
+        session.release_seat(gomoku_core::Color::White);
         session.place(point(7, 7).unwrap());
         session
     }
@@ -134,6 +135,7 @@ mod tests {
             action: DecisionAction::Play(point(7, 8).unwrap()),
             search: None,
             guard: None,
+            resignation: None,
         })
     }
 
@@ -259,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn factory_and_decision_errors_and_panics_retire_and_pause_visibly() {
+    fn factory_and_decision_errors_and_panics_retire_and_hold_the_seat() {
         for mode in 0..4 {
             let (done, replies) = mpsc::channel();
             let worker = Worker::spawn(
@@ -279,8 +281,11 @@ mod tests {
             let mut session = session();
             worker.submit(session.next_ai_request().unwrap()).unwrap();
             assert!(!session.apply_ai_reply(receive(&replies)));
-            assert!(!session.automation_running());
-            assert!(session.notice.as_ref().unwrap().starts_with("AI paused:"));
+            assert_eq!(
+                session.owner(engine::Color::White),
+                crate::ai::SeatOwner::Human
+            );
+            assert!(session.notice.as_ref().unwrap().starts_with("AI error:"));
             assert!(session.next_ai_request().is_none());
         }
     }
@@ -303,7 +308,10 @@ mod tests {
         let mut other = session();
         let reply = worker.submit(other.next_ai_request().unwrap()).unwrap_err();
         assert!(!other.apply_ai_reply(*reply));
-        assert!(!other.automation_running());
+        assert_eq!(
+            other.owner(engine::Color::White),
+            crate::ai::SeatOwner::Human
+        );
         assert!(other.next_ai_request().is_none());
         release.send(()).unwrap();
         drop(worker);
@@ -333,18 +341,21 @@ mod tests {
         let reply = worker.submit(request).unwrap_err();
         assert!(reply.result.as_ref().unwrap_err().contains("disconnected"));
         assert!(!session.apply_ai_reply(*reply));
-        assert!(!session.automation_running());
+        assert_eq!(
+            session.owner(engine::Color::White),
+            crate::ai::SeatOwner::Human
+        );
     }
 
     #[test]
     #[ignore = "manual latency probe: run with --release --ignored --nocapture"]
-    fn real_flex_default_400_visit_latency() {
+    fn real_flex_default_4000_visit_latency() {
         let (done, replies) = mpsc::channel();
         let start = std::time::Instant::now();
         let worker = Worker::baseline(move |reply| done.send(reply).is_ok()).unwrap();
         let mut session = session();
         let request = session.next_ai_request().unwrap();
-        assert_eq!(request.options.simulations, 400);
+        assert_eq!(request.options.simulations, 4000);
         assert!(request.options.own.enabled);
         assert!(request.options.guard.enabled);
         assert!(request.options.resign);
@@ -352,7 +363,7 @@ mod tests {
         let reply = receive(&replies);
         let decision = reply.result.as_ref().unwrap();
         let search = decision.search.as_ref().expect("quiet board searches");
-        assert_eq!(search.visits.iter().map(|(_, n)| n).sum::<u32>(), 400);
+        assert_eq!(search.visits.iter().map(|(_, n)| n).sum::<u32>(), 4000);
         assert!(session.apply_ai_reply(reply));
         eprintln!(
             "real Burn Flex GUI defaults: 400 visits incl init {:?}",
@@ -489,6 +500,7 @@ mod tests {
                         action: DecisionAction::Play(*local),
                         search: None,
                         guard: None,
+                        resignation: None,
                     })
                 })
             },

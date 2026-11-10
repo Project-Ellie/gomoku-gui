@@ -9,12 +9,26 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use egui::{Color32, CornerRadius, FontId, Stroke, Style, TextStyle, Vec2, Visuals};
 
-/// SF Rounded is the preferred UI font on the owner's macOS development machine.
-/// Other systems retain egui's built-in fonts when this system path is unavailable.
-const DEFAULT_UI_FONT_PATH: &str = "/System/Library/Fonts/SFNSRounded.ttf";
+/// Seravek is the chosen UI font on the owner's macOS development machine.
+/// Face zero of the collection is the Regular weight. Other systems retain
+/// egui's built-in fonts when this system path is unavailable.
+const DEFAULT_UI_FONT_PATH: &str = "/System/Library/Fonts/Supplemental/Seravek.ttc";
 
 /// The key used for the selected application font in egui's font table.
 const OVERRIDE_FONT: &str = "app-font-override";
+
+/// The bold cut of the interface font, for controls that must read as controls
+/// (the section headers). Always bound: Seravek Bold when the default
+/// collection is installed, the override or default face otherwise.
+pub(crate) const BOLD_FONT_FAMILY: &str = "app-font-bold";
+
+/// Seravek Bold is face nine of the default TrueType collection.
+const SERAVEK_BOLD_FACE: u32 = 9;
+
+/// Bold text of the interface font.
+pub(crate) fn bold(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name(BOLD_FONT_FAMILY.into()))
+}
 
 /// Put an override before the built-in proportional fonts, retaining glyph fallbacks.
 fn font_definitions(font: egui::FontData) -> egui::FontDefinitions {
@@ -28,6 +42,11 @@ fn font_definitions(font: egui::FontData) -> egui::FontDefinitions {
     {
         proportional.insert(0, OVERRIDE_FONT.to_owned());
     }
+    // An override carries no bold cut of its own: bold falls back to it.
+    definitions.families.insert(
+        egui::FontFamily::Name(BOLD_FONT_FAMILY.into()),
+        vec![OVERRIDE_FONT.to_owned()],
+    );
     definitions
 }
 
@@ -50,6 +69,11 @@ pub(crate) fn install_font(context: &egui::Context, path: &Path) -> Result<()> {
 /// Install loaded font data and route every text style through it.
 fn install_font_data(context: &egui::Context, font: egui::FontData) {
     context.set_fonts(font_definitions(font));
+    route_text_styles(context);
+}
+
+/// Route every text style through the proportional family.
+fn route_text_styles(context: &egui::Context) {
     context.global_style_mut(|style| {
         for font in style.text_styles.values_mut() {
             font.family = egui::FontFamily::Proportional;
@@ -65,6 +89,8 @@ pub(crate) const PANEL: Color32 = Color32::from_rgb(238, 234, 226);
 pub(crate) const PANEL_INK: Color32 = Color32::from_rgb(40, 45, 47);
 /// Secondary text colour, dark enough to remain readable on the panel.
 pub(crate) const MUTED: Color32 = Color32::from_rgb(101, 107, 105);
+/// Section-header strip grey: dark enough to carry bold white text.
+pub(crate) const PANEL_HEADER: Color32 = MUTED;
 /// Quiet background for editable fields.
 pub(crate) const PANEL_FIELD: Color32 = Color32::from_rgb(252, 251, 248);
 /// Soft teal wash marking the current row or selection.
@@ -85,21 +111,31 @@ const BORDER: Color32 = Color32::from_rgb(212, 206, 195);
 /// Very light background for alternating or recessed regions.
 const FAINT: Color32 = Color32::from_rgb(229, 224, 215);
 
-/// Body text size, unchanged from egui's previous default.
-pub(crate) const BODY_FONT_SIZE: f32 = 13.0;
+/// Body text size: three quarters of the original 13pt baseline.
+pub(crate) const BODY_FONT_SIZE: f32 = 9.75;
 /// Button text size before the menu-specific doubling.
-const BUTTON_FONT_SIZE: f32 = 13.0;
+const BUTTON_FONT_SIZE: f32 = 9.75;
 /// Main menu and submenu text size: exactly twice the former button size.
 pub(crate) const MENU_FONT_SIZE: f32 = BUTTON_FONT_SIZE * 2.0;
-/// Accordion section headers remain at the size introduced in Task 1.8.
-pub(crate) const SECTION_HEADER_FONT_SIZE: f32 = BODY_FONT_SIZE * 2.0;
+/// Accordion section headers: 2.4 times the body size.
+pub(crate) const SECTION_HEADER_FONT_SIZE: f32 = BODY_FONT_SIZE * 2.4;
+/// Recent-file entries: halfway between body text and the section headers.
+pub(crate) const RECENT_FONT_SIZE: f32 = BODY_FONT_SIZE * 1.5;
+/// Shared enlargement for move-row text and its drawn stone marker.
+const MOVE_LIST_SCALE: f32 = 1.5;
+/// Move numbers and coordinates: 150% of their inherited body size.
+pub(crate) const MOVE_LIST_FONT_SIZE: f32 = BODY_FONT_SIZE * MOVE_LIST_SCALE;
 /// The resignation banner remains the loudest text in the interface.
-pub(crate) const BANNER_FONT_SIZE: f32 = 28.0;
+pub(crate) const BANNER_FONT_SIZE: f32 = 21.0;
 
-/// Menu bar height, enlarged to contain the doubled menu labels comfortably.
-pub(crate) const MENU_BAR_HEIGHT: f32 = 44.0;
+/// Menu bar height, sized to contain the menu labels comfortably.
+pub(crate) const MENU_BAR_HEIGHT: f32 = 33.0;
 /// Side-panel content padding.
 pub(crate) const PANEL_MARGIN: i8 = 10;
+/// Drawn stone marker used beside player names.
+pub(crate) const STONE_DOT_SIZE: f32 = 13.0;
+/// Move-row stone markers grow with their text to keep the row balanced.
+pub(crate) const MOVE_LIST_STONE_DOT_SIZE: f32 = STONE_DOT_SIZE * MOVE_LIST_SCALE;
 /// Shared corner radius for ordinary controls.
 const WIDGET_CORNER_RADIUS: u8 = 5;
 /// Shared corner radius for menus.
@@ -115,8 +151,43 @@ pub(crate) fn install(context: &egui::Context) {
 /// Install the theme, retaining egui's fonts if the preferred font cannot be read.
 fn install_with_default_font(context: &egui::Context, default_font: &Path) {
     context.global_style_mut(|style| *style = lab_style());
-    if let Err(error) = install_font(context, default_font) {
-        log::warn!("the default UI font is unavailable; using egui's fonts: {error}");
+    match std::fs::read(default_font) {
+        Ok(bytes) => {
+            // Face zero of the collection is the regular cut.
+            let mut definitions = font_definitions(egui::FontData::from_owned(bytes.clone()));
+            let bold = egui::FontData {
+                index: SERAVEK_BOLD_FACE,
+                ..egui::FontData::from_owned(bytes)
+            };
+            definitions
+                .font_data
+                .insert(BOLD_FONT_FAMILY.to_owned(), std::sync::Arc::new(bold));
+            if let Some(family) = definitions
+                .families
+                .get_mut(&egui::FontFamily::Name(BOLD_FONT_FAMILY.into()))
+            {
+                family.insert(0, BOLD_FONT_FAMILY.to_owned());
+            }
+            context.set_fonts(definitions);
+            route_text_styles(context);
+        }
+        Err(error) => {
+            log::warn!("the default UI font is unavailable; using egui's fonts: {error}");
+            // egui's built-ins have no bold cut: bind the family to the
+            // proportional default so bold text always has a face.
+            let mut definitions = egui::FontDefinitions::default();
+            if let Some(proportional) = definitions
+                .families
+                .get(&egui::FontFamily::Proportional)
+                .cloned()
+            {
+                definitions.families.insert(
+                    egui::FontFamily::Name(BOLD_FONT_FAMILY.into()),
+                    proportional,
+                );
+            }
+            context.set_fonts(definitions);
+        }
     }
 }
 
@@ -124,11 +195,11 @@ fn install_with_default_font(context: &egui::Context, default_font: &Path) {
 fn lab_style() -> Style {
     let mut style = Style {
         text_styles: [
-            (TextStyle::Small, FontId::proportional(9.0)),
+            (TextStyle::Small, FontId::proportional(6.75)),
             (TextStyle::Body, FontId::proportional(BODY_FONT_SIZE)),
-            (TextStyle::Monospace, FontId::monospace(13.0)),
+            (TextStyle::Monospace, FontId::monospace(9.75)),
             (TextStyle::Button, FontId::proportional(BUTTON_FONT_SIZE)),
-            (TextStyle::Heading, FontId::proportional(18.0)),
+            (TextStyle::Heading, FontId::proportional(13.5)),
         ]
         .into(),
         ..Default::default()
@@ -238,10 +309,10 @@ mod tests {
     }
 
     #[test]
-    fn sf_rounded_is_the_default_primary_font_when_available() {
+    fn seravek_is_the_default_primary_font_when_available() {
         let path = Path::new(DEFAULT_UI_FONT_PATH);
         if !path.is_file() {
-            eprintln!("SF Rounded is unavailable; skipping the default-font assertion");
+            eprintln!("Seravek is unavailable; skipping the default-font assertion");
             return;
         }
 

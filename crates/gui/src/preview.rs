@@ -414,15 +414,13 @@ mod tests {
     #[ignore = "manual preview: writes target/resignation-banner.bmp"]
     fn resignation_banner_preview() {
         let gpu = HeadlessGpu::new().unwrap();
-        let wood = crate::render::WoodTexture::load_wood().unwrap();
-        let glyphs = crate::render::GlyphTexture::load_glyphs().unwrap();
+        let images = crate::render::BoardImages::load().unwrap();
         let mut renderer = crate::render::Renderer::new(
             &gpu.device,
             &gpu.queue,
             PREVIEW_FORMAT,
             4,
-            &wood,
-            &glyphs,
+            &images,
             &crate::render::STONE_SHAPE,
         );
         let mut game = gomoku_core::Game::new();
@@ -450,6 +448,78 @@ mod tests {
         session.pixels_per_point = 1.0;
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/resignation-banner.bmp");
+        gpu.write_ui_frame(
+            &path,
+            size,
+            1.0,
+            &mut renderer,
+            &mut session,
+            UiFrameOptions::default(),
+        )
+        .unwrap();
+        println!("wrote {}", path.display());
+    }
+
+    /// Render the twenty policy-ring shades for a look:
+    /// `cargo test --bin gomoku-gui --release -- --ignored policy_rings_preview`
+    /// writes `target/policy-rings.bmp`, next to the other build output.
+    #[test]
+    #[ignore = "manual preview: writes target/policy-rings.bmp"]
+    fn policy_rings_preview() {
+        let gpu = HeadlessGpu::new().unwrap();
+        let images = crate::render::BoardImages::load().unwrap();
+        let mut renderer = crate::render::Renderer::new(
+            &gpu.device,
+            &gpu.queue,
+            PREVIEW_FORMAT,
+            4,
+            &images,
+            &crate::render::STONE_SHAPE,
+        );
+        let mut game = gomoku_core::Game::new();
+        for (row, col) in [(7, 7), (7, 8), (8, 8), (6, 6)] {
+            game.play(gomoku_core::point(row, col).unwrap()).unwrap();
+        }
+        let size = 1100;
+        let viewport = crate::camera::Viewport::window(size, size);
+        let camera = crate::camera::Camera::fit(viewport);
+        let mut globals = crate::render::Renderer::globals_with_wood(viewport, crate::render::WOOD);
+        globals.view = [
+            camera.centre[0],
+            camera.centre[1],
+            camera.pixels_per_cell,
+            0.0,
+        ];
+        renderer.set_globals(&gpu.queue, &globals);
+        renderer.set_stones(&gpu.queue, &crate::app::stone_instances(&game));
+        let settings = gomoku_core::Settings::default();
+        let mut session = crate::session::Session::new(&settings);
+        session.install_game(game);
+        session.camera = camera;
+        session.viewport = viewport;
+        session.pixels_per_point = 1.0;
+        // The twenty shades, in reading order: the weakest at the top left,
+        // the strongest at the bottom right, in the middle of the board.
+        // The twenty shades, in reading order: the weakest at the top left,
+        // the strongest at the bottom right, in the middle of the board.
+        // Crossings with a stone get no overlay.
+        let mut rings = Vec::new();
+        for row in [9, 8, 7, 6, 5] {
+            for col in 5..10 {
+                let point = gomoku_core::point(row, col).unwrap();
+                if session.game().stones().any(|(stone, _)| stone == point) {
+                    continue;
+                }
+                rings.push((point, (rings.len() + 1) as f32 / 20.0));
+                if rings.len() == 20 {
+                    break;
+                }
+            }
+        }
+        session.policy_overlay = true;
+        session.policy_rings = Some(rings);
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/policy-rings.bmp");
         gpu.write_ui_frame(
             &path,
             size,

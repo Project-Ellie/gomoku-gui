@@ -37,6 +37,11 @@ const GLOW_STRENGTH: f32 = 5.5;
 /// proportions of the image are kept, so the grain is not stretched.
 const TILE: vec2<f32> = vec2<f32>(5.0, 8.6);
 
+/// The edge of one square marble tile, in cells. Each tile is a centred
+/// square cut from the photograph, and the tiles butt together with plain
+/// seams — the cuts read as grout lines, which looks natural.
+const MARBLE_TILE: f32 = 6.0;
+
 /// Atlas layout: 16 columns by 2 rows.  Row 0 is A-O, row 1 is 0-9.
 const GLYPH_ATLAS_COLS: f32 = 16.0;
 const GLYPH_ATLAS_ROWS: f32 = 2.0;
@@ -68,6 +73,44 @@ fn slab_sdf(p: vec2<f32>) -> f32 {
     let half = vec2<f32>(SLAB_HALF - SLAB_RADIUS, SLAB_HALF - SLAB_RADIUS);
     let q = abs(p - vec2<f32>(7.0, 7.0)) - half;
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - SLAB_RADIUS;
+}
+
+/// A hash that decorrelates neighbouring tiles, which `hash21` does not: its
+/// output rises monotonically for consecutive integer inputs, so whole rows of
+/// tiles ended up with the same orientation.
+fn marble_hash(cell: vec2<f32>, seed: f32) -> f32 {
+    return fract(sin(dot(cell + vec2<f32>(seed * 17.0, seed * 29.3), vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+/// Sample the marble. Every tile cuts its own square window from the
+/// photograph — overlapping windows, so the whole image feeds the pattern —
+/// and shows it in one of eight orientations (four rotations, each optionally
+/// mirrored) with a slightly different brightness. No two neighbouring tiles
+/// line up, so no symmetry is easily recognizable. The plain seams read as
+/// grout lines.
+fn sample_marble(t: vec2<f32>) -> vec3<f32> {
+    let dims = vec2<f32>(textureDimensions(marble_texture));
+    let side = min(dims.x, dims.y);
+    let room = dims - vec2<f32>(side);
+
+    let cell = floor(t);
+    var local = fract(t);
+    let cut = room * vec2<f32>(marble_hash(cell, 0.13), marble_hash(cell, 0.37));
+    let pick = u32(marble_hash(cell, 0.61) * 8.0);
+    if (pick & 4u) != 0u {
+        local.x = 1.0 - local.x;
+    }
+    let quarter = pick & 3u;
+    if (quarter == 1u) {
+        local = vec2<f32>(local.y, 1.0 - local.x);
+    } else if (quarter == 2u) {
+        local = vec2<f32>(1.0) - local;
+    } else if (quarter == 3u) {
+        local = vec2<f32>(1.0 - local.y, local.x);
+    }
+    let slab = textureSample(marble_texture, marble_sampler, (cut + local * side) / dims).rgb;
+    let tone = mix(0.92, 1.08, marble_hash(cell, 0.89));
+    return slab * tone;
 }
 
 /// Sample the photograph, with its grain turned to run along the board.
@@ -352,12 +395,14 @@ fn fs_board(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // One pixel in board units, taken from the screen-space derivative.
     let texel = max(length(fwidth(uv)), 1e-6);
 
-    // The table: a dark neutral, a soft pool of light behind the board, and a
-    // little noise so that it does not band.
+    // The table: cream marble tiles, mirrored at their edges so no seam shows.
+    // A soft pool of light still gathers behind the board, and a little noise
+    // keeps the shading from banding.
     let centre = vec2<f32>(0.5, 0.5);
     let radial = length((frag.xy / g.frame.xy - centre) * vec2<f32>(1.0, 1.25));
     let pool = 1.0 - smoothstep(0.15, 0.95, radial);
-    var table = mix(vec3<f32>(0.012, 0.013, 0.016), vec3<f32>(0.045, 0.048, 0.056), pool);
+    var table = sample_marble(uv / MARBLE_TILE);
+    table *= mix(0.70, 1.05, pool);
     table += dither(frag.xy) * 0.004;
 
     // The slab casts a soft shadow, away from the light.

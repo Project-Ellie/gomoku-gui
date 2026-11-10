@@ -82,7 +82,7 @@ pub enum RecordError {
         found: String,
     },
     /// The record uses a schema version this build cannot read.
-    #[error("This file is a version {0} record. This version of Gomoku opens versions 1 and 2.")]
+    #[error("This file is a version {0} record. This version of Gomoku opens versions 1, 2 and 3.")]
     UnsupportedVersion(u32),
     /// The record is for a board size this build does not play.
     #[error("This file is for a {0}x{0} board. This version of Gomoku plays 15x15.")]
@@ -96,6 +96,15 @@ pub enum RecordError {
         /// The number of moves in the file.
         count: usize,
     },
+    /// The move tree has more nodes than the reader allows.
+    #[error("This file holds {count} tree nodes, but at most 10000 are allowed.")]
+    TooManyNodes {
+        /// The number of nodes in the file.
+        count: usize,
+    },
+    /// The move tree's links or annotations are inconsistent.
+    #[error("The move tree in this file is invalid: {0}")]
+    InvalidTree(String),
     /// A move is outside the board.
     #[error("Move {index} in this file is outside the board.")]
     PointOutOfRange {

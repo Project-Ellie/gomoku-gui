@@ -11,29 +11,32 @@ use gomoku_core::{
 };
 use time::macros::datetime;
 
-/// The v1 fixture stays frozen. New writes are pinned separately to v2.
+/// The v1 and v2 fixtures stay frozen as linear reader compatibility pins.
 const GOLDEN_V1: &str = include_str!("golden/hotseat-v1.json");
 const GOLDEN_V2: &str = include_str!("golden/resignation-v2.json");
 
-fn golden_game() -> Game {
+fn golden_prefix(count: usize) -> Game {
     let mut game = Game::started_at(datetime!(2026-09-22 18:04:11 UTC));
     game.set_players(Some("Wolfie".to_string()), Some("Anna".to_string()));
-    for (row, col) in [(7, 7), (7, 8), (8, 8), (6, 6)] {
+    for (row, col) in [(7, 7), (7, 8), (8, 8), (6, 6)].into_iter().take(count) {
         game.play(Move::new(row, col).expect("inside the board"))
             .expect("the cell is empty");
     }
     game
 }
 
+fn golden_game() -> Game {
+    golden_prefix(4)
+}
+
 #[test]
-fn the_encoder_writes_the_v2_resignation_fixture() {
+fn the_encoder_writes_a_v3_tree_with_resignation() {
     let mut game = golden_game();
     game.resign().unwrap();
-    let text = Record::from_game(&game)
-        .expect("the record builds")
-        .to_json()
-        .expect("the record encodes");
-    assert_eq!(text, GOLDEN_V2, "the record schema changed");
+    let record = Record::from_game(&game).expect("the record builds");
+    assert_eq!(record.version, 3);
+    assert_eq!(record.tree.len(), 5);
+    assert_eq!(record.tree[4].resigned, Some(StoredColor::Black));
 }
 
 #[test]
@@ -57,7 +60,7 @@ fn both_golden_files_load_and_validate() {
             expected.resign().unwrap();
         }
         assert_eq!(game, expected);
-        assert_eq!(Record::from_game(&game).unwrap().version, 2);
+        assert_eq!(Record::from_game(&game).unwrap().version, 3);
     }
 }
 
@@ -80,17 +83,14 @@ fn saving_a_reviewed_resignation_keeps_the_whole_game_and_loads_finished_live() 
     for count in 0..=4 {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let path = directory.path().join("resigned.json");
-        let mut game = golden_game();
-        while game.len() > count {
-            game.undo();
-        }
+        let mut game = golden_prefix(count);
         game.resign().unwrap();
         let live = game.clone();
         game.seek(0);
         save(&path, &game).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let record = Record::from_json(&text).unwrap();
-        assert_eq!(record.version, 2, "all new records use v2");
+        assert_eq!(record.version, 3, "all new records use v3");
         let loaded = load(&path).unwrap();
         assert_eq!(
             loaded, live,
@@ -122,8 +122,8 @@ fn v1_cannot_claim_a_resignation() {
 }
 
 #[test]
-fn versions_other_than_v1_or_v2_are_rejected() {
-    for version in [0, 3, u32::MAX] {
+fn versions_other_than_v1_v2_or_v3_are_rejected() {
+    for version in [0, 4, u32::MAX] {
         let mut record = Record::from_game(&golden_game()).unwrap();
         record.version = version;
         let parsed = Record::from_json(&record.to_json().unwrap()).unwrap();
@@ -136,10 +136,7 @@ fn versions_other_than_v1_or_v2_are_rejected() {
 #[test]
 fn resignation_winner_must_be_opposite_the_replayed_side_to_move() {
     for count in 0..=4 {
-        let mut game = golden_game();
-        while game.len() > count {
-            game.undo();
-        }
+        let game = golden_prefix(count);
         let mut record = Record::from_game(&game).unwrap();
         record.result = StoredOutcome::Won {
             winner: game.to_move().into(),
@@ -172,11 +169,11 @@ fn a_terminal_board_cannot_claim_resignation_for_either_winner() {
 }
 
 #[test]
-fn both_versions_read_ongoing_five_and_draw_results() {
+fn both_linear_versions_read_ongoing_five_and_draw_results() {
     for game in [golden_game(), common::won_game(), common::drawn_game()] {
         for version in [1, 2] {
             let mut record = Record::from_game(&game).unwrap();
-            assert_eq!(record.version, 2, "new records always use v2");
+            assert_eq!(record.version, 3, "new records always use v3");
             record.version = version;
             let loaded = Record::from_json(&record.to_json().unwrap())
                 .unwrap()

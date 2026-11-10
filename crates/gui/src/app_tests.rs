@@ -3,6 +3,7 @@
 //!
 //! `real_acceptance` adds opt-in release tests using the genuine pinned player.
 use super::*;
+use crate::session::Dialog;
 use std::path::{Path, PathBuf};
 
 struct Files(PathBuf);
@@ -30,6 +31,143 @@ impl Drop for Files {
 }
 
 #[test]
+fn startup_deletes_a_qualifying_autosave_silently() {
+    let files = Files::new("startup-autosave");
+    let recovery = files.path("recovery.json");
+    let state = files.path("recovery-state.json");
+    let mut previous = app();
+    previous.session.place(gomoku_core::point(7, 7).unwrap());
+    previous.session.autosave_to(&recovery, &state);
+    assert!(recovery.exists());
+    assert!(state.exists());
+
+    let mut starting = app();
+    starting.discard_startup_autosave(Ok(recovery.clone()), Ok(state.clone()));
+
+    assert!(!recovery.exists());
+    assert!(!state.exists());
+    assert!(starting.session.dialog().is_none());
+    assert!(starting.session.notice.is_none());
+}
+
+#[test]
+fn startup_without_an_autosave_does_nothing() {
+    let files = Files::new("startup-no-autosave");
+    let recovery = files.path("recovery.json");
+    let state = files.path("recovery-state.json");
+    let mut starting = app();
+    let before = starting.session.game().clone();
+
+    starting.discard_startup_autosave(Ok(recovery.clone()), Ok(state.clone()));
+
+    assert!(!recovery.exists());
+    assert!(!state.exists());
+    assert_eq!(starting.session.game(), &before);
+    assert!(starting.session.dialog().is_none());
+    assert!(starting.session.notice.is_none());
+}
+
+#[test]
+fn startup_deletes_a_corrupt_autosave_without_an_error_dialog() {
+    let files = Files::new("startup-corrupt-autosave");
+    let recovery = files.path("recovery.json");
+    let state = files.path("recovery-state.json");
+    std::fs::write(&recovery, "not a game").unwrap();
+    std::fs::write(&state, "not recovery state").unwrap();
+    let mut starting = app();
+    let before = starting.session.game().clone();
+
+    starting.discard_startup_autosave(Ok(recovery.clone()), Ok(state.clone()));
+
+    assert!(!recovery.exists());
+    assert!(!state.exists());
+    assert_eq!(starting.session.game(), &before);
+    assert!(starting.session.dialog().is_none());
+    assert!(starting.session.notice.is_none());
+}
+
+#[test]
+fn unchanged_settings_are_not_saved() {
+    let files = Files::new("settings-unchanged");
+    let path = files.path("settings.toml");
+    let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
+    let now = std::time::Instant::now();
+
+    app.save_changed_settings(now, || Ok(path.clone()));
+    app.save_changed_settings(now + std::time::Duration::from_secs(2), || Ok(path.clone()));
+
+    assert!(!path.exists());
+}
+
+#[test]
+fn a_settings_change_schedules_but_does_not_immediately_save() {
+    let files = Files::new("settings-scheduled");
+    let path = files.path("settings.toml");
+    let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
+    let now = std::time::Instant::now();
+    app.session.sound = false;
+
+    app.save_changed_settings(now, || Ok(path.clone()));
+    app.dirty = false;
+
+    assert!(!path.exists());
+    assert!(matches!(app.prepare_wait(), ControlFlow::WaitUntil(_)));
+}
+
+#[test]
+fn changed_settings_are_saved_after_the_quiet_period() {
+    let files = Files::new("settings-after-quiet");
+    let path = files.path("settings.toml");
+    let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
+    let now = std::time::Instant::now();
+    app.session.sound = false;
+    app.save_changed_settings(now, || Ok(path.clone()));
+
+    app.save_changed_settings(now + SETTINGS_SAVE_DELAY, || Ok(path.clone()));
+
+    assert!(!gomoku_core::load_settings(&path).settings.audio.enabled);
+}
+
+#[test]
+fn changes_within_the_quiet_period_postpone_the_save() {
+    let files = Files::new("settings-debounce");
+    let path = files.path("settings.toml");
+    let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
+    let now = std::time::Instant::now();
+    app.session.sound = false;
+    app.save_changed_settings(now, || Ok(path.clone()));
+
+    let later = now + std::time::Duration::from_millis(600);
+    app.session.volume = 0.25;
+    app.save_changed_settings(later, || Ok(path.clone()));
+    app.save_changed_settings(now + SETTINGS_SAVE_DELAY, || Ok(path.clone()));
+    assert!(
+        !path.exists(),
+        "the second change restarts the quiet period"
+    );
+
+    app.save_changed_settings(later + SETTINGS_SAVE_DELAY, || Ok(path.clone()));
+    let settings = gomoku_core::load_settings(&path).settings;
+    assert!(!settings.audio.enabled);
+    assert_eq!(settings.audio.volume, 0.25);
+}
+
+#[test]
+fn exit_flushes_a_pending_settings_save() {
+    let files = Files::new("settings-exit-flush");
+    let path = files.path("settings.toml");
+    let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
+    app.session.sound = false;
+    app.save_changed_settings(std::time::Instant::now(), || Ok(path.clone()));
+
+    files.write_settings(&mut app);
+
+    assert!(!gomoku_core::load_settings(&path).settings.audio.enabled);
+    app.dirty = false;
+    assert_eq!(app.prepare_wait(), ControlFlow::Wait);
+}
+
+#[test]
 fn idle_worker_completion_requests_redraw_without_pointer_input() {
     use std::sync::mpsc;
     let mut app = app();
@@ -41,6 +179,7 @@ fn idle_worker_completion_requests_redraw_without_pointer_input() {
                     action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
                     search: None,
                     guard: None,
+                    resignation: None,
                 })
             })
         },
@@ -75,6 +214,7 @@ fn closing_ignores_already_queued_completion_and_never_schedules() {
         action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
         search: None,
         guard: None,
+        resignation: None,
     }));
     app.close_worker();
     app.dirty = false;
@@ -86,13 +226,16 @@ fn closing_ignores_already_queued_completion_and_never_schedules() {
 }
 
 #[test]
-fn failed_thread_start_retires_reservation_and_pauses_without_retry() {
+fn failed_thread_start_retires_reservation_and_holds_the_seat_without_retry() {
     let mut app = app();
     app.session.release_seat(gomoku_core::Color::White);
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.worker = Some(Err("thread unavailable".into()));
     app.prepare_wait();
-    assert!(!app.session.automation_running());
+    assert_eq!(
+        app.session.owner(gomoku_core::Color::White),
+        crate::ai::SeatOwner::Human
+    );
     assert!(
         app.session
             .notice
@@ -148,14 +291,19 @@ fn stale_terminal_failure_rejects_replacement(initialization: bool, panics: bool
         .unwrap();
     assert!(app.session.next_ai_request().is_none());
     app.handle_app_event(AppEvent::AiCompleted(reply));
-    assert!(app.session.automation_running(), "stale failure is ignored");
+    assert_eq!(
+        app.session.owner(gomoku_core::Color::White),
+        crate::ai::SeatOwner::Ai,
+        "stale failure is ignored"
+    );
     assert!(app.session.notice.is_none());
     app.dirty = false;
 
     // Reconcile while the completion sink is still latched, not after exit.
     app.prepare_wait();
-    assert!(
-        !app.session.automation_running(),
+    assert_eq!(
+        app.session.owner(gomoku_core::Color::White),
+        crate::ai::SeatOwner::Human,
         "terminal worker must reject rather than abandon the replacement"
     );
     assert!(
@@ -163,7 +311,7 @@ fn stale_terminal_failure_rejects_replacement(initialization: bool, panics: bool
             .notice
             .as_ref()
             .unwrap()
-            .starts_with("AI paused: worker disconnected")
+            .starts_with("AI error: worker disconnected")
     );
     assert!(
         app.dirty,
@@ -171,7 +319,7 @@ fn stale_terminal_failure_rejects_replacement(initialization: bool, panics: bool
     );
     assert_eq!(app.session.game().len(), 1);
     assert!(app.session.next_ai_request().is_none());
-    app.session.resume_automation();
+    app.session.release_seat(gomoku_core::Color::White);
     assert!(
         app.session.next_ai_request().is_some(),
         "rejected replacement's reservation must have been retired"
@@ -212,6 +360,7 @@ fn dirty_interface_redraw_is_not_deferred_by_a_future_wake() {
 #[test]
 fn headless_construction_does_not_start_worker_or_reserve_a_flight() {
     let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
+    app.session.release_seat(gomoku_core::Color::White);
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.prepare_wait();
     assert!(app.worker.is_none());
@@ -224,312 +373,8 @@ fn app() -> App {
     app
 }
 
-fn frame(
-    app: &mut App,
-    context: &egui::Context,
-    events: Vec<egui::Event>,
-    pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
-    exit: &mut impl FnMut(),
-) -> egui::FullOutput {
-    let mut requests = Requests::default();
-    let output = context.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1200.0, 900.0),
-            )),
-            events,
-            ..Default::default()
-        },
-        |ui| requests = ui::draw(ui, &mut app.session),
-    );
-    app.run_requests(requests, pick, &mut |_| None, exit);
-    output
-}
-
-fn save_first(
-    app: &mut App,
-    pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
-    exit: &mut impl FnMut(),
-) -> egui::Context {
-    click_button(app, pick, exit, "Save first")
-}
-
-fn click_button(
-    app: &mut App,
-    pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
-    exit: &mut impl FnMut(),
-    label: &str,
-) -> egui::Context {
-    let context = egui::Context::default();
-    frame(app, &context, vec![], pick, exit)
-        .textures_delta
-        .clear();
-    let mut output = frame(app, &context, vec![], pick, exit);
-    let position = output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::epaint::Shape::Text(text) if text.galley.job.text == label => {
-                Some(text.pos + text.galley.rect.center().to_vec2())
-            }
-            _ => None,
-        })
-        .expect("the requested confirmation button is visible");
-    output.textures_delta.clear();
-    for pressed in [true, false] {
-        frame(
-            app,
-            &context,
-            vec![
-                egui::Event::PointerMoved(position),
-                egui::Event::PointerButton {
-                    pos: position,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-            pick,
-            exit,
-        )
-        .textures_delta
-        .clear();
-    }
-    context
-}
-
 #[test]
-fn save_first_existing_and_untitled_execute_pending_quit_exactly_once() {
-    let files = Files::new("save-success");
-    for existing in [false, true] {
-        let mut app = app();
-        let path = files.path(if existing {
-            "existing.json"
-        } else {
-            "untitled.json"
-        });
-        app.session.place(gomoku_core::point(7, 7).unwrap());
-        if existing {
-            app.session.save_to(&path);
-            app.session.place(gomoku_core::point(8, 8).unwrap());
-        }
-        let expected = app.session.game().clone();
-        let mut exits = 0;
-        let mut exit = || exits += 1;
-        let mut picks = 0;
-        let mut pick = |_: Option<&Path>| {
-            assert!(!existing, "an existing destination must bypass the picker");
-            picks += 1;
-            Some(path.clone())
-        };
-        app.run_requests(
-            Requests {
-                quit: true,
-                ..Default::default()
-            },
-            &mut pick,
-            &mut |_| None,
-            &mut exit,
-        );
-        let context = save_first(&mut app, &mut pick, &mut exit);
-        assert!(app.closing);
-        assert!(!app.session.changed());
-        assert_eq!(gomoku_core::load(&path).unwrap(), expected);
-        // Settling frames and an independent later save must not replay Quit.
-        frame(&mut app, &context, vec![], &mut pick, &mut exit)
-            .textures_delta
-            .clear();
-        app.run_requests(
-            Requests {
-                save: true,
-                ..Default::default()
-            },
-            &mut pick,
-            &mut |_| None,
-            &mut exit,
-        );
-        assert_eq!(exits, 1);
-        assert_eq!(picks, usize::from(!existing));
-    }
-}
-
-#[test]
-fn save_first_existing_and_untitled_start_new_game_without_replaying_it() {
-    let files = Files::new("new-game-success");
-    for existing in [false, true] {
-        let mut app = app();
-        let path = files.path(if existing {
-            "existing.json"
-        } else {
-            "untitled.json"
-        });
-        if existing {
-            app.session.save_to(&path);
-        }
-        app.session.place(gomoku_core::point(7, 7).unwrap());
-        let expected = app.session.game().clone();
-        let mut pick = |_: Option<&Path>| Some(path.clone());
-        let mut exit = || panic!("New Game must not exit");
-        app.run_requests(
-            Requests {
-                new_game: true,
-                ..Default::default()
-            },
-            &mut pick,
-            &mut |_| None,
-            &mut exit,
-        );
-        let context = save_first(&mut app, &mut pick, &mut exit);
-        assert!(app.session.is_fresh_game());
-        assert!(!app.session.changed());
-        assert_eq!(gomoku_core::load(&path).unwrap(), expected);
-        app.session.place(gomoku_core::point(3, 3).unwrap());
-        let sentinel = app.session.game().clone();
-        frame(&mut app, &context, vec![], &mut pick, &mut exit)
-            .textures_delta
-            .clear();
-        app.run_requests(
-            Requests {
-                save: true,
-                ..Default::default()
-            },
-            &mut pick,
-            &mut |_| None,
-            &mut exit,
-        );
-        assert_eq!(
-            app.session.game(),
-            &sentinel,
-            "later saves must not replay New Game"
-        );
-        assert_eq!(gomoku_core::load(&path).unwrap(), sentinel);
-    }
-}
-
-#[test]
-fn save_first_cancel_preserves_game_and_never_replays_pending_action() {
-    let files = Files::new("save-cancel");
-    for requests in [
-        Requests {
-            new_game: true,
-            ..Default::default()
-        },
-        Requests {
-            quit: true,
-            ..Default::default()
-        },
-    ] {
-        let mut app = app();
-        app.session.place(gomoku_core::point(7, 7).unwrap());
-        let expected = app.session.game().clone();
-        let mut exits = 0;
-        let mut exit = || exits += 1;
-        app.run_requests(requests, &mut |_| None, &mut |_| None, &mut exit);
-        let context = save_first(&mut app, &mut |_| None, &mut exit);
-        assert_eq!(app.session.game(), &expected);
-        assert!(app.session.changed());
-        assert!(app.session.dialog().is_none());
-        assert!(!app.closing);
-        // A later successful, unrelated save must not resurrect the cancelled action.
-        frame(&mut app, &context, vec![], &mut |_| None, &mut exit)
-            .textures_delta
-            .clear();
-        app.run_requests(
-            Requests {
-                save: true,
-                ..Default::default()
-            },
-            &mut |_| Some(files.path("later.json")),
-            &mut |_| None,
-            &mut exit,
-        );
-        assert_eq!(exits, 0);
-        assert_eq!(app.session.game(), &expected);
-        assert!(!app.session.changed());
-        assert!(!app.closing);
-    }
-}
-
-#[test]
-fn save_first_existing_and_untitled_failure_keeps_error_and_never_continues() {
-    let files = Files::new("save-failure");
-    for existing in [false, true] {
-        for quit in [false, true] {
-            let mut app = app();
-            let parent = files.path("destination");
-            let path = parent.join("game.json");
-            if existing {
-                std::fs::create_dir(&parent).unwrap();
-                app.session.save_to(&path);
-                std::fs::remove_file(&path).unwrap();
-                std::fs::remove_dir(&parent).unwrap();
-            }
-            std::fs::write(&parent, "not a directory").unwrap();
-            app.session.place(gomoku_core::point(7, 7).unwrap());
-            let expected = app.session.game().clone();
-            let mut exits = 0;
-            let mut exit = || exits += 1;
-            let mut pick = |_: Option<&Path>| {
-                assert!(
-                    !existing,
-                    "existing path failure must not fall back to a picker"
-                );
-                Some(path.clone())
-            };
-            app.run_requests(
-                Requests {
-                    quit,
-                    new_game: !quit,
-                    ..Default::default()
-                },
-                &mut pick,
-                &mut |_| None,
-                &mut exit,
-            );
-            let context = save_first(&mut app, &mut pick, &mut exit);
-            let error = app.session.dialog().cloned();
-            assert!(
-                matches!(&error, Some(Dialog::Message { title, .. }) if title == "The game could not be saved")
-            );
-            assert_eq!(app.session.game(), &expected);
-            assert!(app.session.changed());
-            assert!(!app.closing);
-            for _ in 0..2 {
-                frame(&mut app, &context, vec![], &mut pick, &mut exit)
-                    .textures_delta
-                    .clear();
-                assert_eq!(
-                    app.session.dialog(),
-                    error.as_ref(),
-                    "settling frames must retain the failure message"
-                );
-            }
-            app.session.dismiss_dialog();
-            std::fs::remove_file(&parent).unwrap();
-            std::fs::create_dir(&parent).unwrap();
-            // Retry succeeds, but the failed transaction's continuation is gone.
-            app.run_requests(
-                Requests {
-                    save: true,
-                    ..Default::default()
-                },
-                &mut pick,
-                &mut |_| None,
-                &mut exit,
-            );
-            assert_eq!(exits, 0);
-            assert_eq!(app.session.game(), &expected);
-            assert!(!app.session.changed());
-            assert!(!app.closing);
-            std::fs::remove_file(&path).unwrap();
-            std::fs::remove_dir(&parent).unwrap();
-        }
-    }
-}
-
-#[test]
-fn explicit_save_as_uses_new_destination_and_completes_pending_quit_once() {
+fn explicit_save_as_uses_a_new_destination_without_quitting() {
     let files = Files::new("save-as");
     let mut app = app();
     let original = files.path("original.json");
@@ -538,7 +383,6 @@ fn explicit_save_as_uses_new_destination_and_completes_pending_quit_once() {
     let original_game = gomoku_core::load(&original).unwrap();
     app.session.place(gomoku_core::point(7, 7).unwrap());
     let expected = app.session.game().clone();
-    app.session.defer_after_save(After::Quit);
     let mut exits = 0;
     let mut picks = 0;
     let mut exit = || exits += 1;
@@ -556,22 +400,46 @@ fn explicit_save_as_uses_new_destination_and_completes_pending_quit_once() {
         &mut |_| None,
         &mut exit,
     );
-    assert!(app.closing);
+    assert!(!app.closing);
     assert!(!app.session.changed());
     assert_eq!(gomoku_core::load(&original).unwrap(), original_game);
     assert_eq!(gomoku_core::load(&destination).unwrap(), expected);
-    app.run_requests(Requests::default(), &mut pick, &mut |_| None, &mut exit);
-    app.run_requests(
+    assert_eq!(exits, 0);
+    assert_eq!(picks, 1);
+}
+
+#[test]
+fn unsaved_new_and_quit_proceed_without_a_prompt() {
+    let mut new_game = app();
+    new_game.session.place(gomoku_core::point(7, 7).unwrap());
+    let mut exits = 0;
+    let mut exit = || exits += 1;
+    new_game.run_requests(
         Requests {
-            save: true,
+            new_game: true,
             ..Default::default()
         },
-        &mut pick,
+        &mut |_| None,
         &mut |_| None,
         &mut exit,
     );
+    assert!(new_game.session.dialog().is_none());
+    assert!(new_game.session.is_fresh_game());
+
+    let mut quit = app();
+    quit.session.place(gomoku_core::point(7, 7).unwrap());
+    quit.run_requests(
+        Requests {
+            quit: true,
+            ..Default::default()
+        },
+        &mut |_| None,
+        &mut |_| None,
+        &mut exit,
+    );
+    assert!(quit.session.dialog().is_none());
+    assert!(quit.closing);
     assert_eq!(exits, 1);
-    assert_eq!(picks, 1);
 }
 
 #[test]
@@ -589,6 +457,7 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
                 }),
                 search: None,
                 guard: None,
+                resignation: None,
             })))
     );
     let expected = resigned.session.game().clone();
@@ -606,20 +475,14 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
         &mut |_| None,
         &mut exit,
     );
-    click_button(
-        &mut resigned,
-        &mut no_picker,
-        &mut exit,
-        "Discard the changes",
-    );
     assert!(resigned.closing);
+    assert!(resigned.session.dialog().is_none());
     files.write_settings(&mut resigned);
     let recovery = files.path("recovery.json");
     let state = files.path("recovery-state.json");
     assert_eq!(gomoku_core::load(&recovery).unwrap(), expected);
     assert!(state.exists());
     assert!(files.path("settings.toml").exists());
-    assert_eq!(Session::autosave_to_offer_from(&recovery, None), Some(None));
     let mut reader = Session::new(&Settings::default());
     reader.resume_autosave_from(&recovery, None);
     assert_eq!(reader.game(), &expected);
@@ -724,12 +587,12 @@ fn explorer_rejects_a_non_corpus_folder_without_changing_state() {
 }
 
 #[test]
-fn explorer_picker_remembers_the_last_successful_corpus() {
+fn explorer_picker_starts_where_the_last_corpus_was_opened() {
     let files = Files::new("explorer-remembered");
     let corpus = psq_corpus(&files);
-    let fallback = files.path("last-game-directory");
+    let remembered = files.path("last-loaded-record-directory");
     let mut app = app();
-    app.session.last_directory = Some(fallback.clone());
+    app.session.last_corpus_directory = Some(remembered.clone());
     let requests = ui::Requests {
         open_explorer: true,
         ..Default::default()
@@ -739,12 +602,16 @@ fn explorer_picker_remembers_the_last_successful_corpus() {
         requests,
         &mut |_| None,
         &mut |directory| {
-            assert_eq!(directory, Some(fallback.as_path()));
+            assert_eq!(directory, Some(remembered.as_path()));
             Some(corpus.clone())
         },
         &mut || {},
     );
-    assert_eq!(app.session.last_corpus_directory, Some(corpus.clone()));
+    assert_eq!(
+        app.session.last_corpus_directory,
+        Some(corpus.clone()),
+        "opening a corpus is a load: it becomes the picker's next start"
+    );
 
     app.run_requests(
         ui::Requests {
@@ -762,16 +629,67 @@ fn explorer_picker_remembers_the_last_successful_corpus() {
 }
 
 #[test]
+fn reopening_the_last_corpus_skips_the_folder_picker() {
+    let files = Files::new("explorer-reopen");
+    let corpus = psq_corpus(&files);
+    let mut app = app();
+    app.session.last_corpus_directory = Some(corpus.clone());
+    let mut picker_called = false;
+    app.run_requests(
+        ui::Requests {
+            reopen_explorer: true,
+            ..Default::default()
+        },
+        &mut |_| None,
+        &mut |_| {
+            picker_called = true;
+            None
+        },
+        &mut || {},
+    );
+    assert!(!picker_called, "reopening never asks for a folder");
+    let explorer = app.session.explorer().expect("the corpus is open");
+    assert_eq!(explorer.records.len(), 1);
+    assert_eq!(app.session.last_corpus_directory, Some(corpus));
+}
+
+#[test]
+fn reopening_a_vanished_corpus_reports_the_error() {
+    let files = Files::new("explorer-reopen-gone");
+    let gone = files.path("vanished-corpus");
+    let mut app = app();
+    app.session.last_corpus_directory = Some(gone);
+    app.run_requests(
+        ui::Requests {
+            reopen_explorer: true,
+            ..Default::default()
+        },
+        &mut |_| None,
+        &mut |_| None,
+        &mut || {},
+    );
+    assert!(app.session.explorer().is_none());
+    assert!(matches!(
+        app.session.dialog(),
+        Some(Dialog::Message { title, .. })
+            if title == "This folder doesn't look like a Gomoku corpus"
+    ));
+}
+
+#[test]
 fn explorer_selection_loads_the_record_onto_the_board() {
     let files = Files::new("explorer-select");
     let corpus = psq_corpus(&files);
+    let previous = files.path("previous-load");
     let mut app = app();
+    app.session.last_corpus_directory = Some(previous.clone());
     let requests = ui::Requests {
         open_explorer: true,
         ..Default::default()
     };
     let mut pick_folder = |_: Option<&Path>| Some(corpus.clone());
     app.run_requests(requests, &mut |_| None, &mut pick_folder, &mut || {});
+    assert_eq!(app.session.last_corpus_directory, Some(corpus.clone()));
     app.run_requests(
         ui::Requests {
             explorer_select: Some(0),
@@ -787,6 +705,95 @@ fn explorer_selection_loads_the_record_onto_the_board() {
         "a loaded record has no unsaved changes"
     );
     assert_eq!(app.session.explorer().unwrap().selected, Some(0));
+    assert_eq!(app.session.last_corpus_directory, Some(corpus));
+}
+
+fn branched_app() -> App {
+    let mut app = app();
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.session.place(gomoku_core::point(8, 7).unwrap());
+    app.session.seek(1);
+    app.session.place(gomoku_core::point(7, 8).unwrap());
+    app.session.seek(1);
+    app
+}
+
+#[test]
+fn up_and_down_cycle_branch_choice_without_entering_and_right_follows_it() {
+    let mut app = branched_app();
+    assert_eq!(app.session.selected_branch(), Some(1));
+
+    app.handle_key(&Key::Named(NamedKey::ArrowDown), &mut || {});
+    assert_eq!(app.session.selected_branch(), Some(0), "down wraps");
+    assert_eq!(app.session.game().cursor(), 1);
+    assert_eq!(app.session.game().last_move(), gomoku_core::point(7, 7));
+    app.handle_key(&Key::Named(NamedKey::ArrowUp), &mut || {});
+    assert_eq!(app.session.selected_branch(), Some(1), "up wraps back");
+    assert_eq!(app.session.game().cursor(), 1);
+
+    app.handle_key(&Key::Named(NamedKey::ArrowRight), &mut || {});
+    assert_eq!(app.session.game().last_move(), gomoku_core::point(7, 8));
+    let at_tip = app.session.game().clone();
+    app.handle_key(&Key::Named(NamedKey::ArrowUp), &mut || {});
+    app.handle_key(&Key::Named(NamedKey::ArrowDown), &mut || {});
+    assert_eq!(
+        app.session.game(),
+        &at_tip,
+        "arrows do nothing off a branch"
+    );
+}
+
+#[test]
+fn digits_enter_displayed_branches_and_zero_still_fits_elsewhere() {
+    let mut app = branched_app();
+    app.handle_key(&Key::Character("0".into()), &mut || {});
+    assert_eq!(app.session.game().cursor(), 2);
+    assert_eq!(app.session.game().last_move(), gomoku_core::point(8, 7));
+    app.session.seek(1);
+    app.handle_key(&Key::Character("1".into()), &mut || {});
+    assert_eq!(app.session.game().cursor(), 2);
+    assert_eq!(app.session.game().last_move(), gomoku_core::point(7, 8));
+
+    app.handle_key(&Key::Character("+".into()), &mut || {});
+    assert_ne!(
+        app.session.camera,
+        crate::camera::Camera::fit(app.session.viewport)
+    );
+    let before_fit = app.session.game().clone();
+    app.handle_key(&Key::Character("0".into()), &mut || {});
+    assert_eq!(
+        app.session.camera,
+        crate::camera::Camera::fit(app.session.viewport)
+    );
+    assert_eq!(app.session.game(), &before_fit);
+}
+
+#[test]
+fn command_arrows_seek_to_the_start_and_live_end() {
+    let mut app = branched_app();
+    app.modifiers = ModifiersState::SUPER;
+
+    app.handle_key(&Key::Named(NamedKey::ArrowLeft), &mut || {});
+    assert_eq!(app.session.game().cursor(), 0);
+    app.handle_key(&Key::Named(NamedKey::ArrowRight), &mut || {});
+    assert_eq!(app.session.game().cursor(), app.session.game().len());
+    assert!(!app.session.game().is_rewound());
+}
+
+#[test]
+fn every_undo_key_removes_a_live_tip() {
+    for key in [
+        Key::Character("u".into()),
+        Key::Named(NamedKey::Space),
+        Key::Named(NamedKey::Backspace),
+    ] {
+        let mut app = app();
+        app.session.place(gomoku_core::point(7, 7).unwrap());
+        app.handle_key(&key, &mut || {});
+        assert!(app.session.game().is_empty());
+        let mut deleted = app.session.game().clone();
+        assert!(!deleted.forward());
+    }
 }
 
 #[test]
@@ -794,6 +801,8 @@ fn explorer_arrows_bypass_game_seek_and_moves_hand_over_restores_right_arrow() {
     let mut app = app();
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.session.place(gomoku_core::point(8, 8).unwrap());
+    app.session.seek(0);
+    app.session.place(gomoku_core::point(9, 9).unwrap());
     app.session.seek(0);
     app.session
         .open_explorer_corpus(vec![gomoku_core::IndexEntry {
@@ -1042,8 +1051,8 @@ mod real_acceptance {
     }
 
     #[test]
-    #[ignore = "release acceptance: Take inside real evaluation, stale discard, undo/Resume"]
-    fn take_during_real_search_discards_silently_then_undo_resume_searches() {
+    #[ignore = "release acceptance: Take inside real evaluation, stale discard, undo/Release"]
+    fn take_during_real_search_discards_silently_then_undo_release_searches() {
         let start = Instant::now();
         let (entered, evaluating) = mpsc::channel();
         let (release, latch) = mpsc::channel();
@@ -1076,20 +1085,20 @@ mod real_acceptance {
         assert!(app.session.notice.is_none());
 
         // White is non-current: Release does not start another flight. Undo
-        // returns to its turn and pauses, despite White now being AI-owned.
+        // returns to its turn and holds it as Human, despite White now being AI-owned.
         app.session.release_seat(Color::White);
         app.session.undo();
         assert_eq!(app.session.game().len(), 1);
-        assert!(!app.session.automation_running());
+        assert_eq!(app.session.owner(Color::White), crate::ai::SeatOwner::Human);
         app.prepare_wait();
         assert!(app.session.next_ai_request().is_none());
         assert!(matches!(replies.try_recv(), Err(mpsc::TryRecvError::Empty)));
-        app.session.resume_automation();
+        app.session.release_seat(Color::White);
         assert!(automatic_turn(&mut app, &replies));
         assert_eq!(app.session.game().len(), 2);
         assert_eq!(app.session.game().outcome(), Outcome::Ongoing);
         eprintln!(
-            "Take/stale/undo/Resume: elapsed={:?}, plies={}, outcome={:?}",
+            "Take/stale/undo/Release: elapsed={:?}, plies={}, outcome={:?}",
             start.elapsed(),
             app.session.game().len(),
             app.session.game().outcome()
@@ -1123,12 +1132,11 @@ mod real_acceptance {
         stopped(&mut app, &replies);
         let path = roundtrip(&mut app, &files);
         app.session.open(&path);
-        assert!(!app.session.automation_running());
         stopped(&mut app, &replies);
         app.session.undo();
         assert_eq!(app.session.game(), &demo, "undo clears only the result");
         assert_eq!(app.session.game().stones().collect::<Vec<_>>(), stones);
-        assert!(!app.session.automation_running());
+        assert_eq!(app.session.owner(Color::White), crate::ai::SeatOwner::Human);
         assert!(app.session.changed());
         assert!(app.session.knock.is_none());
         app.prepare_wait();
@@ -1141,4 +1149,45 @@ mod real_acceptance {
         );
         app.close_worker();
     }
+}
+
+#[test]
+fn undo_and_release_restart_thinking() {
+    use std::sync::mpsc;
+    let mut app = app();
+    let (tx, rx) = mpsc::channel();
+    app.worker = Some(Ok(crate::ai_worker::Worker::spawn(
+        || {
+            Ok(|_: &crate::ai::AiRequest| {
+                Ok(crate::ai::AiPlayerDecision {
+                    action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
+                    search: None,
+                    guard: None,
+                    resignation: None,
+                })
+            })
+        },
+        move |reply| tx.send(reply).is_ok(),
+    )
+    .unwrap()));
+    app.session.release_seat(gomoku_core::Color::White);
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.session.knock.take();
+    app.prepare_wait();
+    app.handle_app_event(AppEvent::AiCompleted(
+        rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap(),
+    ));
+    assert_eq!(app.session.game().len(), 2, "White's reply landed");
+
+    // Wolfie's flow: undo the agent's move, then release the seat.
+    app.session.undo();
+    assert_eq!(app.session.game().len(), 1);
+    assert_eq!(
+        app.session.owner(gomoku_core::Color::White),
+        crate::ai::SeatOwner::Human
+    );
+    app.session.release_seat(gomoku_core::Color::White);
+    app.prepare_wait();
+    let reply = rx.recv_timeout(std::time::Duration::from_secs(30));
+    assert!(reply.is_ok(), "the AI starts thinking again after release");
 }

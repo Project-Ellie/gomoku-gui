@@ -50,6 +50,10 @@ struct Globals {
 @group(1) @binding(2) var glyph_texture: texture_2d<f32>;
 /// Clamped, so neighbouring glyphs never bleed in.
 @group(1) @binding(3) var glyph_sampler: sampler;
+/// The owner's photograph of a cream marble slab, for the table.
+@group(1) @binding(4) var marble_texture: texture_2d<f32>;
+/// Repeating; the shader mirrors the tiles, so no seam shows.
+@group(1) @binding(5) var marble_sampler: sampler;
 
 /// Mirror tiling: the tile is reflected at every boundary, so that its edges
 /// meet exactly and no seam shows.

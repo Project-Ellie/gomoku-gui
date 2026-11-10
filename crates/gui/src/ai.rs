@@ -15,7 +15,7 @@ pub enum SeatOwner {
 /// Retained per-seat settings. Session validates these before accepting them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AiOptions {
-    /// Simulations per decision, from 1 through 10,000.
+    /// Simulations per decision, from 1 through 50,000.
     pub simulations: u32,
     /// Sampling temperature, from 0 through 2 in steps of 0.1.
     pub temperature: f32,
@@ -30,7 +30,7 @@ pub struct AiOptions {
 impl Default for AiOptions {
     fn default() -> Self {
         Self {
-            simulations: 400,
+            simulations: 4000,
             temperature: 0.0,
             own_tss: true,
             guard: true,
@@ -47,7 +47,7 @@ impl AiOptions {
     /// temperature, or a temperature off the 0.1 grid.
     pub fn validate(self) -> Result<(), InvalidAiOptions> {
         let tenths = self.temperature * 10.0;
-        if !(1..=10_000).contains(&self.simulations)
+        if !(1..=50_000).contains(&self.simulations)
             || !self.temperature.is_finite()
             || !(0.0..=2.0).contains(&self.temperature)
             || (tenths - tenths.round()).abs() > 0.00001
@@ -83,7 +83,7 @@ pub struct InvalidAiOptions;
 
 impl std::fmt::Display for InvalidAiOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AI requires 1..=10000 simulations and temperature 0..=2 in steps of 0.1")
+        f.write_str("AI requires 1..=50000 simulations and temperature 0..=2 in steps of 0.1")
     }
 }
 impl std::error::Error for InvalidAiOptions {}
@@ -136,13 +136,11 @@ struct Seat {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AutomationIntent {
     seats: [Seat; 2],
-    running: bool,
 }
 
 /// Bookkeeping only: the session supplies eligibility and commits decisions.
 pub(crate) struct Controller {
     seats: [Seat; 2],
-    pub running: bool,
     pub generation: u64,
     outstanding: Option<Flight>,
     next_id: u64,
@@ -157,6 +155,8 @@ fn index(side: Color) -> usize {
 
 impl Default for Controller {
     fn default() -> Self {
+        // Both seats start human: handing a color to the AI is a conscious
+        // in-session decision, never a startup default.
         Self {
             seats: [
                 Seat {
@@ -164,11 +164,10 @@ impl Default for Controller {
                     options: AiOptions::default(),
                 },
                 Seat {
-                    owner: SeatOwner::Ai,
+                    owner: SeatOwner::Human,
                     options: AiOptions::default(),
                 },
             ],
-            running: true,
             generation: 0,
             outstanding: None,
             next_id: 0,
@@ -178,15 +177,11 @@ impl Default for Controller {
 
 impl Controller {
     pub fn intent(&self) -> AutomationIntent {
-        AutomationIntent {
-            seats: self.seats,
-            running: self.running,
-        }
+        AutomationIntent { seats: self.seats }
     }
     pub fn restore_intent(&mut self, intent: AutomationIntent) {
         self.invalidate();
         self.seats = intent.seats;
-        self.running = intent.running;
     }
     pub fn owner(&self, side: Color) -> SeatOwner {
         self.seats[index(side)].owner
@@ -203,6 +198,15 @@ impl Controller {
         self.seats[index(side)].options = options;
         self.invalidate();
         Ok(())
+    }
+    /// Whether a flight for this side is computing right now.
+    pub fn thinking(&self, side: Color) -> bool {
+        self.outstanding.is_some_and(|flight| flight.side == side)
+    }
+    /// Drop the pending flight, if any: its late reply fails the retire
+    /// check (fresh flights carry fresh identities) and is discarded.
+    pub fn abandon(&mut self) {
+        self.outstanding = None;
     }
     pub fn invalidate(&mut self) {
         self.generation = self
@@ -253,6 +257,7 @@ mod tests {
             action: DecisionAction::Play(point(row, col).unwrap()),
             search: None,
             guard: None,
+            resignation: None,
         }))
     }
 
@@ -263,11 +268,14 @@ mod tests {
             }),
             search: None,
             guard: None,
+            resignation: None,
         }))
     }
 
     fn white_turn() -> Session {
         let mut session = Session::new(&Settings::default());
+        // Seats start Human/Human; these tests play against the White AI.
+        session.release_seat(Color::White);
         session.place(point(7, 7).unwrap());
         session.knock.take();
         session
@@ -349,7 +357,7 @@ mod tests {
     fn settings_changes_coalesce_while_stale_work_occupies_the_slot() {
         let mut session = white_turn();
         let old = session.next_ai_request().unwrap();
-        for simulations in [1, 10_000, 123] {
+        for simulations in [1, 50_000, 123] {
             session
                 .set_ai_options(
                     Color::White,
@@ -376,6 +384,7 @@ mod tests {
     fn both_ai_schedule_one_turn_at_a_time_and_terminal_resignation_stops() {
         let mut session = Session::new(&Settings::default());
         session.release_seat(Color::Black);
+        session.release_seat(Color::White);
         let black = session.next_ai_request().unwrap();
         assert_eq!(black.side, Color::Black);
         assert!(session.next_ai_request().is_none());
@@ -409,23 +418,30 @@ mod tests {
         );
         assert_eq!(session.game().outcome(), gomoku_core::Outcome::Ongoing);
         assert!(session.next_ai_request().is_none());
-        session.resume_automation();
+        assert_eq!(
+            session.owner(Color::White),
+            SeatOwner::Human,
+            "undoing the AI's resignation takes its seat"
+        );
+        session.release_seat(Color::White);
         assert!(session.next_ai_request().is_some());
         std::fs::remove_file(path).unwrap();
     }
 
     #[test]
-    fn review_and_undo_pause_even_at_root_and_forward_does_not_resume() {
+    fn review_and_undo_take_the_ai_to_move_and_release_reactivates() {
         for review in [
             Session::undo,
             Session::rewind,
             Session::forward,
             |s: &mut Session| s.seek(usize::MAX),
+            |s: &mut Session| s.set_current_child(0),
+            |s: &mut Session| s.select_branch(0),
         ] {
             let mut session = Session::new(&Settings::default());
             session.release_seat(Color::Black);
             review(&mut session);
-            assert!(!session.automation_running());
+            assert_eq!(session.owner(Color::Black), SeatOwner::Human);
             assert!(session.next_ai_request().is_none());
             session.forward();
             session.seek(usize::MAX);
@@ -436,30 +452,43 @@ mod tests {
         let mut session = white_turn();
         let old = session.next_ai_request().unwrap();
         session.rewind();
+        assert!(
+            session.next_ai_request().is_none(),
+            "review never dispatches into an old position"
+        );
         session.forward();
+        assert_eq!(session.owner(Color::White), SeatOwner::Human);
         assert!(!session.apply_ai_reply(play(&old, 7, 8)));
         assert!(session.next_ai_request().is_none());
-        session.resume_automation();
+        session.release_seat(Color::White);
         assert!(session.next_ai_request().is_some());
     }
 
     #[test]
-    fn a_human_branch_resumes_but_ai_owned_clicks_and_truncation_do_not() {
+    fn a_human_branch_resumes_without_a_confirmation_dialog() {
         let mut session = white_turn();
         session.place(point(7, 8).unwrap());
         session.place_now(point(7, 8).unwrap());
         assert_eq!(session.game().len(), 1, "White is not human");
         session.rewind();
         session.place(point(8, 8).unwrap());
-        assert!(session.dialog().is_some());
-        session.release_seat(Color::Black);
-        session.confirm_truncation();
-        assert_eq!(session.game().moves(), &[point(7, 7).unwrap()]);
-        session.take_seat(Color::Black);
-        session.place(point(8, 8).unwrap());
-        session.confirm_truncation();
-        assert!(session.automation_running());
+        assert!(session.dialog().is_none());
+        assert_eq!(session.owner(Color::White), SeatOwner::Ai);
         assert_eq!(session.game().moves(), &[point(8, 8).unwrap()]);
+        assert_eq!(session.branch_options().len(), 0, "the new child is a leaf");
+        session.undo();
+        assert_eq!(
+            session.branch_options(),
+            vec![point(7, 7).unwrap()],
+            "live undo deletes the new branch and preserves its sibling"
+        );
+        assert!(
+            session.next_ai_request().is_none(),
+            "undo holds the side to move"
+        );
+        session.forward();
+        assert_eq!(session.owner(Color::White), SeatOwner::Human);
+        session.release_seat(Color::White);
         assert!(session.next_ai_request().is_some());
     }
 
@@ -467,7 +496,7 @@ mod tests {
     fn invalid_options_are_rejected_by_session_without_invalidation_or_replacement() {
         let mut session = white_turn();
         let generation = session.generation();
-        for simulations in [0, 10_001, u32::MAX] {
+        for simulations in [0, 50_001, u32::MAX] {
             assert!(
                 session
                     .set_ai_options(
@@ -518,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn current_worker_errors_and_illegal_decisions_pause_visibly_without_retry() {
+    fn current_worker_errors_and_illegal_decisions_hold_the_seat_without_retry() {
         for illegal in [false, true] {
             let mut session = white_turn();
             let request = session.next_ai_request().unwrap();
@@ -528,17 +557,19 @@ mod tests {
                 request.reply(Err("worker failed".into()))
             };
             assert!(!session.apply_ai_reply(reply));
-            assert!(!session.automation_running());
-            assert!(session.notice.as_deref().unwrap().starts_with("AI paused:"));
+            assert_eq!(session.owner(Color::White), SeatOwner::Human);
+            assert!(session.notice.as_deref().unwrap().starts_with("AI error:"));
             assert!(session.next_ai_request().is_none());
             assert!(session.knock.is_none());
             assert_eq!(session.game().len(), 1);
+            session.release_seat(Color::White);
+            assert!(session.next_ai_request().is_some());
         }
     }
 
     #[test]
-    fn dialogs_and_deferred_actions_block_delivery_and_stale_errors_do_not_pause() {
-        use crate::session::{After, Dialog};
+    fn dialogs_block_delivery_without_taking_seats_and_stale_errors_are_ignored() {
+        use crate::session::Dialog;
         let mut session = white_turn();
         let old = session.next_ai_request().unwrap();
         session.set_dialog(Dialog::Message {
@@ -547,22 +578,15 @@ mod tests {
         });
         assert!(session.next_ai_request().is_none());
         assert!(!session.apply_ai_reply(old.reply(Err("obsolete error".into()))));
-        assert!(session.automation_running());
         assert!(session.notice.is_none());
+        assert_eq!(session.owner(Color::White), SeatOwner::Ai);
         session.dismiss_dialog();
-        let current = session.next_ai_request().unwrap();
-        session.defer_action(After::NewGame);
-        assert!(!session.apply_ai_reply(play(&current, 7, 8)));
-        assert!(session.next_ai_request().is_none());
-        assert_eq!(session.take_action(), Some(After::NewGame));
-        let current = session.next_ai_request().unwrap();
-        session.defer_after_save(After::Quit);
-        assert!(!session.apply_ai_reply(resign(&current)));
-        assert!(session.next_ai_request().is_none());
+        assert_eq!(session.owner(Color::White), SeatOwner::Ai);
+        assert!(session.next_ai_request().is_some());
     }
 
     #[test]
-    fn new_retains_seats_and_options_running_but_open_is_paused() {
+    fn new_retains_ai_seats_and_options_but_open_holds_the_side_to_move() {
         let mut session = white_turn();
         session.release_seat(Color::Black);
         let options = AiOptions {
@@ -576,8 +600,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("gomoku-ai-open-{}.json", std::process::id()));
         session.save_to(&path);
         session.undo();
+        // Undoing Black's move took the seat; release it back to the AI.
+        session.release_seat(Color::Black);
         session.new_game();
-        assert!(session.automation_running());
         assert_eq!(session.owner(Color::Black), SeatOwner::Ai);
         assert_eq!(session.ai_options(Color::Black), options);
         assert!(
@@ -591,12 +616,12 @@ mod tests {
         assert!(!fresh.options.resign);
         session.open(&path);
         assert_eq!(session.game().len(), 1);
-        assert!(!session.automation_running());
+        assert_eq!(session.owner(Color::White), SeatOwner::Human);
         assert!(!session.apply_ai_reply(play(&fresh, 0, 0)));
         assert!(session.next_ai_request().is_none());
         session.seek(usize::MAX);
-        assert!(!session.automation_running());
-        session.resume_automation();
+        assert_eq!(session.owner(Color::White), SeatOwner::Human);
+        session.release_seat(Color::White);
         assert!(session.next_ai_request().is_some());
         std::fs::remove_file(path).unwrap();
     }
@@ -699,7 +724,14 @@ mod tests {
                         session.end_native_dialog();
                         assert!(session.generation() > generation);
                     }
-                    assert_eq!(session.automation_running(), !paused);
+                    assert_eq!(
+                        session.owner(Color::White),
+                        if paused {
+                            SeatOwner::Human
+                        } else {
+                            SeatOwner::Ai
+                        }
+                    );
                     assert_eq!(session.next_ai_request().is_some(), !paused);
                     assert!(session.knock.is_none());
                 }
@@ -795,7 +827,6 @@ mod tests {
             assert_eq!(session.puzzle_cursor, Some(point(9, 9).unwrap()));
             assert_eq!(session.owner(Color::White), SeatOwner::Ai);
             assert_eq!(session.ai_options(Color::White), AiOptions::default());
-            assert_eq!(session.automation_running(), !paused);
             assert!(session.generation() > old.generation);
             if !during {
                 assert!(
@@ -828,19 +859,11 @@ mod tests {
 
     #[test]
     fn every_modal_rejects_play_and_resign_during_or_after_cancellation() {
-        use crate::session::{After, Dialog};
-        for dialog in [
-            Dialog::Message {
-                title: "test".into(),
-                body: "blocked".into(),
-            },
-            Dialog::Unsaved { then: After::Open },
-            Dialog::Resume { source: None },
-            Dialog::Truncate {
-                count: 1,
-                point: point(8, 8).unwrap(),
-            },
-        ] {
+        use crate::session::Dialog;
+        for dialog in [Dialog::Message {
+            title: "test".into(),
+            body: "blocked".into(),
+        }] {
             for paused in [false, true] {
                 for during in [false, true] {
                     for concession in [false, true] {
@@ -864,7 +887,14 @@ mod tests {
                         assert_eq!(session.game(), &before);
                         assert!(session.knock.is_none());
                         session.dismiss_dialog();
-                        assert_eq!(session.automation_running(), !paused);
+                        assert_eq!(
+                            session.owner(Color::White),
+                            if paused {
+                                SeatOwner::Human
+                            } else {
+                                SeatOwner::Ai
+                            }
+                        );
                         assert_eq!(session.next_ai_request().is_some(), !paused);
                     }
                 }
@@ -905,6 +935,7 @@ mod tests {
     fn five_in_a_row_stops_automatic_requests() {
         let mut session = Session::new(&Settings::default());
         session.release_seat(Color::Black);
+        session.release_seat(Color::White);
         for col in 0..5 {
             let black = session.next_ai_request().unwrap();
             assert!(session.apply_ai_reply(play(&black, 7, col)));
@@ -942,22 +973,58 @@ mod tests {
                 checked: 1,
                 outcome: player::GuardOutcome::Unrefuted,
             }),
+            resignation: None,
         }));
         assert!(session.apply_ai_reply(reply));
         assert_eq!(session.game().stone_at(mv), Some(Color::White));
     }
 
     #[test]
-    fn default_white_automatically_requests_one_owned_snapshot() {
+    fn a_played_move_opens_the_moves_section() {
+        let mut session = Session::new(&Settings::default());
+        assert_eq!(
+            session.open_panel_section(),
+            crate::session::PanelSection::Players
+        );
+        session.place(point(7, 7).unwrap());
+        assert_eq!(
+            session.open_panel_section(),
+            crate::session::PanelSection::Moves,
+            "a human move opens the Moves section"
+        );
+        session.release_seat(Color::White);
+        let request = session.next_ai_request().unwrap();
+        session.toggle_panel_section(crate::session::PanelSection::Players);
+        assert!(session.apply_ai_reply(play(&request, 7, 8)));
+        assert_eq!(
+            session.open_panel_section(),
+            crate::session::PanelSection::Moves,
+            "an AI move opens the Moves section"
+        );
+    }
+
+    #[test]
+    fn startup_is_human_human_and_a_released_seat_requests_one_owned_snapshot() {
         let mut session = Session::new(&Settings::default());
         assert_eq!(session.owner(Color::Black), SeatOwner::Human);
-        assert_eq!(session.owner(Color::White), SeatOwner::Ai);
+        assert_eq!(
+            session.owner(Color::White),
+            SeatOwner::Human,
+            "startup never hands a seat to the AI"
+        );
         assert!(session.next_ai_request().is_none());
         session.place(point(7, 7).unwrap());
-        let request = session.next_ai_request().expect("White is automatic");
+        assert!(
+            session.next_ai_request().is_none(),
+            "White stays human until released"
+        );
+        session.release_seat(Color::White);
+        let request = session
+            .next_ai_request()
+            .expect("released White is automatic");
         assert_eq!(request.side, Color::White);
         assert_eq!(request.board, session.game().board_snapshot());
-        assert_eq!(request.options.simulations, 400);
+        assert_eq!(request.options.simulations, 4000);
         assert_eq!(request.options.temperature, 0.0);
         assert_eq!(request.options.c_puct, 1.5);
         assert_eq!(request.options.noise_epsilon, 0.0);
@@ -965,5 +1032,132 @@ mod tests {
         assert_eq!(request.options.guard, player::GuardConfig::baseline());
         assert!(request.options.resign);
         assert!(session.next_ai_request().is_none());
+    }
+    #[test]
+    fn thinking_is_reported_for_the_computing_seat() {
+        let mut session = white_turn();
+        assert!(!session.ai_thinking(Color::White));
+        let _flight = session.next_ai_request().unwrap();
+        assert!(session.ai_thinking(Color::White));
+        assert!(!session.ai_thinking(Color::Black));
+    }
+
+    #[test]
+    fn undo_then_release_reactivates_the_ai() {
+        let mut session = white_turn();
+        let request = session.next_ai_request().unwrap();
+        assert!(session.apply_ai_reply(play(&request, 7, 8)));
+        session.undo();
+        assert_eq!(session.owner(Color::White), SeatOwner::Human);
+        session.release_seat(Color::White);
+        assert!(
+            session.next_ai_request().is_some(),
+            "release starts the AI again"
+        );
+    }
+
+    #[test]
+    fn rewind_place_release_restarts_thinking() {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        // Black starts as the AI; it thinks and plays (7,7).
+        session.release_seat(Color::Black);
+        let flight = session.next_ai_request().expect("Black AI starts");
+        assert!(session.apply_ai_reply(play(&flight, 7, 7)));
+        assert_eq!(session.game().len(), 1);
+        assert_eq!(session.game().to_move(), Color::White);
+
+        // White is taken too: Wolfie said both occupants were human.
+        session.take_seat(Color::White);
+
+        // Left-arrow: view rewinds, the Black seat falls to the human.
+        session.rewind();
+        assert_eq!(session.game().cursor(), 0);
+        assert_eq!(session.owner(Color::Black), SeatOwner::Human);
+        assert!(session.game().is_rewound());
+
+        // Wolfie adds a couple of stones by hand (Black, then White),
+        // steering away from the AI's original continuation.
+        session.place(gomoku_core::point(8, 8).unwrap());
+        session.place(gomoku_core::point(6, 6).unwrap());
+        eprintln!(
+            "after placing: cursor={} len={} rewound={} to_move={:?}",
+            session.game().cursor(),
+            session.game().len(),
+            session.game().is_rewound(),
+            session.game().to_move()
+        );
+        assert_eq!(session.game().to_move(), Color::Black);
+
+        // Release Black: the flight must be reserved.
+        session.release_seat(Color::Black);
+        assert!(
+            session.next_ai_request().is_some(),
+            "release must restart Black's thinking"
+        );
+    }
+
+    #[test]
+    fn handing_initiative_while_rewound_kicks_a_flight() {
+        let mut session = white_turn();
+        session.take_seat(Color::White);
+        session.rewind();
+        assert!(session.game().is_rewound());
+        assert_eq!(session.game().to_move(), Color::Black);
+
+        session.hand_initiative_to_ai();
+        assert_eq!(session.owner(Color::Black), SeatOwner::Ai);
+        let flight = session
+            .next_ai_request()
+            .expect("the explicit kick overrides the rewound view");
+        assert_eq!(flight.side, Color::Black);
+
+        // The reply branches off the rewound position and disarms the kick.
+        assert!(session.apply_ai_reply(play(&flight, 8, 8)));
+        assert_eq!(session.game().len(), 1);
+        assert!(!session.game().is_rewound());
+        assert!(!session.initiative_override);
+    }
+
+    #[test]
+    fn handing_initiative_abandons_a_stuck_flight() {
+        let mut session = white_turn();
+        let stuck = session.next_ai_request().unwrap();
+        // A human steer in between leaves the flight stale and outstanding.
+        session.take_seat(Color::White);
+        session.place(gomoku_core::point(7, 8).unwrap());
+        session.take_seat(Color::Black);
+        assert!(session.next_ai_request().is_none(), "the slot is occupied");
+
+        session.hand_initiative_to_ai();
+        let fresh = session
+            .next_ai_request()
+            .expect("the kick abandons the stuck flight and re-reserves");
+        assert_eq!(fresh.side, Color::Black);
+        assert!(
+            !session.apply_ai_reply(play(&stuck, 9, 9)),
+            "the abandoned flight's late reply is discarded"
+        );
+        assert_eq!(session.game().len(), 2, "no stale move is committed");
+    }
+
+    #[test]
+    fn the_initiative_override_does_not_survive_navigation() {
+        let mut session = white_turn();
+        session.take_seat(Color::White);
+        session.rewind();
+        session.hand_initiative_to_ai();
+        let flight = session
+            .next_ai_request()
+            .expect("the kick reserves a flight while rewound");
+
+        session.rewind();
+        // Navigation disarmed the one-shot kick and staled the flight; its
+        // reply frees the slot but commits nothing.
+        assert!(!session.apply_ai_reply(play(&flight, 8, 8)));
+        assert!(session.game().is_rewound());
+        assert!(
+            session.next_ai_request().is_none(),
+            "rewound again with the kick disarmed: no flight"
+        );
     }
 }

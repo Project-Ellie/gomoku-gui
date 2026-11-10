@@ -16,21 +16,23 @@ use gomoku_core::Settings;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::ai::AiReply;
 use crate::ai_worker::Worker;
 use crate::audio::Audio;
 use crate::camera::Viewport;
-use crate::render::{Globals, GlyphTexture, Renderer, SHELL, SLATE, StoneInstance, WoodTexture};
-use crate::session::{After, Dialog, PanelSection, Session, WindowGeometry};
+use crate::render::{BoardImages, Globals, Renderer, SHELL, SLATE, StoneInstance};
+use crate::session::{After, PanelSection, Session, WindowGeometry};
 use crate::ui::{self, Requests};
 
 /// How far the pointer may move and still count as a click rather than a drag.
 const CLICK_SLOP: f32 = 4.0;
 /// The number of samples per pixel.
 const SAMPLES: u32 = 4;
+/// How long settings must stay unchanged before they are written.
+const SETTINGS_SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Whether saving may reuse the current destination.
 enum SaveMode {
@@ -40,6 +42,50 @@ enum SaveMode {
 
 enum AppEvent {
     AiCompleted(AiReply),
+}
+
+/// The last observed and last written settings, and the latest change.
+struct SettingsSave {
+    saved: Settings,
+    observed: Settings,
+    changed_at: Option<std::time::Instant>,
+}
+
+impl SettingsSave {
+    fn new(settings: Settings) -> Self {
+        Self {
+            saved: settings.clone(),
+            observed: settings,
+            changed_at: None,
+        }
+    }
+
+    fn observe(&mut self, settings: &Settings, now: std::time::Instant) {
+        if settings == &self.observed {
+            return;
+        }
+        self.observed.clone_from(settings);
+        self.changed_at = (settings != &self.saved).then_some(now);
+    }
+
+    fn is_due(&self, now: std::time::Instant) -> bool {
+        self.changed_at
+            .is_some_and(|changed| now.saturating_duration_since(changed) >= SETTINGS_SAVE_DELAY)
+    }
+
+    fn deadline(&self) -> Option<std::time::Instant> {
+        self.changed_at.map(|changed| changed + SETTINGS_SAVE_DELAY)
+    }
+
+    fn record_saved(&mut self, settings: Settings) {
+        self.observed.clone_from(&settings);
+        self.saved = settings;
+        self.changed_at = None;
+    }
+
+    fn postpone(&mut self, now: std::time::Instant) {
+        self.changed_at = (self.observed != self.saved).then_some(now);
+    }
 }
 
 /// The application.
@@ -55,6 +101,8 @@ pub struct App {
     state: Option<State>,
     /// Where the left button went down, if it is down.
     press: Option<[f32; 2]>,
+    /// The currently held keyboard modifiers.
+    modifiers: ModifiersState,
     /// The number of frames to draw before quitting. Used by the smoke test.
     frame_limit: Option<u32>,
     /// An optional command-line override for every interface text style.
@@ -72,6 +120,7 @@ pub struct App {
     redraw_pending: bool,
     closing: bool,
     geometry: WindowGeometry,
+    settings_save: SettingsSave,
 }
 
 struct State {
@@ -105,6 +154,7 @@ impl App {
         let mut session = Session::new(&settings);
         // A game can be handed in, which is how `--demo` puts stones on the board.
         session.install_game(game);
+        let settings_save = SettingsSave::new(session.settings(&geometry));
         App {
             worker: None,
             session,
@@ -114,6 +164,7 @@ impl App {
             audio,
             state: None,
             press: None,
+            modifiers: ModifiersState::empty(),
             frame_limit,
             font: None,
             frames: 0,
@@ -122,6 +173,7 @@ impl App {
             redraw_pending: false,
             closing: false,
             geometry,
+            settings_save,
         }
     }
 
@@ -137,22 +189,10 @@ impl App {
 
     /// Open the window and run until it is closed.
     pub fn run(mut self) -> Result<()> {
-        // An explicit --puzzle already chose the startup content. Replacing
-        // its picker would also discard the game snapshot needed by Cancel.
-        let offer = if self.session.dialog().is_none() && !self.session.game().is_from_position() {
-            self.session.autosave_to_offer()
-        } else {
-            None
-        };
-        match offer {
-            Some(offer) => {
-                log::trace!("offering autosave from {:?}", offer);
-                self.session.set_dialog(Dialog::Resume { source: offer });
-            }
-            None => {
-                log::trace!("no autosave to offer");
-            }
-        }
+        self.discard_startup_autosave(
+            crate::session::autosave_path(),
+            crate::session::autosave_state_path(),
+        );
         let event_loop = EventLoop::<AppEvent>::with_user_event()
             .build()
             .context("cannot open an event loop")?;
@@ -172,6 +212,40 @@ impl App {
         result.context("the window loop failed")
     }
 
+    /// Delete recovery files from the previous sitting without offering them.
+    fn discard_startup_autosave(
+        &mut self,
+        autosave_path: Result<PathBuf>,
+        autosave_state_path: Result<PathBuf>,
+    ) {
+        self.session
+            .discard_autosave_from([autosave_path, autosave_state_path].into_iter().flatten());
+        log::trace!("discarded any startup autosave");
+    }
+
+    /// Save changed settings after a quiet period, without polling the filesystem.
+    fn save_changed_settings(
+        &mut self,
+        now: std::time::Instant,
+        settings_path: impl FnOnce() -> Result<PathBuf>,
+    ) {
+        let settings = self.session.settings(&self.geometry);
+        self.settings_save.observe(&settings, now);
+        if !self.settings_save.is_due(now) {
+            return;
+        }
+        let result = settings_path().and_then(|path| {
+            gomoku_core::save_settings(&path, &settings).map_err(anyhow::Error::new)
+        });
+        match result {
+            Ok(()) => self.settings_save.record_saved(settings),
+            Err(error) => {
+                log::warn!("the settings could not be saved: {error}");
+                self.settings_save.postpone(now);
+            }
+        }
+    }
+
     /// Write the settings, and the game in progress, on the way out.
     fn write_settings(
         &mut self,
@@ -184,8 +258,9 @@ impl App {
         match settings_path {
             Ok(path) => {
                 let settings = self.session.settings(&self.geometry);
-                if let Err(error) = gomoku_core::save_settings(&path, &settings) {
-                    log::warn!("the settings could not be saved: {error}");
+                match gomoku_core::save_settings(&path, &settings) {
+                    Ok(()) => self.settings_save.record_saved(settings),
+                    Err(error) => log::warn!("the settings could not be saved: {error}"),
                 }
             }
             Err(error) => log::warn!("the settings have no home: {error}"),
@@ -229,21 +304,37 @@ impl App {
 
     fn prepare_wait(&mut self) -> ControlFlow {
         self.reconcile_ai();
+        let now = std::time::Instant::now();
+        if !self.closing {
+            if self.state.is_some() {
+                self.save_changed_settings(now, crate::session::settings_path);
+            } else {
+                // Headless apps still exercise change detection and deadlines,
+                // but writes always need an explicit test destination.
+                let settings = self.session.settings(&self.geometry);
+                self.settings_save.observe(&settings, now);
+            }
+        }
         // Input dirtying egui must not wait for an older animation or cursor
         // deadline: request_redraw() schedules the event that wakes this Wait.
         if !self.closing && (self.dirty || self.frame_limit.is_some()) {
             self.request_redraw();
             return ControlFlow::Wait;
         }
+        let mut wait_until = if self.closing {
+            None
+        } else {
+            self.settings_save.deadline()
+        };
         if let Some(wake) = self.wake_at {
-            if std::time::Instant::now() >= wake {
+            if now >= wake {
                 self.wake_at = None;
                 self.request_redraw();
             } else {
-                return ControlFlow::WaitUntil(wake);
+                wait_until = Some(wait_until.map_or(wake, |save| save.min(wake)));
             }
         }
-        ControlFlow::Wait
+        wait_until.map_or(ControlFlow::Wait, ControlFlow::WaitUntil)
     }
 
     fn handle_app_event(&mut self, event: AppEvent) {
@@ -270,12 +361,9 @@ impl App {
         }
     }
 
-    /// Perform an action that may lose unsaved changes.
+    /// Perform an action immediately; unsaved games never block it.
     fn attempt(&mut self, then: After, exit: &mut impl FnMut()) {
-        self.session.attempt(then);
-        if let Some(action) = self.session.take_action() {
-            self.perform(action, exit);
-        }
+        self.perform(then, exit);
         self.request_redraw();
     }
 
@@ -287,10 +375,6 @@ impl App {
                 self.request_redraw();
             }
             After::Open => self.ask_to_open(),
-            After::OpenRecent(path) => {
-                self.session.open(&path);
-                self.request_redraw();
-            }
             After::OpenPuzzle => self.ask_to_open_puzzle(),
             After::Quit => {
                 self.close_worker();
@@ -351,56 +435,55 @@ impl App {
         let path = pick_folder(directory.as_deref());
         self.session.end_native_dialog();
         if let Some(path) = path {
-            if !self.registry.looks_like_corpus(&path) {
-                self.session.fail(
-                    "This folder doesn't look like a Gomoku corpus",
-                    &"no recognized record files were found in this folder",
-                );
-                self.request_redraw();
-                return;
-            }
-            match self.registry.open(&path) {
-                Ok(gomoku_core::OpenedThing::Corpus { records, .. }) => {
-                    let entries = records
-                        .into_iter()
-                        .map(|meta| gomoku_core::IndexEntry {
-                            index: meta.index,
-                            kind: meta.kind,
-                            name: meta.name,
-                            path: meta.source,
-                        })
-                        .collect();
-                    self.session.open_explorer_corpus(entries);
-                    self.session.remember_corpus_directory(&path);
-                }
-                Ok(gomoku_core::OpenedThing::SingleRecord(_)) => {
-                    self.session.fail(
-                        "The Explorer needs a folder",
-                        &"pick a folder of records, not a single file",
-                    );
-                }
-                Err(error) => self.session.fail("The folder could not be opened", &error),
-            }
+            self.open_corpus_folder(&path);
         }
         self.request_redraw();
     }
 
+    /// Open a corpus folder in the Lab Explorer, reporting any mismatch.
+    fn open_corpus_folder(&mut self, path: &Path) {
+        if !self.registry.looks_like_corpus(path) {
+            self.session.fail(
+                "This folder doesn't look like a Gomoku corpus",
+                &"no recognized record files were found in this folder",
+            );
+            self.request_redraw();
+            return;
+        }
+        match self.registry.open(path) {
+            Ok(gomoku_core::OpenedThing::Corpus { records, .. }) => {
+                // Opening a corpus is a load: the next picker starts here,
+                // not wherever navigation happened to begin last time.
+                self.session.remember_corpus_directory(path);
+                let entries = records
+                    .into_iter()
+                    .map(|meta| gomoku_core::IndexEntry {
+                        index: meta.index,
+                        kind: meta.kind,
+                        name: meta.name,
+                        path: meta.source,
+                    })
+                    .collect();
+                self.session.open_explorer_corpus(entries);
+            }
+            Ok(gomoku_core::OpenedThing::SingleRecord(_)) => {
+                self.session.fail(
+                    "The Explorer needs a folder",
+                    &"pick a folder of records, not a single file",
+                );
+            }
+            Err(error) => self.session.fail("The folder could not be opened", &error),
+        }
+    }
+
     /// Save using the same transaction for existing paths and Save As.
-    fn save(
-        &mut self,
-        mode: SaveMode,
-        pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
-        exit: &mut impl FnMut(),
-    ) {
+    fn save(&mut self, mode: SaveMode, pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>) {
         let directory = self.session.last_directory.clone();
         let pick = || pick(directory.as_deref());
-        let outcome = match mode {
+        match mode {
             SaveMode::Pick => self.session.save_as(pick),
             SaveMode::CurrentOrPick => self.session.save(pick),
         };
-        if let Some(after) = self.session.complete_save(outcome) {
-            self.perform(after, exit);
-        }
         self.request_redraw();
     }
 
@@ -412,12 +495,14 @@ impl App {
         pick_folder: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
         exit: &mut impl FnMut(),
     ) {
-        if let Some(after) = self.session.take_action() {
-            self.perform(after, exit);
-            return;
-        }
         if requests.open_explorer {
             self.ask_to_open_explorer(pick_folder);
+        }
+        if requests.reopen_explorer {
+            if let Some(path) = self.session.last_corpus_directory.clone() {
+                self.open_corpus_folder(&path);
+                self.request_redraw();
+            }
         }
         if let Some(index) = requests.explorer_select {
             self.session.load_explorer_record(&self.registry, index);
@@ -432,9 +517,9 @@ impl App {
         } else if requests.open_puzzle {
             self.attempt(After::OpenPuzzle, exit);
         } else if requests.save {
-            self.save(SaveMode::CurrentOrPick, pick, exit);
+            self.save(SaveMode::CurrentOrPick, pick);
         } else if requests.save_as {
-            self.save(SaveMode::Pick, pick, exit);
+            self.save(SaveMode::Pick, pick);
         }
     }
 
@@ -632,6 +717,14 @@ impl App {
             Key::Named(NamedKey::Escape) => {
                 self.attempt(After::Quit, exit);
             }
+            Key::Named(NamedKey::ArrowLeft) if self.modifiers.contains(ModifiersState::SUPER) => {
+                self.session.seek(0);
+                self.request_redraw();
+            }
+            Key::Named(NamedKey::ArrowRight) if self.modifiers.contains(ModifiersState::SUPER) => {
+                self.session.seek(usize::MAX);
+                self.request_redraw();
+            }
             Key::Named(NamedKey::ArrowLeft) => {
                 self.session.rewind();
                 self.request_redraw();
@@ -640,11 +733,19 @@ impl App {
                 self.session.forward();
                 self.request_redraw();
             }
-            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::Home) => {
+            Key::Named(NamedKey::ArrowUp) => {
+                self.session.cycle_branch(-1);
+                self.request_redraw();
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.session.cycle_branch(1);
+                self.request_redraw();
+            }
+            Key::Named(NamedKey::Home) => {
                 self.session.seek(0);
                 self.request_redraw();
             }
-            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::End) => {
+            Key::Named(NamedKey::End) => {
                 self.session.seek(usize::MAX);
                 self.request_redraw();
             }
@@ -656,6 +757,10 @@ impl App {
                 for command in text.chars() {
                     match command {
                         'u' => self.session.undo(),
+                        '0'..='9' if self.session.is_branch_point() => {
+                            let index = command.to_digit(10).expect("an ASCII digit") as usize;
+                            self.session.select_branch(index);
+                        }
                         'f' | '0' => self.session.fit(),
                         'v' => self.session.flip(),
                         'c' => self.session.toggles.coordinates = !self.session.toggles.coordinates,
@@ -665,7 +770,6 @@ impl App {
                         'l' => self.session.toggles.last_move = !self.session.toggles.last_move,
                         'w' => self.session.toggles.win_line = !self.session.toggles.win_line,
                         '+' | '=' => {
-                            self.session.follows_window = false;
                             self.session.camera.zoom_about(
                                 self.session.viewport,
                                 [
@@ -676,7 +780,6 @@ impl App {
                             );
                         }
                         '-' => {
-                            self.session.follows_window = false;
                             self.session.camera.zoom_about(
                                 self.session.viewport,
                                 [
@@ -753,15 +856,13 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let wood = WoodTexture::load_wood()?;
-        let glyphs = GlyphTexture::load_glyphs()?;
+        let images = BoardImages::load()?;
         let renderer = Renderer::new(
             &device,
             &queue,
             format,
             SAMPLES,
-            &wood,
-            &glyphs,
+            &images,
             &crate::render::STONE_SHAPE,
         );
         let multisampled = create_multisampled(&device, &config);
@@ -1045,7 +1146,6 @@ impl ApplicationHandler<AppEvent> for App {
                     if delta[0].abs() > CLICK_SLOP || delta[1].abs() > CLICK_SLOP {
                         self.press = None;
                         // A hand on the view breaks the tie with the window.
-                        self.session.follows_window = false;
                         self.session.camera.pan(self.session.viewport, delta);
                         self.session.update_hover();
                     }
@@ -1070,7 +1170,7 @@ impl ApplicationHandler<AppEvent> for App {
                                     if let Some(point) =
                                         gomoku_core::point(intersection[1], intersection[0])
                                     {
-                                        self.session.place(point);
+                                        self.session.board_click(point);
                                         self.session.update_hover();
                                     }
                                 }
@@ -1088,7 +1188,6 @@ impl ApplicationHandler<AppEvent> for App {
                     MouseScrollDelta::LineDelta(_, lines) => lines * 0.15,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32 * 0.0015,
                 };
-                self.session.follows_window = false;
                 self.session.camera.zoom_about(
                     self.session.viewport,
                     self.session.pointer,
@@ -1096,6 +1195,9 @@ impl ApplicationHandler<AppEvent> for App {
                 );
                 self.session.update_hover();
                 self.request_redraw();
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // A dialog owns the keyboard while it is open: the interface
