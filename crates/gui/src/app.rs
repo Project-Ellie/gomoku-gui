@@ -19,7 +19,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::ai::AiReply;
+use crate::ai::{AiKind, AiReply};
 use crate::ai_worker::Worker;
 use crate::audio::Audio;
 use crate::camera::Viewport;
@@ -128,6 +128,8 @@ impl FocusClickGuard {
 pub struct App {
     // None for previews and headless construction. Started only by run().
     worker: Option<Result<Worker, String>>,
+    worker_kind: Option<AiKind>,
+    spawn_worker: Box<dyn Fn(AiKind) -> Option<Result<Worker, String>> + Send>,
     session: Session,
     /// The Lab Explorer format registry. The application owns it because it
     /// is what opens corpus folders and records; the only format so far is
@@ -196,6 +198,8 @@ impl App {
         let settings_save = SettingsSave::new(session.settings(&geometry));
         App {
             worker: None,
+            worker_kind: None,
+            spawn_worker: Box::new(|_| Some(Err("no worker factory".into()))),
             session,
             registry: gomoku_core::Registry::builder()
                 .add(gomoku_core::PsqFormat)
@@ -261,10 +265,24 @@ impl App {
             .build()
             .context("cannot open an event loop")?;
         let proxy = event_loop.create_proxy();
-        self.worker = Some(
-            Worker::baseline(move |reply| proxy.send_event(AppEvent::AiCompleted(reply)).is_ok())
-                .map_err(|error| error.to_string()),
-        );
+        let checkpoint_root = self.session.checkpoint_root();
+        self.spawn_worker = Box::new(move |kind| {
+            let proxy = proxy.clone();
+            let sink = move |reply| proxy.send_event(AppEvent::AiCompleted(reply)).is_ok();
+            Some(match kind {
+                AiKind::Baseline => Worker::baseline(sink).map_err(|error| error.to_string()),
+                AiKind::Net(path) => {
+                    let resolved = if path.is_absolute() {
+                        path
+                    } else {
+                        checkpoint_root.join(path)
+                    };
+                    Worker::net(resolved, sink).map_err(|error| error.to_string())
+                }
+            })
+        });
+        self.worker = (self.spawn_worker)(AiKind::Baseline);
+        self.worker_kind = Some(AiKind::Baseline);
         event_loop.set_control_flow(ControlFlow::Wait);
         let result = event_loop.run_app(&mut self);
         self.close_worker();
@@ -346,23 +364,34 @@ impl App {
         }
     }
 
+    fn shutdown_worker(&mut self) {
+        if let Some(Ok(mut worker)) = self.worker.take() {
+            worker.close();
+        }
+    }
+
     // Called after input/UI transactions have settled, even with a future wake_at.
     fn reconcile_ai(&mut self) {
         if self.closing {
             return;
         }
-        let Some(worker) = self.worker.as_ref() else {
+        let Some(request) = self.session.next_ai_request() else {
             return;
         };
-        if let Some(request) = self.session.next_ai_request() {
-            let result = match worker {
-                Ok(worker) => worker.submit(request),
-                Err(error) => Err(Box::new(request.reply(Err(error.clone())))),
-            };
-            if let Err(reply) = result {
-                self.session.apply_ai_reply(*reply);
-                self.request_redraw();
-            }
+        let required = self.session.seat_kind(request.side);
+        if self.worker_kind.as_ref() != Some(&required) {
+            self.shutdown_worker();
+            self.worker = (self.spawn_worker)(required.clone());
+            self.worker_kind = Some(required);
+        }
+        let result = match self.worker.as_ref() {
+            Some(Ok(worker)) => worker.submit(request),
+            Some(Err(error)) => Err(Box::new(request.reply(Err(error.clone())))),
+            None => return,
+        };
+        if let Err(reply) = result {
+            self.session.apply_ai_reply(*reply);
+            self.request_redraw();
         }
     }
 
@@ -504,6 +533,24 @@ impl App {
         self.request_redraw();
     }
 
+    /// Ask for the folder that contains trained-net run directories.
+    ///
+    /// The folder picker is injectable, like the corpus picker, so that
+    /// headless tests never open a native dialog.
+    fn ask_for_checkpoint_root(
+        &mut self,
+        pick_checkpoint_root: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+    ) {
+        self.session.begin_native_dialog();
+        let directory = self.session.checkpoint_root();
+        let path = pick_checkpoint_root(Some(&directory));
+        self.session.end_native_dialog();
+        if let Some(path) = path {
+            self.session.set_checkpoint_root(Some(path));
+        }
+        self.request_redraw();
+    }
+
     /// Open a corpus folder in the Lab Explorer, reporting any mismatch.
     fn open_corpus_folder(&mut self, path: &Path) {
         if !self.registry.looks_like_corpus(path) {
@@ -557,10 +604,14 @@ impl App {
         requests: Requests,
         pick: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
         pick_folder: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
+        pick_checkpoint_root: &mut impl FnMut(Option<&Path>) -> Option<PathBuf>,
         exit: &mut impl FnMut(),
     ) {
         if requests.open_explorer {
             self.ask_to_open_explorer(pick_folder);
+        }
+        if requests.checkpoint_root {
+            self.ask_for_checkpoint_root(pick_checkpoint_root);
         }
         if requests.reopen_explorer {
             if let Some(path) = self.session.last_corpus_directory.clone() {
@@ -747,6 +798,7 @@ impl App {
             requests,
             &mut pick_save_file,
             &mut pick_corpus_folder,
+            &mut pick_checkpoint_root_folder,
             &mut || event_loop.exit(),
         );
 
@@ -990,6 +1042,16 @@ fn pick_save_file(directory: Option<&Path>) -> Option<PathBuf> {
 /// tests.
 fn pick_corpus_folder(directory: Option<&Path>) -> Option<PathBuf> {
     let mut dialog = rfd::FileDialog::new().set_title("Open a corpus folder");
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.pick_folder()
+}
+
+/// The native checkpoint-root-picker boundary; never reached by headless app
+/// tests.
+fn pick_checkpoint_root_folder(directory: Option<&Path>) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title("Choose the neural-network checkpoint root");
     if let Some(directory) = directory {
         dialog = dialog.set_directory(directory);
     }

@@ -3,6 +3,7 @@
 //!
 //! `real_acceptance` adds opt-in release tests using the genuine pinned player.
 use super::*;
+use crate::ai::AiKind;
 use crate::session::Dialog;
 use std::path::{Path, PathBuf};
 
@@ -229,6 +230,7 @@ fn idle_worker_completion_requests_redraw_without_pointer_input() {
         move |reply| tx.send(reply).is_ok(),
     )
     .unwrap()));
+    app.worker_kind = Some(AiKind::Baseline);
     app.session.release_seat(gomoku_core::Color::White);
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.dirty = false;
@@ -275,6 +277,7 @@ fn failed_thread_start_retires_reservation_and_holds_the_seat_without_retry() {
     app.session.release_seat(gomoku_core::Color::White);
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.worker = Some(Err("thread unavailable".into()));
+    app.worker_kind = Some(AiKind::Baseline);
     app.prepare_wait();
     assert_eq!(
         app.session.owner(gomoku_core::Color::White),
@@ -319,6 +322,7 @@ fn stale_terminal_failure_rejects_replacement(initialization: bool, panics: bool
         },
     )
     .unwrap()));
+    app.worker_kind = Some(AiKind::Baseline);
     app.session.release_seat(gomoku_core::Color::White);
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.prepare_wait();
@@ -402,13 +406,25 @@ fn dirty_interface_redraw_is_not_deferred_by_a_future_wake() {
 }
 
 #[test]
-fn headless_construction_does_not_start_worker_or_reserve_a_flight() {
+fn headless_construction_uses_the_default_factory_and_holds_the_seat() {
     let mut app = App::new(Settings::default(), gomoku_core::Game::new(), None, None);
     app.session.release_seat(gomoku_core::Color::White);
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.prepare_wait();
-    assert!(app.worker.is_none());
-    assert!(app.session.next_ai_request().is_some());
+    assert!(app.worker.is_some());
+    assert_eq!(app.worker_kind, Some(AiKind::Baseline));
+    assert!(
+        app.session
+            .notice
+            .as_ref()
+            .unwrap()
+            .contains("no worker factory")
+    );
+    assert_eq!(
+        app.session.owner(gomoku_core::Color::White),
+        crate::ai::SeatOwner::Human
+    );
+    assert!(app.session.next_ai_request().is_none());
 }
 
 fn app() -> App {
@@ -442,6 +458,7 @@ fn explicit_save_as_uses_a_new_destination_without_quitting() {
         },
         &mut pick,
         &mut |_| None,
+        &mut |_| None,
         &mut exit,
     );
     assert!(!app.closing);
@@ -465,6 +482,7 @@ fn unsaved_new_and_quit_proceed_without_a_prompt() {
         },
         &mut |_| None,
         &mut |_| None,
+        &mut |_| None,
         &mut exit,
     );
     assert!(new_game.session.dialog().is_none());
@@ -477,6 +495,7 @@ fn unsaved_new_and_quit_proceed_without_a_prompt() {
             quit: true,
             ..Default::default()
         },
+        &mut |_| None,
         &mut |_| None,
         &mut |_| None,
         &mut exit,
@@ -518,6 +537,7 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
         },
         &mut no_picker,
         &mut |_| None,
+        &mut |_| None,
         &mut exit,
     );
     assert!(resigned.closing);
@@ -546,6 +566,7 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
         },
         &mut no_picker,
         &mut |_| None,
+        &mut |_| None,
         &mut exit,
     );
     files.write_settings(&mut saved);
@@ -560,6 +581,7 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
             ..Default::default()
         },
         &mut no_picker,
+        &mut |_| None,
         &mut |_| None,
         &mut exit,
     );
@@ -593,9 +615,13 @@ fn explorer_request_reaches_session() {
     };
     let mut pick_folder = |_: Option<&Path>| Some(corpus.clone());
     let mut exits = 0;
-    app.run_requests(requests, &mut |_| None, &mut pick_folder, &mut || {
-        exits += 1
-    });
+    app.run_requests(
+        requests,
+        &mut |_| None,
+        &mut pick_folder,
+        &mut |_| None,
+        &mut || exits += 1,
+    );
     assert!(app.session.explorer().is_some());
     assert_eq!(app.session.explorer().unwrap().records.len(), 1);
     assert_eq!(exits, 0);
@@ -618,6 +644,7 @@ fn explorer_rejects_a_non_corpus_folder_without_changing_state() {
         },
         &mut |_| None,
         &mut |_| Some(folder.clone()),
+        &mut |_| None,
         &mut || {},
     );
 
@@ -650,6 +677,7 @@ fn explorer_picker_starts_where_the_last_corpus_was_opened() {
             assert_eq!(directory, Some(remembered.as_path()));
             Some(corpus.clone())
         },
+        &mut |_| None,
         &mut || {},
     );
     assert_eq!(
@@ -668,6 +696,7 @@ fn explorer_picker_starts_where_the_last_corpus_was_opened() {
             assert_eq!(directory, Some(corpus.as_path()));
             None
         },
+        &mut |_| None,
         &mut || {},
     );
     assert_eq!(app.session.last_corpus_directory, Some(corpus));
@@ -690,6 +719,7 @@ fn reopening_the_last_corpus_skips_the_folder_picker() {
             picker_called = true;
             None
         },
+        &mut |_| None,
         &mut || {},
     );
     assert!(!picker_called, "reopening never asks for a folder");
@@ -709,6 +739,7 @@ fn reopening_a_vanished_corpus_reports_the_error() {
             reopen_explorer: true,
             ..Default::default()
         },
+        &mut |_| None,
         &mut |_| None,
         &mut |_| None,
         &mut || {},
@@ -733,13 +764,20 @@ fn explorer_single_click_preview_loads_the_record_without_leaving_the_list() {
         ..Default::default()
     };
     let mut pick_folder = |_: Option<&Path>| Some(corpus.clone());
-    app.run_requests(requests, &mut |_| None, &mut pick_folder, &mut || {});
+    app.run_requests(
+        requests,
+        &mut |_| None,
+        &mut pick_folder,
+        &mut |_| None,
+        &mut || {},
+    );
     assert_eq!(app.session.last_corpus_directory, Some(corpus.clone()));
     app.run_requests(
         ui::Requests {
             explorer_select: Some(0),
             ..Default::default()
         },
+        &mut |_| None,
         &mut |_| None,
         &mut |_| None,
         &mut || {},
@@ -946,6 +984,7 @@ mod real_acceptance {
             move |reply| tx.send(reply).is_ok(),
         )
         .unwrap()));
+        app.worker_kind = Some(AiKind::Baseline);
         (app, replies)
     }
 
@@ -1220,6 +1259,7 @@ fn undo_and_release_restart_thinking() {
         move |reply| tx.send(reply).is_ok(),
     )
     .unwrap()));
+    app.worker_kind = Some(AiKind::Baseline);
     app.session.release_seat(gomoku_core::Color::White);
     app.session.place(gomoku_core::point(7, 7).unwrap());
     app.session.knock.take();
@@ -1387,4 +1427,120 @@ fn losing_focus_rearms_the_guard() {
         !guard.swallows(Pressed, start),
         "the defocused window takes no swallow state with it"
     );
+}
+
+#[test]
+fn switching_seat_kind_replaces_the_worker() {
+    use std::sync::{Arc, Mutex, mpsc};
+    let mut app = app();
+    let requested = Arc::new(Mutex::new(Vec::<AiKind>::new()));
+    let requested2 = Arc::clone(&requested);
+    let (tx, rx) = mpsc::channel();
+    app.spawn_worker = Box::new(move |kind| {
+        requested2.lock().unwrap().push(kind.clone());
+        let tx = tx.clone();
+        Some(Ok(Worker::spawn(
+            || {
+                Ok(|request: &crate::ai::AiRequest| {
+                    let mv = request.board.empty_moves().next().ok_or("no legal move")?;
+                    Ok(crate::ai::AiPlayerDecision {
+                        action: crate::ai::DecisionAction::Play(mv),
+                        search: None,
+                        own_proof: None,
+                        guard: None,
+                        resignation: None,
+                    })
+                })
+            },
+            move |reply| tx.send(reply).is_ok(),
+        )
+        .unwrap()))
+    });
+    app.session.release_seat(gomoku_core::Color::White);
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.reconcile_ai();
+    app.handle_app_event(AppEvent::AiCompleted(
+        rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap(),
+    ));
+    assert_eq!(app.session.game().len(), 2);
+
+    // Return to White's turn so the next reconcile asks White for a decision.
+    app.session.place(gomoku_core::point(8, 8).unwrap());
+    let net_path = std::env::temp_dir().join("switching-kind-net-run");
+    app.session
+        .set_seat_kind(gomoku_core::Color::White, AiKind::Net(net_path.clone()))
+        .unwrap();
+    app.reconcile_ai();
+    app.handle_app_event(AppEvent::AiCompleted(
+        rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap(),
+    ));
+    let kinds = requested.lock().unwrap();
+    assert!(kinds.contains(&AiKind::Baseline));
+    assert!(kinds.contains(&AiKind::Net(net_path)));
+    assert_eq!(app.session.game().len(), 4);
+}
+
+#[test]
+fn net_seat_with_missing_dir_surfaces_load_error_as_notice() {
+    use std::sync::mpsc;
+    let mut app = app();
+    app.session.release_seat(gomoku_core::Color::White);
+    let missing_dir = std::env::temp_dir().join("gomoku-gui-no-such-net-run");
+    app.session
+        .set_seat_kind(gomoku_core::Color::White, AiKind::Net(missing_dir.clone()))
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    app.worker = Some(Ok(Worker::net(missing_dir.clone(), move |reply| {
+        tx.send(reply).is_ok()
+    })
+    .unwrap()));
+    app.worker_kind = Some(AiKind::Net(missing_dir));
+    app.session.place(gomoku_core::point(7, 7).unwrap());
+    app.reconcile_ai();
+    let reply = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    app.handle_app_event(AppEvent::AiCompleted(reply));
+    assert!(
+        app.session
+            .notice
+            .as_ref()
+            .unwrap()
+            .starts_with("AI error:")
+    );
+    assert!(
+        app.session
+            .notice
+            .as_ref()
+            .unwrap()
+            .contains("could not load model")
+    );
+    assert_eq!(
+        app.session.owner(gomoku_core::Color::White),
+        crate::ai::SeatOwner::Human
+    );
+}
+
+#[test]
+fn checkpoint_root_picker_sets_root_and_persists_in_settings() {
+    let files = Files::new("checkpoint-root");
+    let chosen = files.path("checkpoints");
+    std::fs::create_dir(&chosen).unwrap();
+    let mut app = app();
+    let start = app.session.checkpoint_root();
+    let mut pick_checkpoint_root = |directory: Option<&Path>| {
+        assert_eq!(directory, Some(start.as_path()));
+        Some(chosen.clone())
+    };
+    app.run_requests(
+        ui::Requests {
+            checkpoint_root: true,
+            ..Default::default()
+        },
+        &mut |_| None,
+        &mut |_| None,
+        &mut pick_checkpoint_root,
+        &mut || {},
+    );
+    assert_eq!(app.session.checkpoint_root(), chosen);
+    let settings = app.session.settings(&app.geometry);
+    assert_eq!(settings.net.checkpoint_root, Some(chosen));
 }

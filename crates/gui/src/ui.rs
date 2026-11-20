@@ -7,7 +7,7 @@
 use egui::{Align2, Color32, FontId, Frame, RichText, Stroke, Vec2};
 use gomoku_core::{Color, Game, Outcome, WinMethod, label};
 
-use crate::ai::SeatOwner;
+use crate::ai::{AiKind, SeatOwner};
 use crate::render::WOOD;
 use crate::session::{Dialog, PanelSection, Session, name_of, winning_line};
 use crate::theme::{
@@ -16,6 +16,7 @@ use crate::theme::{
     PANEL_HEADER_HOVER, PANEL_INK, PANEL_MARGIN, RECENT_FONT_SIZE, SECTION_HEADER_FONT_SIZE,
     STONE_DOT_SIZE, SURFACE,
 };
+use neteval::picker;
 
 /// What the interface asks the application to do once the frame is drawn. The
 /// application owns the file dialogs and the window, so it performs these.
@@ -27,6 +28,8 @@ pub struct Requests {
     pub open: bool,
     /// Ask for a puzzle file and load it.
     pub open_puzzle: bool,
+    /// Ask for a folder to use as the neural-network checkpoint root.
+    pub checkpoint_root: bool,
     /// Ask for a corpus folder and open it in the Lab Explorer.
     pub open_explorer: bool,
     /// Reopen the last corpus folder without asking for one.
@@ -429,6 +432,56 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                                 ui.end_row();
                             });
                     });
+                    // The checkpoint-root row shares the same editable style:
+                    // label above, 40-point-tall widget row, same grid spacing.
+                    editable_style_scope(ui, |ui| {
+                        egui::Grid::new("checkpoint_root")
+                            .spacing([12.0, 3.0])
+                            .show(ui, |ui| {
+                                ui.label("Checkpoint root").on_hover_text(
+                                    "The folder that contains trained-net run directories. \
+                                     Each run must hold a model.mpk record and a run.json journal.",
+                                );
+                                ui.end_row();
+                                let root = session.checkpoint_root();
+                                let path = root.as_os_str().to_string_lossy();
+                                let elided = if path.chars().count() > 45 {
+                                    let skip = path
+                                        .chars()
+                                        .count()
+                                        .saturating_sub(44);
+                                    format!(
+                                        "…{}",
+                                        path.chars().skip(skip).collect::<String>()
+                                    )
+                                } else {
+                                    path.to_string()
+                                };
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(ui.available_width(), 40.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(elided);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .button("Choose…")
+                                                    .on_hover_text(
+                                                        "Pick the folder that contains trained-net \
+                                                         run directories.",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    requests.checkpoint_root = true;
+                                                }
+                                            },
+                                        );
+                                    },
+                                );
+                                ui.end_row();
+                            });
+                    });
                 }));
             }
             // The Explorer header appears only while its corpus is available.
@@ -616,6 +669,23 @@ fn status_line(session: &Session) -> String {
 
 /// Seat intent is separate from editable player metadata. Only actual widget
 /// changes commit options: repainting must never invalidate a search.
+/// Format a checkpoint entry for the selector: directory name, width and
+/// depth, and the run seed.
+fn checkpoint_label(info: &picker::CheckpointInfo) -> String {
+    let name = info
+        .dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!(
+        "{}  {}ch×{}blocks  seed={}",
+        name,
+        info.journal.model_config.channels,
+        info.journal.model_config.num_blocks,
+        info.journal.seed
+    )
+}
+
 fn seats(ui: &mut egui::Ui, session: &mut Session) {
     // The Players body reads at twice the body size; only the section title
     // above stays as is. The scope keeps the enlargement from leaking into
@@ -633,7 +703,10 @@ fn seats(ui: &mut egui::Ui, session: &mut Session) {
                         } else if session.ai_thinking(side) {
                             "AI · thinking…"
                         } else {
-                            "AI · baseline"
+                            match session.seat_kind(side) {
+                                AiKind::Baseline => "AI · baseline",
+                                AiKind::Net(_) => "AI · trained net",
+                            }
                         });
                     });
                     let mut name = match side {
@@ -666,6 +739,113 @@ fn seats(ui: &mut egui::Ui, session: &mut Session) {
                         .on_hover_text(help).clicked()
                     {
                         if human { session.release_seat(side); } else { session.take_seat(side); }
+                    }
+                    let mut kind = session.seat_kind(side);
+                    let mut engine_index = if matches!(kind, AiKind::Baseline) { 0 } else { 1 };
+                    let checkpoints = neteval::picker::scan(&session.checkpoint_root());
+                    egui::Grid::new(format!("{label}-engine"))
+                        .spacing([12.0, 3.0])
+                        .show(ui, |ui| {
+                            ui.label("Engine").on_hover_text(
+                                "Which AI implementation plays this color: the built-in baseline or a trained net.",
+                            );
+                            ui.end_row();
+                            let engine_before = engine_index;
+                            ui.add_sized(
+                                [ui.available_width(), 40.0],
+                                |ui: &mut egui::Ui| {
+                                    egui::ComboBox::from_id_salt(format!(
+                                        "{label}-engine-select"
+                                    ))
+                                    .selected_text(if engine_index == 0 {
+                                        "Baseline AI"
+                                    } else {
+                                        "Trained net"
+                                    })
+                                    .width(ui.available_width())
+                                    .show_index(ui, &mut engine_index, 2, |i| {
+                                        match i {
+                                            0 => "Baseline AI",
+                                            1 => "Trained net",
+                                            _ => "",
+                                        }
+                                        .to_string()
+                                    })
+                                },
+                            );
+                            if engine_index != engine_before {
+                                if engine_index == 1 {
+                                    if let Some(info) = checkpoints.first() {
+                                        kind = AiKind::Net(info.dir.clone());
+                                        if let Err(error) = session.set_seat_kind(side, kind.clone()) {
+                                            session.notice = Some(error.to_string());
+                                        }
+                                    } else {
+                                        session.notice = Some(
+                                            "No trained runs were found under the checkpoint root."
+                                                .to_string(),
+                                        );
+                                        engine_index = 0;
+                                    }
+                                } else {
+                                    kind = AiKind::Baseline;
+                                    if let Err(error) = session.set_seat_kind(side, kind.clone()) {
+                                        session.notice = Some(error.to_string());
+                                    }
+                                }
+                            }
+                            ui.end_row();
+                        });
+                    if matches!(kind, AiKind::Net(_)) {
+                        egui::Grid::new(format!("{label}-checkpoint"))
+                            .spacing([12.0, 3.0])
+                            .show(ui, |ui| {
+                                ui.label("Checkpoint").on_hover_text(
+                                    "The trained run this color uses.",
+                                );
+                                ui.end_row();
+                                if checkpoints.is_empty() {
+                                    ui.label(format!(
+                                        "no runs under {}",
+                                        session.checkpoint_root().display()
+                                    ));
+                                } else {
+                                    let current_dir = match &kind {
+                                        AiKind::Net(path) => Some(path.as_path()),
+                                        AiKind::Baseline => None,
+                                    };
+                                    let mut selected = checkpoints
+                                        .iter()
+                                        .position(|info| Some(info.dir.as_path()) == current_dir)
+                                        .unwrap_or(0);
+                                    let selected_text = checkpoint_label(&checkpoints[selected]);
+                                    ui.add_sized(
+                                        [ui.available_width(), 40.0],
+                                        |ui: &mut egui::Ui| {
+                                            egui::ComboBox::from_id_salt(format!(
+                                                "{label}-checkpoint-select"
+                                            ))
+                                            .selected_text(selected_text)
+                                            .width(ui.available_width())
+                                            .show_index(
+                                                ui,
+                                                &mut selected,
+                                                checkpoints.len(),
+                                                |i| checkpoint_label(&checkpoints[i]),
+                                            )
+                                        },
+                                    );
+                                    if Some(checkpoints[selected].dir.as_path()) != current_dir {
+                                        kind = AiKind::Net(checkpoints[selected].dir.clone());
+                                        if let Err(error) =
+                                            session.set_seat_kind(side, kind.clone())
+                                        {
+                                            session.notice = Some(error.to_string());
+                                        }
+                                    }
+                                }
+                                ui.end_row();
+                            });
                     }
                     let mut options = session.ai_options(side);
                     let before = options;
@@ -1786,6 +1966,169 @@ mod tests {
             players_widget.height(),
             "same widget height"
         );
+    }
+
+    /// Write a minimal loadable net run directory for UI tests.
+    fn write_fake_run(root: &std::path::Path, name: &str, seed: u64) -> std::path::PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("model.mpk"), b"").unwrap();
+        let journal = format!(
+            r#"{{"seed":{seed},"model_config":{{"channels":8,"num_blocks":1}},"train_config":{{"steps":50,"batch_size":16,"eval_interval":0,"seed":0,"lr_warmup_steps":5,"lr_max":0.001,"lr_min":0.00001,"lr_cosine_steps":45,"weight_decay":0.0001}},"final_step_metrics":null,"final_eval_metrics":null,"stop_reason":"Completed"}}"#
+        );
+        std::fs::write(dir.join("run.json"), journal).unwrap();
+        dir
+    }
+
+    #[test]
+    fn seat_kind_selector_switches_kind_and_status_label() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
+
+        let root =
+            std::env::temp_dir().join(format!("gomoku-gui-kind-selector-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let run_dir = write_fake_run(&root, "tiny-run", 7);
+        session.set_checkpoint_root(Some(root.clone()));
+
+        session.release_seat(Color::Black);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "AI · baseline")),
+            "the released Black seat shows the baseline status"
+        );
+        output.textures_delta.clear();
+
+        click_text("Baseline AI", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        click_text("Trained net", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(
+            session.seat_kind(Color::Black),
+            AiKind::Net(run_dir.clone()),
+            "selecting Trained net picks the first available run"
+        );
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "AI · trained net")),
+            "the status label updates to trained net"
+        );
+        output.textures_delta.clear();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn checkpoint_row_lists_runs_and_selecting_one_sets_net_kind() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
+
+        let root =
+            std::env::temp_dir().join(format!("gomoku-gui-checkpoint-row-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let _first = write_fake_run(&root, "first-run", 1);
+        let _second = write_fake_run(&root, "second-run", 2);
+        session.set_checkpoint_root(Some(root.clone()));
+
+        session.release_seat(Color::Black);
+        click_text("Baseline AI", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        click_text("Trained net", |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        let mut infos = picker::scan(&root);
+        assert!(
+            !infos.is_empty(),
+            "switching to Trained net picks an available checkpoint"
+        );
+        let initial = infos.remove(0);
+        assert_eq!(
+            session.seat_kind(Color::Black),
+            AiKind::Net(initial.dir.clone())
+        );
+
+        let other = infos
+            .into_iter()
+            .find(|info| info.dir != initial.dir)
+            .expect("at least two runs");
+        click_text(&checkpoint_label(&initial), |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        click_text(&checkpoint_label(&other), |events| {
+            ui_frame(&context, &mut session, events)
+        });
+        assert_eq!(session.seat_kind(Color::Black), AiKind::Net(other.dir));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_engine_and_checkpoint_rows_match_the_players_row_style() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
+
+        let root = std::path::PathBuf::from("/tmp/gss");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let run_dir = write_fake_run(&root, "style-run", 3);
+        let checkpoint_text = "style-run  8ch×1blocks  seed=3";
+        session.set_checkpoint_root(Some(root.clone()));
+        session.release_seat(Color::Black);
+        session
+            .set_seat_kind(Color::Black, AiKind::Net(run_dir))
+            .unwrap();
+
+        let mut players = ui_frame(&context, &mut session, vec![]);
+        let sims_label_font = drawn_font(&players, "Sims");
+        let sims_value_font = drawn_font(&players, "4000");
+        let sims_widget = widget_rect_of(&players, "4000");
+        let engine_label_font = drawn_font(&players, "Engine");
+        let engine_value_font = drawn_font(&players, "Trained net");
+        let engine_widget = widget_rect_of(&players, "Trained net");
+        let checkpoint_label_font = drawn_font(&players, "Checkpoint");
+        let checkpoint_widget = widget_rect_of(&players, checkpoint_text);
+        players.textures_delta.clear();
+
+        assert_eq!(engine_label_font, sims_label_font, "same label font");
+        assert_eq!(engine_value_font, sims_value_font, "same value font");
+        assert_eq!(
+            engine_widget.height(),
+            sims_widget.height(),
+            "same widget height"
+        );
+        assert_eq!(checkpoint_label_font, sims_label_font, "same label font");
+        assert_eq!(
+            checkpoint_widget.height(),
+            sims_widget.height(),
+            "same widget height"
+        );
+
+        session.toggle_panel_section(PanelSection::Settings);
+        let mut settings = ui_frame(&context, &mut session, vec![]);
+        let root_label_font = drawn_font(&settings, "Checkpoint root");
+        let root_path_text = root.as_os_str().to_string_lossy().to_string();
+        let root_widget = widget_rect_of(&settings, &root_path_text);
+        settings.textures_delta.clear();
+
+        assert_eq!(root_label_font, sims_label_font, "same label font");
+        assert_eq!(
+            root_widget.height(),
+            sims_widget.height(),
+            "same widget height"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

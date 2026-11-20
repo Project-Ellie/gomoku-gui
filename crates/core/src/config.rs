@@ -226,7 +226,7 @@ impl Default for AudioSettings {
 }
 
 /// One seat: who owns it, and the AI settings retained for it.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SeatSettings {
     /// True when the AI owns the seat.
@@ -241,10 +241,16 @@ pub struct SeatSettings {
     pub guard: bool,
     /// The heuristic concession decision.
     pub resign: bool,
+    /// The seat kind: "baseline" or "net".
+    #[serde(default)]
+    pub kind: String,
+    /// The neural-network checkpoint to use when kind is "net".
+    #[serde(default)]
+    pub checkpoint: Option<PathBuf>,
 }
 
 /// The two seats of the board.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlayersSettings {
     /// The Black seat: the human's by default.
@@ -262,6 +268,8 @@ impl Default for SeatSettings {
             own_tss: true,
             guard: true,
             resign: true,
+            kind: "baseline".to_string(),
+            checkpoint: None,
         }
     }
 }
@@ -276,6 +284,15 @@ impl Default for PlayersSettings {
             white: SeatSettings::default(),
         }
     }
+}
+
+/// Neural-network player settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct NetSettings {
+    /// The root directory for neural-network checkpoints.
+    #[serde(default)]
+    pub checkpoint_root: Option<PathBuf>,
 }
 
 /// The file settings.
@@ -317,6 +334,8 @@ pub struct Settings {
     pub candidate_checks: CandidateChecksSettings,
     /// The two seats and their AI settings.
     pub players: PlayersSettings,
+    /// Neural-network player settings.
+    pub net: NetSettings,
     /// The file settings.
     pub files: FileSettings,
 }
@@ -350,6 +369,10 @@ impl Settings {
             .clamp(MIN_CANDIDATE_CHECKS, MAX_CANDIDATE_CHECKS);
 
         for seat in [&mut self.players.black, &mut self.players.white] {
+            if seat.kind != "baseline" && seat.kind != "net" {
+                seat.kind = "baseline".to_string();
+                seat.checkpoint = None;
+            }
             seat.simulations = seat.simulations.clamp(1, 50_000);
             if !seat.temperature.is_finite() {
                 seat.temperature = SeatSettings::default().temperature;
@@ -481,6 +504,11 @@ mod tests {
         assert!(settings.players.white.own_tss);
         assert!(settings.players.white.guard);
         assert!(settings.players.white.resign);
+        assert_eq!(settings.players.black.kind, "baseline");
+        assert_eq!(settings.players.black.checkpoint, None);
+        assert_eq!(settings.players.white.kind, "baseline");
+        assert_eq!(settings.players.white.checkpoint, None);
+        assert_eq!(settings.net.checkpoint_root, None);
     }
 
     #[test]
@@ -542,6 +570,8 @@ mod tests {
                     own_tss: false,
                     guard: true,
                     resign: false,
+                    kind: "net".to_string(),
+                    checkpoint: Some(std::path::PathBuf::from("/models/black.chk")),
                 },
                 white: SeatSettings {
                     ai: false,
@@ -550,7 +580,12 @@ mod tests {
                     own_tss: true,
                     guard: false,
                     resign: true,
+                    kind: "baseline".to_string(),
+                    checkpoint: None,
                 },
+            },
+            net: NetSettings {
+                checkpoint_root: Some(std::path::PathBuf::from("/models")),
             },
             files: FileSettings {
                 last_directory: Some(std::path::PathBuf::from("/games")),
@@ -593,6 +628,33 @@ mod tests {
         );
         assert_eq!(loaded.settings.board.material, "aged_wood");
         assert_eq!(loaded.settings.files.last_corpus_directory, None);
+        assert_eq!(loaded.settings.players.black.kind, "baseline");
+        assert_eq!(loaded.settings.players.black.checkpoint, None);
+        assert_eq!(loaded.settings.players.white.kind, "baseline");
+        assert_eq!(loaded.settings.players.white.checkpoint, None);
+        assert_eq!(loaded.settings.net.checkpoint_root, None);
+    }
+
+    #[test]
+    fn sanitize_rejects_an_unknown_kind() {
+        let (_directory, path) = settings_file();
+        std::fs::write(
+            &path,
+            "[players.black]\nkind = \"quantum\"\ncheckpoint = \"/models/q.chk\"\n",
+        )
+        .expect("the file writes");
+
+        let loaded = load_settings(&path);
+
+        assert_eq!(loaded.notice, None);
+        assert_eq!(
+            loaded.settings.players.black.kind, "baseline",
+            "an unknown kind falls back to baseline"
+        );
+        assert_eq!(
+            loaded.settings.players.black.checkpoint, None,
+            "the checkpoint is cleared when the kind is rejected"
+        );
     }
 
     #[test]

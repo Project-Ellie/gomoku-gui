@@ -2,6 +2,17 @@
 
 use engine::{Board, Color};
 pub use player::{Decision as AiPlayerDecision, DecisionAction};
+use std::path::PathBuf;
+
+/// Which AI implementation a seat uses.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum AiKind {
+    /// The built-in baseline engine.
+    #[default]
+    Baseline,
+    /// A trained network checkpoint on disk.
+    Net(PathBuf),
+}
 
 /// Who may place stones for a color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,17 +157,29 @@ pub struct AiReply {
     pub(crate) result: Result<AiPlayerDecision, String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Seat {
     owner: SeatOwner,
     options: AiOptions,
+    kind: AiKind,
 }
 
 /// Reversible user intent, deliberately excluding generation and flight state.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AutomationIntent {
     seats: [Seat; 2],
 }
+
+/// A trained-net AI kind cannot be used safely by this application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidAiKind;
+
+impl std::fmt::Display for InvalidAiKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AI checkpoint path must not be empty")
+    }
+}
+impl std::error::Error for InvalidAiKind {}
 
 /// Bookkeeping only: the session supplies eligibility and commits decisions.
 pub(crate) struct Controller {
@@ -186,10 +209,12 @@ impl Default for Controller {
                 Seat {
                     owner: SeatOwner::Human,
                     options: AiOptions::default(),
+                    kind: AiKind::Baseline,
                 },
                 Seat {
                     owner: SeatOwner::Human,
                     options: AiOptions::default(),
+                    kind: AiKind::Baseline,
                 },
             ],
             candidate_checks: player::DEFAULT_CANDIDATE_CHECKS,
@@ -202,7 +227,9 @@ impl Default for Controller {
 
 impl Controller {
     pub fn intent(&self) -> AutomationIntent {
-        AutomationIntent { seats: self.seats }
+        AutomationIntent {
+            seats: self.seats.clone(),
+        }
     }
     pub fn restore_intent(&mut self, intent: AutomationIntent) {
         self.invalidate();
@@ -213,6 +240,17 @@ impl Controller {
     }
     pub fn options(&self, side: Color) -> AiOptions {
         self.seats[index(side)].options
+    }
+    pub fn kind(&self, side: Color) -> AiKind {
+        self.seats[index(side)].kind.clone()
+    }
+    pub fn set_kind(&mut self, side: Color, kind: AiKind) -> Result<(), InvalidAiKind> {
+        if matches!(&kind, AiKind::Net(path) if path.as_os_str().is_empty()) {
+            return Err(InvalidAiKind);
+        }
+        self.seats[index(side)].kind = kind;
+        self.invalidate();
+        Ok(())
     }
     pub fn set_owner(&mut self, side: Color, owner: SeatOwner) {
         self.seats[index(side)].owner = owner;
@@ -1239,5 +1277,58 @@ mod tests {
             session.next_ai_request().is_none(),
             "rewound again with the kick disarmed: no flight"
         );
+    }
+
+    #[test]
+    fn kind_set_get_per_seat() {
+        let mut controller = Controller::default();
+        let black_path = std::env::temp_dir().join("black-net.onnx");
+        let white_path = std::env::temp_dir().join("white-net.onnx");
+
+        controller.set_kind(Color::Black, AiKind::Baseline).unwrap();
+        controller
+            .set_kind(Color::White, AiKind::Net(white_path.clone()))
+            .unwrap();
+        assert_eq!(controller.kind(Color::Black), AiKind::Baseline);
+        assert_eq!(controller.kind(Color::White), AiKind::Net(white_path));
+
+        controller
+            .set_kind(Color::Black, AiKind::Net(black_path.clone()))
+            .unwrap();
+        controller.set_kind(Color::White, AiKind::Baseline).unwrap();
+        assert_eq!(controller.kind(Color::Black), AiKind::Net(black_path));
+        assert_eq!(controller.kind(Color::White), AiKind::Baseline);
+    }
+
+    #[test]
+    fn invalid_net_kind_rejected() {
+        let mut controller = Controller::default();
+        let before = controller.kind(Color::Black);
+        assert_eq!(
+            controller.set_kind(Color::Black, AiKind::Net(PathBuf::new())),
+            Err(InvalidAiKind)
+        );
+        assert_eq!(controller.kind(Color::Black), before);
+    }
+
+    #[test]
+    fn automation_intent_preserves_kinds() {
+        let mut controller = Controller::default();
+        let black_path = std::env::temp_dir().join("black-intent.onnx");
+        let white_path = std::env::temp_dir().join("white-intent.onnx");
+        controller
+            .set_kind(Color::Black, AiKind::Net(black_path.clone()))
+            .unwrap();
+        controller
+            .set_kind(Color::White, AiKind::Net(white_path.clone()))
+            .unwrap();
+
+        let intent = controller.intent();
+        let mut restored = Controller::default();
+        let generation_before = restored.generation;
+        restored.restore_intent(intent);
+        assert!(restored.generation > generation_before);
+        assert_eq!(restored.kind(Color::Black), AiKind::Net(black_path));
+        assert_eq!(restored.kind(Color::White), AiKind::Net(white_path));
     }
 }

@@ -10,8 +10,8 @@ use anyhow::{Context as _, Result};
 use gomoku_core::{Color, Game, Move, Outcome, PositionError, Puzzle, Settings, WinMethod};
 
 use crate::ai::{
-    AiOptions, AiReply, AiRequest, Controller, DecisionAction, InvalidAiOptions,
-    InvalidCandidateChecks, SeatOwner,
+    AiKind, AiOptions, AiReply, AiRequest, Controller, DecisionAction, InvalidAiKind,
+    InvalidAiOptions, InvalidCandidateChecks, SeatOwner,
 };
 use crate::camera::Camera;
 
@@ -247,6 +247,8 @@ pub struct Session {
     explorer: Option<ExplorerSession>,
     /// The one right-panel section that is open.
     open_panel_section: PanelSection,
+    /// The root directory for neural-network checkpoints.
+    checkpoint_root: Option<PathBuf>,
 }
 
 impl Session {
@@ -300,6 +302,7 @@ impl Session {
             // matter what was open at exit. The section is still written to
             // the settings; startup ignores it.
             open_panel_section: PanelSection::Players,
+            checkpoint_root: settings.net.checkpoint_root.clone(),
         };
         session.apply_player_settings(settings);
         // The file was sanitized on load, so this cannot fail; a hand-made
@@ -385,7 +388,7 @@ impl Session {
         self.refresh_policy_rings();
     }
 
-    /// Take the persisted seats and AI settings on board.
+    /// Take the persisted seats, AI settings, and AI kind on board.
     fn apply_player_settings(&mut self, settings: &Settings) {
         for (side, seat) in [
             (Color::Black, &settings.players.black),
@@ -393,7 +396,8 @@ impl Session {
         ] {
             // The seat owner in the file is deliberately ignored: startup is
             // always Human/Human, and releasing a seat is a conscious
-            // in-session decision. Only the tuned options are restored.
+            // in-session decision. The tuned options and the AI kind are
+            // restored while the seat stays human.
             let options = crate::ai::AiOptions {
                 simulations: seat.simulations,
                 temperature: seat.temperature,
@@ -404,6 +408,17 @@ impl Session {
             // The file was sanitized on load, so this cannot fail; a hand-made
             // edit that slipped through simply keeps the defaults.
             let _ = self.set_ai_options(side, options);
+
+            let kind = if seat.kind == "net" {
+                seat.checkpoint
+                    .clone()
+                    .map_or(AiKind::Baseline, AiKind::Net)
+            } else {
+                AiKind::Baseline
+            };
+            // The file was sanitized on load, so this cannot fail; a hand-made
+            // edit that slipped through simply keeps the default.
+            let _ = self.set_seat_kind(side, kind);
         }
     }
 
@@ -676,9 +691,32 @@ impl Session {
     pub fn owner(&self, side: Color) -> SeatOwner {
         self.ai.owner(side)
     }
+    /// Which AI implementation a seat uses.
+    pub fn seat_kind(&self, side: Color) -> AiKind {
+        self.ai.kind(side)
+    }
+    /// Replace one seat's AI implementation without changing its ownership.
+    ///
+    /// # Errors
+    /// Returns [`InvalidAiKind`] when the requested net path is empty.
+    pub fn set_seat_kind(&mut self, side: Color, kind: AiKind) -> Result<(), InvalidAiKind> {
+        self.ai.set_kind(side, kind)
+    }
     /// Retained AI settings, also available while the seat is human.
     pub fn ai_options(&self, side: Color) -> AiOptions {
         self.ai.options(side)
+    }
+    /// The root directory for neural-network checkpoints.
+    pub fn checkpoint_root(&self) -> PathBuf {
+        self.checkpoint_root.clone().unwrap_or_else(|| {
+            data_directory()
+                .unwrap_or_else(|_| std::env::temp_dir().join(".gomoku"))
+                .join("checkpoints")
+        })
+    }
+    /// Replace the root directory for neural-network checkpoints.
+    pub fn set_checkpoint_root(&mut self, root: Option<PathBuf>) {
+        self.checkpoint_root = root;
     }
     /// Replace one seat's settings without changing its ownership or save state.
     ///
@@ -1492,6 +1530,10 @@ impl Session {
     /// The persisted form of one seat: its owner and its retained AI settings.
     fn seat_settings(&self, side: Color) -> gomoku_core::SeatSettings {
         let options = self.ai_options(side);
+        let (kind, checkpoint) = match self.seat_kind(side) {
+            AiKind::Baseline => ("baseline".to_string(), None),
+            AiKind::Net(path) => ("net".to_string(), Some(path)),
+        };
         gomoku_core::SeatSettings {
             ai: self.owner(side) == SeatOwner::Ai,
             simulations: options.simulations,
@@ -1499,6 +1541,8 @@ impl Session {
             own_tss: options.own_tss,
             guard: options.guard,
             resign: options.resign,
+            kind,
+            checkpoint,
         }
     }
 
@@ -1552,6 +1596,11 @@ impl Session {
             players: gomoku_core::PlayersSettings {
                 black: self.seat_settings(Color::Black),
                 white: self.seat_settings(Color::White),
+            },
+            net: {
+                let mut net = Settings::default().net;
+                net.checkpoint_root = self.checkpoint_root.clone();
+                net
             },
             stones: gomoku_core::StoneSettings::default(),
             audio: gomoku_core::AudioSettings {
@@ -3470,6 +3519,66 @@ mod tests {
             Some(loaded_directory)
         );
         remove(&path);
+    }
+
+    #[test]
+    fn seat_kind_defaults_to_baseline() {
+        let session = Session::new(&Settings::default());
+        assert_eq!(session.seat_kind(Color::Black), AiKind::Baseline);
+        assert_eq!(session.seat_kind(Color::White), AiKind::Baseline);
+    }
+
+    #[test]
+    fn seat_kind_round_trips_through_settings() {
+        let path = PathBuf::from("/models/black.chk");
+        let mut session = Session::new(&Settings::default());
+        session
+            .set_seat_kind(Color::Black, AiKind::Net(path.clone()))
+            .unwrap();
+
+        let written = session.settings(&WindowGeometry::default());
+        assert_eq!(written.players.black.kind, "net");
+        assert_eq!(written.players.black.checkpoint, Some(path.clone()));
+        assert_eq!(written.players.white.kind, "baseline");
+        assert_eq!(written.players.white.checkpoint, None);
+
+        let restored = Session::new(&written);
+        assert_eq!(restored.seat_kind(Color::Black), AiKind::Net(path));
+        assert_eq!(restored.seat_kind(Color::White), AiKind::Baseline);
+    }
+
+    #[test]
+    fn checkpoint_root_defaults_and_persists() {
+        let session = Session::new(&Settings::default());
+        let default_root = session.checkpoint_root();
+        assert!(
+            default_root
+                .as_os_str()
+                .to_string_lossy()
+                .ends_with("checkpoints"),
+            "default checkpoint root ends with checkpoints: {}",
+            default_root.display()
+        );
+
+        let custom = PathBuf::from("/models");
+        let mut session = Session::new(&Settings::default());
+        session.set_checkpoint_root(Some(custom.clone()));
+        let written = session.settings(&WindowGeometry::default());
+        assert_eq!(written.net.checkpoint_root, Some(custom.clone()));
+
+        let restored = Session::new(&written);
+        assert_eq!(restored.checkpoint_root(), custom);
+    }
+
+    #[test]
+    fn set_seat_kind_rejects_empty_net_path() {
+        let mut session = Session::new(&Settings::default());
+        assert!(
+            session
+                .set_seat_kind(Color::Black, AiKind::Net(PathBuf::new()))
+                .is_err()
+        );
+        assert_eq!(session.seat_kind(Color::Black), AiKind::Baseline);
     }
 }
 
