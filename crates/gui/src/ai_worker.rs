@@ -85,6 +85,34 @@ impl Worker {
         )
     }
 
+    /// A trained-net worker: loads a `nettrain` run directory on the
+    /// worker thread and seats it behind the same player orchestration
+    /// as the baseline. Load failures surface as the first reply's
+    /// error through the usual failure path.
+    pub(crate) fn net(
+        checkpoint_dir: std::path::PathBuf,
+        sink: impl Fn(AiReply) -> bool + Send + 'static,
+    ) -> std::io::Result<Self> {
+        Self::spawn(
+            move || {
+                let evaluator = neteval::NetEvaluator::load(&checkpoint_dir).map_err(|error| {
+                    format!(
+                        "could not load model from {}: {error}",
+                        checkpoint_dir.display()
+                    )
+                })?;
+                let mut player = player::AiPlayer::new(Box::new(evaluator));
+                let mut rng = rand::rng();
+                Ok(move |request: &AiRequest| {
+                    player
+                        .decide(&request.board, &request.options, &mut rng)
+                        .map_err(|error| error.to_string())
+                })
+            },
+            sink,
+        )
+    }
+
     /// A failed handoff returns a completion for the exact reserved flight.
     pub(crate) fn submit(&self, request: AiRequest) -> Result<(), Box<AiReply>> {
         let Some(sender) = &self.sender else {
@@ -346,6 +374,19 @@ mod tests {
             session.owner(engine::Color::White),
             crate::ai::SeatOwner::Human
         );
+    }
+
+    #[test]
+    fn net_worker_surfaces_a_missing_run_directory() {
+        let (done, replies) = mpsc::channel();
+        let missing = std::env::temp_dir().join("gomoku-gui-no-such-net-run");
+        let worker = Worker::net(missing, move |reply| done.send(reply).is_ok()).unwrap();
+        let mut session = session();
+        let request = session.next_ai_request().unwrap();
+        worker.submit(request).unwrap();
+        let reply = receive(&replies);
+        let error = reply.result.as_ref().unwrap_err();
+        assert!(error.contains("could not load model"), "got: {error}");
     }
 
     #[test]

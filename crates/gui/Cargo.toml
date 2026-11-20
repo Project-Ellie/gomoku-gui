@@ -11,6 +11,7 @@ gomoku-core.workspace = true
 engine.workspace = true
 player.workspace = true
 baseline.workspace = true
+neteval.workspace = true
 mcts.workspace = true
 rand = "0.10.3"
 serde_json.workspace = true
