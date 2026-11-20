@@ -11,6 +11,25 @@ use crate::puzzle::Puzzle;
 /// Maximum number of directory entries visited by the corpus sanity check.
 pub const CORPUS_PROBE_LIMIT: usize = 500;
 
+/// Return whether `dir` looks like a rust-ml self-play corpus: a parseable
+/// `manifest.json` plus at least one `shard-*.bin` next to it.
+///
+/// The probe reads the manifest only; the shards are parsed on
+/// [`Registry::open`].
+fn is_selfplay_corpus(dir: &Path) -> bool {
+    if selfplay::corpus::read_manifest(dir).is_err() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("shard-") && name.ends_with(".bin")
+    })
+}
+
 /// How confident a format is that a file belongs to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confidence {
@@ -84,6 +103,16 @@ pub enum OpenedThing {
     Corpus {
         /// Discovered record metadata.
         records: Vec<RecordMeta>,
+        /// Directory that was opened.
+        source: PathBuf,
+    },
+    /// A rust-ml self-play corpus: `manifest.json` plus bincode shards,
+    /// parsed eagerly at open time (D2 of the corpus-browser design).
+    SelfplayCorpus {
+        /// The corpus manifest: pairing, schedule, seeds, shard names.
+        manifest: Box<selfplay::corpus::Manifest>,
+        /// Every recorded game, in corpus order.
+        records: Vec<selfplay::record::GameRecord>,
         /// Directory that was opened.
         source: PathBuf,
     },
@@ -198,10 +227,15 @@ impl Registry {
 
     /// Return whether a breadth-first probe finds a recognizable record file.
     ///
-    /// The probe stops at the first recognized file or after visiting
+    /// A rust-ml self-play corpus (a parseable `manifest.json` plus at
+    /// least one `shard-*.bin`) counts without a walk. Otherwise the probe
+    /// stops at the first recognized file or after visiting
     /// [`CORPUS_PROBE_LIMIT`] entries. Unreadable directories and files are
     /// ignored.
     pub fn looks_like_corpus(&self, root: &Path) -> bool {
+        if is_selfplay_corpus(root) {
+            return true;
+        }
         let mut directories = VecDeque::from([root.to_path_buf()]);
         let mut visited = 0;
         while let Some(directory) = directories.pop_front() {
@@ -234,13 +268,33 @@ impl Registry {
         false
     }
 
-    /// Open a single file or recursively index a directory.
+    /// Open a single file, recursively index a directory, or eagerly parse
+    /// a rust-ml self-play corpus.
     ///
-    /// A directory becomes an [`OpenedThing::Corpus`] of indexed entries.
+    /// A directory holding a parseable `manifest.json` and at least one
+    /// `shard-*.bin` becomes an [`OpenedThing::SelfplayCorpus`]; any other
+    /// directory becomes an [`OpenedThing::Corpus`] of indexed entries.
     /// A file is sniffed by every registered format; the first `Yes` wins,
     /// otherwise the first `Maybe` gets to load it.
     pub fn open(&self, path: &Path) -> Result<OpenedThing, LoadError> {
         if path.is_dir() {
+            if is_selfplay_corpus(path) {
+                let manifest =
+                    selfplay::corpus::read_manifest(path).map_err(|error| LoadError::Io {
+                        path: path.join("manifest.json"),
+                        source: error,
+                    })?;
+                let records =
+                    selfplay::corpus::read_corpus(path).map_err(|error| LoadError::Io {
+                        path: path.to_path_buf(),
+                        source: error,
+                    })?;
+                return Ok(OpenedThing::SelfplayCorpus {
+                    manifest: Box::new(manifest),
+                    records,
+                    source: path.to_path_buf(),
+                });
+            }
             let entries = crate::index::index_directory(path, self)?;
             return Ok(OpenedThing::Corpus {
                 records: entries

@@ -562,6 +562,17 @@ impl App {
             return;
         }
         match self.registry.open(path) {
+            Ok(gomoku_core::OpenedThing::SelfplayCorpus {
+                manifest,
+                records,
+                source,
+            }) => {
+                // Opening a corpus is a load: the next picker starts here,
+                // not wherever navigation happened to begin last time.
+                self.session.remember_corpus_directory(&source);
+                self.session
+                    .open_selfplay_corpus(*manifest, records, source);
+            }
             Ok(gomoku_core::OpenedThing::Corpus { records, .. }) => {
                 // Opening a corpus is a load: the next picker starts here,
                 // not wherever navigation happened to begin last time.

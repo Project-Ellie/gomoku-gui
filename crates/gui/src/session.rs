@@ -83,6 +83,146 @@ pub struct ExplorerSession {
     pub jump: String,
 }
 
+/// A parsed rust-ml self-play corpus open in the Explorer.
+#[derive(Debug)]
+pub struct SelfplayCorpus {
+    /// The corpus manifest: pairing, schedule, seeds, evaluators.
+    pub manifest: selfplay::corpus::Manifest,
+    /// Every recorded game, in corpus order.
+    pub records: Vec<selfplay::record::GameRecord>,
+}
+
+/// The recorded search data of one post-opening ply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelfplayPlyData {
+    /// Sparse raw root visits of the generating seat.
+    pub visits: Vec<(Move, u32)>,
+    /// Top root priors after Dirichlet noise, in descending order.
+    pub prior: Vec<(Move, f32)>,
+    /// Root value from the side-to-move's perspective; `None` when the
+    /// ply was decided without search (own-TSS proof, guard, resignation).
+    pub root_value: Option<f32>,
+}
+
+/// The recorded provenance and per-ply search data of the self-play game
+/// on the board — the design's D3 side channel, parallel to the move list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelfplayGame {
+    /// The game's complete-RNG-stream seed.
+    pub seed: u64,
+    /// The evaluator pairing descriptor from the record header.
+    pub evaluator: String,
+    /// Ceremony stones before the first post-opening ply (3 or 5).
+    pub opening_stones: usize,
+    /// One entry per post-opening ply.
+    pub plies: Vec<SelfplayPlyData>,
+    /// Post-opening ply from which the certified forced-win suffix runs.
+    pub certified_from: Option<usize>,
+    /// The side that resigned, when the record ends in a concession.
+    pub resigned: Option<Color>,
+}
+
+impl SelfplayGame {
+    /// Build the board game and the side channel from one corpus record.
+    ///
+    /// Ceremony stones and plies replay in physical order; alternation and
+    /// win detection are the engine's. A resignation is annotated on the
+    /// final node. The five-stone ceremony is legal content: overlines and
+    /// completed lines inside it belong to the record.
+    pub fn from_record(
+        record: &selfplay::record::GameRecord,
+    ) -> Result<(Game, SelfplayGame), String> {
+        use selfplay::game::{Outcome, WinReason};
+        use selfplay::opening::OpeningAnswer;
+
+        let mut game = Game::new();
+        let opening = &record.header.opening;
+        let mut ceremony: Vec<Move> = opening.initial.to_vec();
+        if let OpeningAnswer::AddTwo { stones, .. } = &opening.answer {
+            ceremony.extend_from_slice(stones);
+        }
+        let opening_stones = ceremony.len();
+        for mv in ceremony
+            .into_iter()
+            .chain(record.plies.iter().map(|ply| ply.mv))
+        {
+            game.play(mv)
+                .map_err(|error| format!("the recorded move {mv:?} was rejected: {error}"))?;
+        }
+
+        let mut resigned = None;
+        if let Outcome::Won {
+            winner,
+            reason: WinReason::Resignation(_),
+        } = record.outcome
+        {
+            resigned = Some(winner.other());
+            game.resign()
+                .map_err(|error| format!("the recorded resignation was rejected: {error}"))?;
+        }
+
+        let plies = record
+            .plies
+            .iter()
+            .map(|ply| SelfplayPlyData {
+                visits: ply.visits.clone(),
+                prior: ply.prior.clone(),
+                root_value: ply.root_value,
+            })
+            .collect();
+        let certified_from = record
+            .certified_suffix
+            .as_ref()
+            .map(|suffix| suffix.from_ply as usize);
+
+        Ok((
+            game,
+            SelfplayGame {
+                seed: record.header.seed,
+                evaluator: record.header.evaluator.clone(),
+                opening_stones,
+                plies,
+                certified_from,
+                resigned,
+            },
+        ))
+    }
+
+    /// The recorded search data of the post-opening ply at overall move
+    /// index `cursor`, or `None` for ceremony stones and out-of-range
+    /// cursors.
+    pub fn ply_at(&self, cursor: usize) -> Option<&SelfplayPlyData> {
+        let ply = cursor.checked_sub(self.opening_stones)?;
+        self.plies.get(ply)
+    }
+}
+
+/// The Explorer list label for one self-play record.
+fn selfplay_entry_name(record: &selfplay::record::GameRecord) -> String {
+    use selfplay::game::{Outcome, WinReason};
+    let color = |color: Color| match color {
+        Color::Black => "Black",
+        Color::White => "White",
+    };
+    let outcome = match record.outcome {
+        Outcome::Won {
+            winner,
+            reason: WinReason::FiveOrMore,
+        } => format!("{} wins", color(winner)),
+        Outcome::Won {
+            winner,
+            reason: WinReason::Resignation(_),
+        } => format!("{} resigns", color(winner.other())),
+        Outcome::Draw => "Draw".to_owned(),
+    };
+    format!(
+        "seed {} · {} plies · {}",
+        record.header.seed,
+        record.plies.len(),
+        outcome
+    )
+}
+
 /// The game as it was before the puzzle picker opened. While the picker is
 /// open the board shows the selected puzzle, and cancelling the picker must
 /// bring back what was there, with no trace in the revision counters.
@@ -245,6 +385,13 @@ pub struct Session {
     pub pixels_per_point: f32,
     /// Lab Explorer state, when a corpus is open.
     explorer: Option<ExplorerSession>,
+    /// The parsed rust-ml self-play corpus behind the Explorer, when the
+    /// opened folder is one. File corpora leave this `None`.
+    selfplay_corpus: Option<SelfplayCorpus>,
+    /// The recorded search data of the self-play game on the board (design
+    /// D3's side channel). `None` for any game that did not come out of the
+    /// open self-play corpus.
+    selfplay_game: Option<SelfplayGame>,
     /// The one right-panel section that is open.
     open_panel_section: PanelSection,
     /// The root directory for neural-network checkpoints.
@@ -298,6 +445,8 @@ impl Session {
             hover: None,
             pixels_per_point: 1.0,
             explorer: None,
+            selfplay_corpus: None,
+            selfplay_game: None,
             // The panel always opens on the Players section at startup, no
             // matter what was open at exit. The section is still written to
             // the settings; startup ignores it.
@@ -492,6 +641,8 @@ impl Session {
 
     /// Open an indexed corpus in the Explorer.
     pub fn open_explorer_corpus(&mut self, records: Vec<gomoku_core::IndexEntry>) {
+        self.selfplay_corpus = None;
+        self.selfplay_game = None;
         self.explorer = Some(ExplorerSession {
             records,
             selected: None,
@@ -499,6 +650,41 @@ impl Session {
             jump: String::new(),
         });
         self.open_panel_section = PanelSection::Explorer;
+    }
+
+    /// Open a parsed rust-ml self-play corpus in the Explorer.
+    ///
+    /// The records are already in memory (design D2); the Explorer entries
+    /// are virtual locators, one per game, in corpus order.
+    pub fn open_selfplay_corpus(
+        &mut self,
+        manifest: selfplay::corpus::Manifest,
+        records: Vec<selfplay::record::GameRecord>,
+        source: PathBuf,
+    ) {
+        let entries = records
+            .iter()
+            .enumerate()
+            .map(|(index, record)| gomoku_core::IndexEntry {
+                index,
+                kind: gomoku_core::RecordKind::Game,
+                name: selfplay_entry_name(record),
+                path: source.clone(),
+            })
+            .collect();
+        self.open_explorer_corpus(entries);
+        self.selfplay_corpus = Some(SelfplayCorpus { manifest, records });
+    }
+
+    /// The open self-play corpus, when the Explorer holds one.
+    pub fn selfplay_corpus(&self) -> Option<&SelfplayCorpus> {
+        self.selfplay_corpus.as_ref()
+    }
+
+    /// The recorded search data of the self-play game on the board, when
+    /// the game came out of the open self-play corpus.
+    pub fn selfplay_game(&self) -> Option<&SelfplayGame> {
+        self.selfplay_game.as_ref()
     }
 
     /// Read-only access to Explorer state.
@@ -615,6 +801,10 @@ impl Session {
     /// is reported and the sitting is kept. An index outside the corpus is
     /// ignored.
     pub fn load_explorer_record(&mut self, registry: &gomoku_core::Registry, index: usize) {
+        if self.selfplay_corpus.is_some() {
+            self.load_selfplay_record(index);
+            return;
+        }
         let Some(entry) = self
             .explorer
             .as_ref()
@@ -628,6 +818,7 @@ impl Session {
                 self.invalidate_automation();
                 self.dismiss_dialog();
                 self.game = game;
+                self.selfplay_game = None;
                 self.take_ai_to_move();
                 if let Some(directory) = path.parent() {
                     self.remember_corpus_directory(directory);
@@ -647,10 +838,43 @@ impl Session {
         }
     }
 
+    /// Load one game of the open self-play corpus onto the board, with its
+    /// recorded search data in the side channel. An index outside the
+    /// corpus is ignored.
+    fn load_selfplay_record(&mut self, index: usize) {
+        let Some(record) = self
+            .selfplay_corpus
+            .as_ref()
+            .and_then(|corpus| corpus.records.get(index))
+        else {
+            return;
+        };
+        match SelfplayGame::from_record(record) {
+            Ok((game, data)) => {
+                self.invalidate_automation();
+                self.dismiss_dialog();
+                self.game = game;
+                self.selfplay_game = Some(data);
+                self.take_ai_to_move();
+                self.path = None;
+                self.puzzle_cursor = None;
+                self.refresh_policy_rings();
+                self.revision += 1;
+                self.saved_revision = self.revision;
+                self.title_stale = true;
+                if let Some(explorer) = &mut self.explorer {
+                    explorer.selected = Some(index);
+                }
+            }
+            Err(error) => self.fail("The record could not be loaded", &error),
+        }
+    }
+
     /// Install startup/demo content before delivery is connected.
     pub(crate) fn install_game(&mut self, game: Game) {
         self.dismiss_dialog();
         self.game = game;
+        self.selfplay_game = None;
         self.ai.invalidate();
         self.refresh_policy_rings();
         self.clear_board_effects();
@@ -1037,6 +1261,7 @@ impl Session {
                 self.dismiss_dialog();
                 self.invalidate_automation();
                 self.game = game;
+                self.selfplay_game = None;
                 self.take_ai_to_move();
                 self.path = source;
                 self.puzzle_cursor = None;
@@ -1260,6 +1485,7 @@ impl Session {
         let mut game = Game::started_at(created);
         game.set_players(black, white);
         self.game = game;
+        self.selfplay_game = None;
         self.path = None;
         self.puzzle_cursor = None;
         self.refresh_policy_rings();
@@ -1322,6 +1548,7 @@ impl Session {
                 self.dismiss_dialog();
                 self.invalidate_automation();
                 self.game = game;
+                self.selfplay_game = None;
                 self.take_ai_to_move();
                 self.path = Some(path.to_path_buf());
                 self.puzzle_cursor = None;
@@ -1396,6 +1623,7 @@ impl Session {
         {
             self.invalidate_automation();
             self.game = game;
+            self.selfplay_game = None;
             self.refresh_policy_rings();
             self.puzzle_cursor = puzzle
                 .solution
@@ -1430,6 +1658,7 @@ impl Session {
         self.knock = None;
         self.hover = None;
         self.game = before.game;
+        self.selfplay_game = None;
         self.refresh_policy_rings();
         self.path = before.path;
         self.puzzle_cursor = before.puzzle_cursor;
@@ -1452,6 +1681,7 @@ impl Session {
                 self.ai.set_owner(Color::Black, SeatOwner::Human);
                 self.ai.set_owner(Color::White, SeatOwner::Human);
                 self.game = game;
+                self.selfplay_game = None;
                 self.path = None;
                 self.refresh_policy_rings();
                 self.puzzle_cursor = puzzle
@@ -1781,6 +2011,165 @@ pub fn autosave_state_path() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn selfplay_seat(simulations: u32) -> selfplay::record::SeatConfig {
+        selfplay::record::SeatConfig {
+            simulations,
+            c_puct: 1.5,
+            temperature: 0.0,
+            noise_epsilon: 0.0,
+            noise_alpha: 0.3,
+            tss_probe: selfplay::record::TssProbeSettings {
+                enabled: true,
+                max_nodes: 10_000,
+                max_depth: 30,
+            },
+            guard: selfplay::record::GuardSettings {
+                enabled: true,
+                max_nodes: 100,
+                max_depth: 8,
+            },
+            resign: false,
+            candidate_checks: 10,
+        }
+    }
+
+    /// One fixture ply: `(row, column)` point, visits, prior, root value.
+    type FixturePly = ((u8, u8), u32, f32, Option<f32>);
+
+    /// A record with a three-stone Take ceremony and the given plies.
+    fn selfplay_fixture(
+        seed: u64,
+        plies: &[FixturePly],
+        outcome: selfplay::game::Outcome,
+    ) -> selfplay::record::GameRecord {
+        use selfplay::opening::{Opening, OpeningAnswer, OpeningProvenance};
+        use selfplay::record::{GAME_RECORD_FORMAT_VERSION, GameHeader, RecordedPly, SeatPairing};
+        let mv = |(row, col): (u8, u8)| Move::new(row, col).expect("inside the board");
+        selfplay::record::GameRecord {
+            header: GameHeader {
+                format_version: GAME_RECORD_FORMAT_VERSION,
+                seed,
+                config: SeatPairing {
+                    black: selfplay_seat(400),
+                    white: selfplay_seat(400),
+                    exploration: selfplay::schedule::ExplorationSchedule::default(),
+                },
+                evaluator: "net:first-corpus@0.1.0".to_owned(),
+                opening: Opening::new(
+                    [mv((7, 7)), mv((8, 8)), mv((7, 8))],
+                    OpeningAnswer::Take(Color::Black),
+                    OpeningProvenance::Generated,
+                ),
+            },
+            plies: plies
+                .iter()
+                .map(|&(point, visits, prior, root_value)| RecordedPly {
+                    mv: mv(point),
+                    visits: vec![(mv(point), visits)],
+                    prior: vec![(mv(point), prior)],
+                    root_value,
+                })
+                .collect(),
+            outcome,
+            certified_suffix: Some(selfplay::record::CertifiedSuffix {
+                from_ply: 4,
+                line: vec![mv((7, 5)), mv((1, 1)), mv((7, 6))],
+            }),
+        }
+    }
+
+    fn selfplay_manifest(
+        pairing: selfplay::record::SeatPairing,
+        seeds: Vec<u64>,
+    ) -> selfplay::corpus::Manifest {
+        selfplay::corpus::Manifest {
+            format_version: selfplay::record::GAME_RECORD_FORMAT_VERSION,
+            seeds,
+            pairing,
+            game_count: 2,
+            shards: vec!["shard-000.bin".to_owned()],
+            workspace_version: "0.1.0".to_owned(),
+            evaluators: None,
+        }
+    }
+
+    #[test]
+    fn selfplay_corpus_lists_loads_and_exposes_the_search_side_channel() {
+        use selfplay::game::{Outcome, WinReason};
+        let win = selfplay_fixture(
+            42,
+            &[
+                ((6, 6), 400, 0.31, Some(0.05)),
+                ((7, 6), 390, 0.28, Some(-0.04)),
+                ((9, 9), 377, 0.22, None),
+                ((7, 9), 401, 0.35, Some(-0.11)),
+                ((5, 5), 365, 0.19, Some(0.15)),
+                ((7, 5), 412, 0.41, Some(-0.02)),
+            ],
+            Outcome::Won {
+                winner: Color::Black,
+                reason: WinReason::FiveOrMore,
+            },
+        );
+        let resignation = selfplay_fixture(
+            43,
+            &[
+                ((6, 6), 400, 0.31, Some(0.05)),
+                ((9, 9), 377, 0.22, Some(-0.08)),
+            ],
+            Outcome::Won {
+                winner: Color::Black,
+                reason: WinReason::Resignation(player::ResignReason::VerifiedOpponentVcf {
+                    candidates: 10,
+                }),
+            },
+        );
+        let pairing = win.header.config;
+        let mut session = Session::new(&Settings::default());
+        session.open_selfplay_corpus(
+            selfplay_manifest(pairing, vec![42, 43]),
+            vec![win, resignation],
+            PathBuf::from("/corpora/net-vs-net-400"),
+        );
+
+        let explorer = session.explorer().expect("explorer is open");
+        assert_eq!(explorer.records.len(), 2);
+        assert_eq!(explorer.records[0].name, "seed 42 · 6 plies · Black wins");
+        assert_eq!(
+            explorer.records[1].name,
+            "seed 43 · 2 plies · White resigns"
+        );
+
+        let registry = gomoku_core::Registry::builder()
+            .add(gomoku_core::PsqFormat)
+            .build();
+        session.load_explorer_record(&registry, 0);
+        assert_eq!(session.game().len(), 9, "ceremony stones plus plies");
+        let data = session.selfplay_game().expect("side channel is populated");
+        assert_eq!(data.seed, 42);
+        assert_eq!(data.evaluator, "net:first-corpus@0.1.0");
+        assert_eq!(data.opening_stones, 3);
+        assert_eq!(data.plies.len(), 6);
+        assert_eq!(data.certified_from, Some(4));
+        // Cursor 2 is a ceremony stone; cursor 3 is the first post-opening ply.
+        assert!(data.ply_at(2).is_none());
+        let first = data.ply_at(3).expect("first ply data");
+        assert_eq!(first.root_value, Some(0.05));
+        assert_eq!(first.prior.len(), 1);
+        // The no-search ply (root_value None) is marked by the record.
+        assert_eq!(data.ply_at(5).and_then(|ply| ply.root_value), None);
+
+        // The resignation fixture annotates the concession on the board.
+        session.load_explorer_record(&registry, 1);
+        let data = session.selfplay_game().expect("side channel is replaced");
+        assert_eq!(data.resigned, Some(Color::White));
+        assert_eq!(session.game().resigned_at_cursor(), Some(Color::White));
+
+        // Any other game source drops the side channel with the game.
+        session.install_game(Game::new());
+        assert!(session.selfplay_game().is_none());
+    }
 
     fn game() -> Game {
         let mut game = Game::new();
