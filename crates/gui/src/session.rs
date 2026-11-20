@@ -195,6 +195,22 @@ impl SelfplayGame {
         let ply = cursor.checked_sub(self.opening_stones)?;
         self.plies.get(ply)
     }
+
+    /// The move-list badge for the move at 0-based `index`: `proven` on the
+    /// first ply of the certified forced-win suffix, `tss` on plies decided
+    /// without search (own-TSS proof, guard), `None` for ordinary searched
+    /// plies and ceremony stones.
+    pub fn badge_at(&self, index: usize) -> Option<&'static str> {
+        let ply_index = index.checked_sub(self.opening_stones)?;
+        let ply = self.plies.get(ply_index)?;
+        if self.certified_from == Some(ply_index) {
+            return Some("proven");
+        }
+        if ply.root_value.is_none() {
+            return Some("tss");
+        }
+        None
+    }
 }
 
 impl SelfplayCorpus {
@@ -506,6 +522,26 @@ impl Session {
         if self.game.outcome() != Outcome::Ongoing && !self.game.is_rewound() {
             return;
         }
+
+        // Design D4: a self-play record's own search data beats live
+        // recomputation — the Dirichlet-noised priors cannot be reproduced
+        // after the fact, and the recorded value is what the generating
+        // seat actually saw. The recorded data of ply p describes the
+        // position *before* move p, so the visible cursor indexes it
+        // directly.
+        let cursor = self.game.cursor();
+        if let Some(ply) = self
+            .selfplay_game
+            .as_ref()
+            .and_then(|game| game.ply_at(cursor))
+        {
+            self.position_value = ply.root_value;
+            if self.policy_overlay {
+                self.policy_rings = Self::spread_policy_rings(ply.prior.clone());
+            }
+            return;
+        }
+
         let board = self.game.board_snapshot();
         let legal: Vec<_> = board.empty_moves().collect();
         if legal.is_empty() {
@@ -526,7 +562,17 @@ impl Session {
 
         // Match baseline::prior's masked softmax and deterministic ordering,
         // but reuse the evaluation that supplied the headline value.
-        let mut prior = mcts::masked_softmax(&evaluation.policy, &legal);
+        let prior = mcts::masked_softmax(&evaluation.policy, &legal);
+        self.policy_rings = Self::spread_policy_rings(prior);
+    }
+
+    /// Spread a prior over its own range into overlay ring values (0..=1):
+    /// shift by the weakest candidate, scale by the span, strongest reads
+    /// 1.0. A (near-)flat prior — the empty board, dead symmetry — carries
+    /// no guidance and shows nothing; the epsilon keeps float noise from
+    /// being amplified into fake rings. Serves both the live baseline prior
+    /// and a record's stored top-k prior.
+    fn spread_policy_rings(mut prior: Vec<(Move, f32)>) -> Option<Vec<(Move, f32)>> {
         let center_distance = |mv: engine::Move| {
             let row = mv.row().abs_diff(7);
             let col = mv.col().abs_diff(7);
@@ -540,18 +586,18 @@ impl Session {
         let (Some((_, strongest)), Some((_, weakest))) =
             (prior.first().copied(), prior.last().copied())
         else {
-            return;
+            return None;
         };
         let span = strongest - weakest;
         if span <= Self::POLICY_FLAT_EPSILON * strongest.abs().max(f32::EPSILON) {
-            return;
+            return None;
         }
-        self.policy_rings = Some(
+        Some(
             prior
                 .into_iter()
                 .map(|(point, value)| (point, (value - weakest) / span))
                 .collect(),
-        );
+        )
     }
 
     /// Show or hide the side-to-move's baseline prior.
@@ -2115,6 +2161,77 @@ mod tests {
             workspace_version: "0.1.0".to_owned(),
             evaluators: None,
         }
+    }
+
+    #[test]
+    fn recorded_search_data_drives_the_overlays_and_badges() {
+        use selfplay::game::{Outcome, WinReason};
+        let mv = |(row, col): (u8, u8)| Move::new(row, col).expect("inside the board");
+        // Black completes a real five in row 7 (columns 5–9) with the last
+        // ply, so the board's own outcome agrees with the record.
+        let mut record = selfplay_fixture(
+            42,
+            &[
+                ((6, 6), 400, 0.31, Some(0.05)),
+                ((7, 6), 390, 0.28, None),
+                ((5, 5), 365, 0.19, Some(0.15)),
+                ((7, 9), 401, 0.35, Some(-0.11)),
+                ((12, 12), 377, 0.22, Some(0.02)),
+                ((7, 5), 412, 0.41, Some(0.9)),
+            ],
+            Outcome::Won {
+                winner: Color::Black,
+                reason: WinReason::FiveOrMore,
+            },
+        );
+        // A two-entry prior on the first ply, so the spread has a span.
+        record.plies[0].prior = vec![(mv((3, 3)), 0.6), (mv((4, 4)), 0.4)];
+        record.certified_suffix = Some(selfplay::record::CertifiedSuffix {
+            from_ply: 2,
+            line: vec![mv((5, 5)), mv((7, 9)), mv((7, 5))],
+        });
+        let pairing = record.header.config;
+        let mut session = Session::new(&Settings::default());
+        session.open_selfplay_corpus(
+            selfplay_manifest(pairing, vec![42]),
+            vec![record],
+            PathBuf::from("/corpora/fixture"),
+        );
+        let registry = gomoku_core::Registry::builder()
+            .add(gomoku_core::PsqFormat)
+            .build();
+        session.load_explorer_record(&registry, 0);
+        session.set_policy_overlay(true);
+
+        // At the first post-opening position the overlays show the recorded
+        // prior spread and root value, not a live recomputation.
+        session.seek(3);
+        assert_eq!(session.position_value, Some(0.05));
+        let rings = session.policy_rings.clone().expect("recorded rings");
+        assert_eq!(
+            rings,
+            vec![(mv((3, 3)), 1.0), (mv((4, 4)), 0.0)],
+            "the recorded prior spreads over its own range"
+        );
+
+        // A ply decided without search has no recorded value and no rings.
+        session.seek(4);
+        assert_eq!(session.position_value, None);
+        assert_eq!(session.policy_rings, None);
+
+        // The tip is terminal — the overlay stays quiet there.
+        session.seek(9);
+        assert_eq!(session.position_value, None);
+        assert_eq!(session.policy_rings, None);
+
+        // Badges: the certified suffix starts at ply 2, the no-search ply
+        // is ply 1; ceremony stones and searched plies carry nothing.
+        let data = session.selfplay_game().expect("side channel");
+        assert_eq!(data.badge_at(2), None, "ceremony stone");
+        assert_eq!(data.badge_at(3), None, "searched ply");
+        assert_eq!(data.badge_at(4), Some("tss"));
+        assert_eq!(data.badge_at(5), Some("proven"));
+        assert_eq!(data.badge_at(6), None);
     }
 
     #[test]

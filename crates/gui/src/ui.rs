@@ -973,7 +973,15 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                 } else {
                     ""
                 };
-                let place = RichText::new(format!("{}{marker}", label(point)))
+                // A self-play record annotates how the generating seat
+                // decided: `proven` starts the certified forced-win suffix,
+                // `tss` marks plies decided without search.
+                let badge = session
+                    .selfplay_game()
+                    .and_then(|game| game.badge_at(index))
+                    .map(|badge| format!(" · {badge}"))
+                    .unwrap_or_default();
+                let place = RichText::new(format!("{}{marker}{badge}", label(point)))
                     .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
                     .color(PANEL_INK);
                 if here {
