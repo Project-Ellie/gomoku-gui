@@ -137,6 +137,20 @@ fn panel_section_header(
     session.open_panel_section() == section
 }
 
+/// Run `add_contents` in the panel's shared editable style: every text style
+/// at twice the body size and a 40-point interaction height. The Players
+/// section's Sims/Temp rows are the reference; every editable setting in the
+/// panel matches them — same alignment, same font, same size.
+fn editable_style_scope(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        for font in ui.style_mut().text_styles.values_mut() {
+            font.size *= 2.0;
+        }
+        ui.spacing_mut().interact_size.y = 40.0;
+        add_contents(ui);
+    });
+}
+
 /// Draw a full-width boolean option and report whether it was clicked.
 /// Every boolean option looks like this: twice the body size, 40 points tall.
 fn on_off_button(ui: &mut egui::Ui, label: &str, state: bool, hover: &str) -> bool {
@@ -383,22 +397,37 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     ) {
                         session.branch_alternatives = !session.branch_alternatives;
                     }
-                    ui.horizontal(|ui| {
-                        ui.label("Resignation candidates").on_hover_text(
-                            "How many of the strongest moves the concession analysis weighs before the AI resigns, 1–25.",
-                        );
-                        let mut candidates = session.resignation_candidates();
-                        if ui
-                            .add(egui::DragValue::new(&mut candidates).range(
-                                crate::ai::MIN_RESIGNATION_CANDIDATES
-                                    ..=crate::ai::MAX_RESIGNATION_CANDIDATES,
-                            ))
-                            .changed()
-                        {
-                            if let Err(error) = session.set_resignation_candidates(candidates) {
-                                session.notice = Some(error.to_string());
-                            }
-                        }
+                    // The candidate-check row shares the Players section's
+                    // editable style: the label above the widget in a grid,
+                    // the DragValue 40 points tall and filling the width.
+                    editable_style_scope(ui, |ui| {
+                        egui::Grid::new("candidate_checks")
+                            .spacing([12.0, 3.0])
+                            .show(ui, |ui| {
+                                ui.label("Candidate checks").on_hover_text(
+                                    "How many of the strongest moves the defensive guard and the \
+                                     concession analysis each weigh before the AI plays or resigns, 1–25.",
+                                );
+                                ui.end_row();
+                                let mut checks = session.candidate_checks();
+                                if ui
+                                    .add_sized(
+                                        [ui.available_width(), 40.0],
+                                        egui::DragValue::new(&mut checks)
+                                            .range(
+                                                crate::ai::MIN_CANDIDATE_CHECKS
+                                                    ..=crate::ai::MAX_CANDIDATE_CHECKS,
+                                            )
+                                            .speed(1),
+                                    )
+                                    .changed()
+                                {
+                                    if let Err(error) = session.set_candidate_checks(checks) {
+                                        session.notice = Some(error.to_string());
+                                    }
+                                }
+                                ui.end_row();
+                            });
                     });
                 }));
             }
@@ -591,11 +620,7 @@ fn seats(ui: &mut egui::Ui, session: &mut Session) {
     // The Players body reads at twice the body size; only the section title
     // above stays as is. The scope keeps the enlargement from leaking into
     // the panel sections painted after this one.
-    ui.scope(|ui| {
-        for font in ui.style_mut().text_styles.values_mut() {
-            font.size *= 2.0;
-        }
-        ui.spacing_mut().interact_size.y = 40.0;
+    editable_style_scope(ui, |ui| {
         for (side, label) in [(Color::Black, "Black"), (Color::White, "White")] {
             ui.push_id(label, |ui| {
                 Frame::NONE.show(ui, |ui| {
@@ -1663,31 +1688,104 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_section_edits_resignation_candidates_into_the_next_request() {
+    fn the_settings_section_edits_candidate_checks_into_the_next_request() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
         session.toggle_panel_section(PanelSection::Settings);
         let mut output = ui_frame(&context, &mut session, vec![]);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Text(text) if text.galley.text() == "Resignation candidates")));
+            egui::Shape::Text(text) if text.galley.text() == "Candidate checks")));
         output.textures_delta.clear();
-        assert_eq!(
-            session.resignation_candidates(),
-            player::DEFAULT_CANDIDATE_CHECKS
-        );
+        assert_eq!(session.candidate_checks(), player::DEFAULT_CANDIDATE_CHECKS);
 
         edit_value(&context, &mut session, "10", "12");
-        assert_eq!(session.resignation_candidates(), 12);
+        assert_eq!(session.candidate_checks(), 12);
         assert!(!session.changed(), "AI settings are not game metadata");
 
         // Out-of-range typing is clamped by the widget's range.
         edit_value(&context, &mut session, "12", "99");
-        assert_eq!(session.resignation_candidates(), 25);
+        assert_eq!(session.candidate_checks(), 25);
 
         session.release_seat(Color::White);
         session.place(gomoku_core::point(7, 7).unwrap());
         let request = session.next_ai_request().unwrap();
         assert_eq!(request.options.candidate_checks, 25);
+    }
+
+    /// The font a drawn text uses, for pinning the panel's shared widget style.
+    fn drawn_font(output: &egui::FullOutput, text: &str) -> FontId {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(shape.galley.job.sections[0].format.font_id.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the text is drawn: {text}"))
+    }
+
+    /// The rect of the widget a drawn text sits in, if it sits in one.
+    fn widget_rect_of(output: &egui::FullOutput, text: &str) -> egui::Rect {
+        let centre = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(shape.pos + shape.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the text is drawn: {text}"));
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.rect.contains(centre) => Some(rect.rect),
+                _ => None,
+            })
+            .min_by(|a, b| {
+                (a.width() * a.height())
+                    .partial_cmp(&(b.width() * b.height()))
+                    .expect("finite widget rects")
+            })
+            .unwrap_or_else(|| panic!("a widget rect contains the text: {text}"))
+    }
+
+    #[test]
+    fn the_settings_numeric_row_matches_the_players_row_style() {
+        // Wolfie's convention: every editable setting widget in the panel
+        // shares the Players section's Sims/Temp style — same alignment,
+        // same font, same size. Pin the label font, the value font, and the
+        // widget height of the Settings section's candidate-check row
+        // against that reference.
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Players);
+        let mut players = ui_frame(&context, &mut session, vec![]);
+        let players_label_font = drawn_font(&players, "Sims");
+        let players_value_font = drawn_font(&players, "4000");
+        let players_widget = widget_rect_of(&players, "4000");
+        players.textures_delta.clear();
+
+        session.toggle_panel_section(PanelSection::Settings);
+        let mut settings = ui_frame(&context, &mut session, vec![]);
+        let settings_label_font = drawn_font(&settings, "Candidate checks");
+        let settings_value_font = drawn_font(&settings, "10");
+        let settings_widget = widget_rect_of(&settings, "10");
+        settings.textures_delta.clear();
+
+        let doubled = crate::theme::BODY_FONT_SIZE * 2.0;
+        assert_eq!(players_label_font, FontId::proportional(doubled));
+        assert_eq!(settings_label_font, players_label_font, "same label font");
+        assert_eq!(settings_value_font, players_value_font, "same value font");
+        assert_eq!(players_widget.height(), 40.0);
+        assert_eq!(
+            settings_widget.height(),
+            players_widget.height(),
+            "same widget height"
+        );
     }
 
     #[test]

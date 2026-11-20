@@ -88,23 +88,25 @@ impl std::fmt::Display for InvalidAiOptions {
 }
 impl std::error::Error for InvalidAiOptions {}
 
-/// The fewest and most candidate moves the concession analysis may weigh.
-pub(crate) const MIN_RESIGNATION_CANDIDATES: usize = 1;
-pub(crate) const MAX_RESIGNATION_CANDIDATES: usize = 25;
+/// The fewest and most candidate moves the guard and the concession analysis
+/// may each weigh.
+pub(crate) const MIN_CANDIDATE_CHECKS: usize = 1;
+pub(crate) const MAX_CANDIDATE_CHECKS: usize = 25;
 
-/// The candidate count is outside what the concession analysis accepts.
+/// The candidate count is outside what the guard and the concession analysis
+/// accept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidResignationCandidates;
+pub struct InvalidCandidateChecks;
 
-impl std::fmt::Display for InvalidResignationCandidates {
+impl std::fmt::Display for InvalidCandidateChecks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "AI resignation requires {MIN_RESIGNATION_CANDIDATES}..={MAX_RESIGNATION_CANDIDATES} candidates"
+            "AI candidate checks require {MIN_CANDIDATE_CHECKS}..={MAX_CANDIDATE_CHECKS} candidates"
         )
     }
 }
-impl std::error::Error for InvalidResignationCandidates {}
+impl std::error::Error for InvalidCandidateChecks {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Flight {
@@ -159,8 +161,10 @@ pub(crate) struct AutomationIntent {
 /// Bookkeeping only: the session supplies eligibility and commits decisions.
 pub(crate) struct Controller {
     seats: [Seat; 2],
-    /// The concession budget, a sitting-wide setting rather than a seat's.
-    resignation_candidates: usize,
+    /// The candidate-check budget, a sitting-wide setting rather than a
+    /// seat's. It drives both the defensive guard and the concession
+    /// analysis.
+    candidate_checks: usize,
     pub generation: u64,
     outstanding: Option<Flight>,
     next_id: u64,
@@ -188,7 +192,7 @@ impl Default for Controller {
                     options: AiOptions::default(),
                 },
             ],
-            resignation_candidates: player::DEFAULT_CANDIDATE_CHECKS,
+            candidate_checks: player::DEFAULT_CANDIDATE_CHECKS,
             generation: 0,
             outstanding: None,
             next_id: 0,
@@ -220,23 +224,23 @@ impl Controller {
         self.invalidate();
         Ok(())
     }
-    /// How many candidates the concession analysis currently weighs.
-    pub fn resignation_candidates(&self) -> usize {
-        self.resignation_candidates
+    /// How many candidates the guard and the concession analysis each weigh.
+    pub fn candidate_checks(&self) -> usize {
+        self.candidate_checks
     }
-    /// Replace the concession budget, invalidating pending work like any
+    /// Replace the candidate-check budget, invalidating pending work like any
     /// other AI setting change.
     ///
     /// # Errors
-    /// Returns [`InvalidResignationCandidates`] for an out-of-range count.
-    pub fn set_resignation_candidates(
+    /// Returns [`InvalidCandidateChecks`] for an out-of-range count.
+    pub fn set_candidate_checks(
         &mut self,
         candidates: usize,
-    ) -> Result<(), InvalidResignationCandidates> {
-        if !(MIN_RESIGNATION_CANDIDATES..=MAX_RESIGNATION_CANDIDATES).contains(&candidates) {
-            return Err(InvalidResignationCandidates);
+    ) -> Result<(), InvalidCandidateChecks> {
+        if !(MIN_CANDIDATE_CHECKS..=MAX_CANDIDATE_CHECKS).contains(&candidates) {
+            return Err(InvalidCandidateChecks);
         }
-        self.resignation_candidates = candidates;
+        self.candidate_checks = candidates;
         self.invalidate();
         Ok(())
     }
@@ -271,7 +275,7 @@ impl Controller {
         };
         self.outstanding = Some(flight);
         let mut options = self.options(side).player_options();
-        options.candidate_checks = self.resignation_candidates;
+        options.candidate_checks = self.candidate_checks;
         Some(AiRequest {
             board,
             options,
@@ -592,19 +596,16 @@ mod tests {
     }
 
     #[test]
-    fn resignation_candidates_are_validated_retained_and_reach_the_next_request() {
+    fn candidate_checks_are_validated_retained_and_reach_the_next_request() {
         let mut session = white_turn();
-        assert_eq!(
-            session.resignation_candidates(),
-            player::DEFAULT_CANDIDATE_CHECKS
-        );
+        assert_eq!(session.candidate_checks(), player::DEFAULT_CANDIDATE_CHECKS);
         let generation = session.generation();
         for candidates in [0, 26, usize::MAX] {
-            assert!(session.set_resignation_candidates(candidates).is_err());
+            assert!(session.set_candidate_checks(candidates).is_err());
         }
         assert_eq!(session.generation(), generation);
-        assert_eq!(session.resignation_candidates(), 10);
-        session.set_resignation_candidates(3).unwrap();
+        assert_eq!(session.candidate_checks(), 10);
+        session.set_candidate_checks(3).unwrap();
         assert!(session.generation() > generation);
         let request = session.next_ai_request().unwrap();
         assert_eq!(request.options.candidate_checks, 3);
@@ -612,7 +613,7 @@ mod tests {
         // A change lands while stale work occupies the slot: the next flight
         // carries it, the stale one is discarded.
         let stale = request;
-        session.set_resignation_candidates(25).unwrap();
+        session.set_candidate_checks(25).unwrap();
         assert!(!session.apply_ai_reply(play(&stale, 7, 8)));
         let request = session.next_ai_request().unwrap();
         assert_eq!(request.options.candidate_checks, 25);

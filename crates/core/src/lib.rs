@@ -18,10 +18,10 @@ mod record;
 mod storage;
 
 pub use config::{
-    AudioSettings, BoardSettings, ConfigLoad, ConfigNotice, FileSettings, MAX_PANEL_WIDTH,
-    MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, PlayersSettings,
-    ResignationSettings, SeatSettings, Settings, StoneSettings, ThreatSettings, ViewSettings,
-    WindowSettings, load_settings, save_settings,
+    AudioSettings, BoardSettings, CandidateChecksSettings, ConfigLoad, ConfigNotice, FileSettings,
+    MAX_PANEL_WIDTH, MAX_RECENT, MIN_PANEL_WIDTH, OverlaySettings, PanelSettings, PlayersSettings,
+    SeatSettings, Settings, StoneSettings, ThreatSettings, ViewSettings, WindowSettings,
+    load_settings, save_settings,
 };
 pub use engine::{Color, Move, Status};
 pub use error::{ConfigError, GameError, PositionError, RecordError};

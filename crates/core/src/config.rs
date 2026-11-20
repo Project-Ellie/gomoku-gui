@@ -122,24 +122,30 @@ impl Default for ThreatSettings {
     }
 }
 
-/// The AI's heuristic concession decision.
+/// The candidate budget shared by the defensive guard and the concession
+/// decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ResignationSettings {
-    /// How many of the strongest candidate moves the concession analysis
-    /// weighs before the AI resigns. The default matches the player's
-    /// `DEFAULT_CANDIDATE_CHECKS`; this crate does not depend on the
-    /// player, so the value is spelled out here.
-    pub candidates: usize,
+pub struct CandidateChecksSettings {
+    /// How many of the strongest candidate moves the defensive guard and the
+    /// concession analysis each weigh before the AI plays or resigns. The
+    /// default matches the player's `DEFAULT_CANDIDATE_CHECKS`; this crate
+    /// does not depend on the player, so the value is spelled out here.
+    ///
+    /// Files written before the budget was unified used the section
+    /// `[resignation]` and the field `candidates`; both aliases keep them
+    /// loading.
+    #[serde(alias = "candidates")]
+    pub count: usize,
 }
 
-/// The fewest and most candidates a hand-edited file may ask for.
-const MIN_RESIGNATION_CANDIDATES: usize = 1;
-const MAX_RESIGNATION_CANDIDATES: usize = 25;
+/// The fewest and most candidate checks a hand-edited file may ask for.
+const MIN_CANDIDATE_CHECKS: usize = 1;
+const MAX_CANDIDATE_CHECKS: usize = 25;
 
-impl Default for ResignationSettings {
-    fn default() -> ResignationSettings {
-        ResignationSettings { candidates: 10 }
+impl Default for CandidateChecksSettings {
+    fn default() -> CandidateChecksSettings {
+        CandidateChecksSettings { count: 10 }
     }
 }
 
@@ -305,8 +311,10 @@ pub struct Settings {
     pub audio: AudioSettings,
     /// The threat-sequence search.
     pub threat: ThreatSettings,
-    /// The AI's concession decision.
-    pub resignation: ResignationSettings,
+    /// The candidate budget shared by the guard and the concession decision.
+    /// Files written before the budget was unified called this `[resignation]`.
+    #[serde(alias = "resignation")]
+    pub candidate_checks: CandidateChecksSettings,
     /// The two seats and their AI settings.
     pub players: PlayersSettings,
     /// The file settings.
@@ -336,10 +344,10 @@ impl Settings {
             .max_depth
             .clamp(MIN_THREAT_DEPTH, MAX_THREAT_DEPTH);
 
-        self.resignation.candidates = self
-            .resignation
-            .candidates
-            .clamp(MIN_RESIGNATION_CANDIDATES, MAX_RESIGNATION_CANDIDATES);
+        self.candidate_checks.count = self
+            .candidate_checks
+            .count
+            .clamp(MIN_CANDIDATE_CHECKS, MAX_CANDIDATE_CHECKS);
 
         for seat in [&mut self.players.black, &mut self.players.white] {
             seat.simulations = seat.simulations.clamp(1, 50_000);
@@ -461,7 +469,7 @@ mod tests {
         assert!(settings.audio.enabled);
         assert_eq!(settings.audio.volume, 0.7);
         assert_eq!(settings.threat.max_depth, 9);
-        assert_eq!(settings.resignation.candidates, 10);
+        assert_eq!(settings.candidate_checks.count, 10);
         assert!(settings.files.last_corpus_directory.is_none());
         assert!(settings.files.recent.is_empty());
         assert_eq!(settings.board.gain, 2.8);
@@ -525,7 +533,7 @@ mod tests {
                 volume: 0.25,
             },
             threat: ThreatSettings { max_depth: 19 },
-            resignation: ResignationSettings { candidates: 5 },
+            candidate_checks: CandidateChecksSettings { count: 5 },
             players: PlayersSettings {
                 black: SeatSettings {
                     ai: true,
@@ -552,6 +560,12 @@ mod tests {
         };
 
         save_settings(&path, &settings).expect("the settings save");
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("the file reads")
+                .contains("[candidate_checks]"),
+            "the file uses the unified section name"
+        );
         let loaded = load_settings(&path);
         assert_eq!(loaded.settings, settings);
         assert_eq!(loaded.notice, None);
@@ -570,7 +584,7 @@ mod tests {
             "the missing section keeps its default"
         );
         assert_eq!(
-            loaded.settings.resignation.candidates, 10,
+            loaded.settings.candidate_checks.count, 10,
             "the missing section keeps its default"
         );
         assert!(
@@ -635,17 +649,30 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_clamps_the_resignation_candidates() {
+    fn a_legacy_resignation_section_still_loads() {
+        let (_directory, path) = settings_file();
+        // Files written before the guard and the concession decision shared
+        // one budget used a resignation-only section and field name.
+        std::fs::write(&path, "[resignation]\ncandidates = 5\n").expect("the file writes");
+
+        let loaded = load_settings(&path);
+
+        assert_eq!(loaded.notice, None);
+        assert_eq!(loaded.settings.candidate_checks.count, 5);
+    }
+
+    #[test]
+    fn sanitize_clamps_the_candidate_checks() {
         let mut settings = Settings {
-            resignation: ResignationSettings { candidates: 0 },
+            candidate_checks: CandidateChecksSettings { count: 0 },
             ..Settings::default()
         };
         settings.sanitize();
-        assert_eq!(settings.resignation.candidates, MIN_RESIGNATION_CANDIDATES);
+        assert_eq!(settings.candidate_checks.count, MIN_CANDIDATE_CHECKS);
 
-        settings.resignation.candidates = usize::MAX;
+        settings.candidate_checks.count = usize::MAX;
         settings.sanitize();
-        assert_eq!(settings.resignation.candidates, MAX_RESIGNATION_CANDIDATES);
+        assert_eq!(settings.candidate_checks.count, MAX_CANDIDATE_CHECKS);
     }
 
     #[test]

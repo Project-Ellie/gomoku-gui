@@ -11,7 +11,7 @@ use gomoku_core::{Color, Game, Move, Outcome, PositionError, Puzzle, Settings, W
 
 use crate::ai::{
     AiOptions, AiReply, AiRequest, Controller, DecisionAction, InvalidAiOptions,
-    InvalidResignationCandidates, SeatOwner,
+    InvalidCandidateChecks, SeatOwner,
 };
 use crate::camera::Camera;
 
@@ -304,7 +304,7 @@ impl Session {
         session.apply_player_settings(settings);
         // The file was sanitized on load, so this cannot fail; a hand-made
         // edit that slipped through simply keeps the default.
-        let _ = session.set_resignation_candidates(settings.resignation.candidates);
+        let _ = session.set_candidate_checks(settings.candidate_checks.count);
         session.refresh_policy_rings();
         session
     }
@@ -695,20 +695,21 @@ impl Session {
     pub fn resignation_enabled(&self) -> bool {
         self.ai_options(Color::Black).resign && self.ai_options(Color::White).resign
     }
-    /// How many candidate moves the concession analysis weighs before resigning.
-    pub fn resignation_candidates(&self) -> usize {
-        self.ai.resignation_candidates()
+    /// How many candidate moves the defensive guard and the concession
+    /// analysis each weigh.
+    pub fn candidate_checks(&self) -> usize {
+        self.ai.candidate_checks()
     }
-    /// Replace the concession budget; the next decision uses it.
+    /// Replace the candidate-check budget; the next decision uses it.
     ///
     /// # Errors
-    /// Returns [`InvalidResignationCandidates`] without changing anything for
-    /// an out-of-range count.
-    pub fn set_resignation_candidates(
+    /// Returns [`InvalidCandidateChecks`] without changing anything for an
+    /// out-of-range count.
+    pub fn set_candidate_checks(
         &mut self,
         candidates: usize,
-    ) -> Result<(), InvalidResignationCandidates> {
-        self.ai.set_resignation_candidates(candidates)
+    ) -> Result<(), InvalidCandidateChecks> {
+        self.ai.set_candidate_checks(candidates)
     }
     /// Enable or disable heuristic resignation for both AI seats.
     pub fn set_resignation(&mut self, enabled: bool) {
@@ -1545,8 +1546,8 @@ impl Session {
             threat: gomoku_core::ThreatSettings {
                 max_depth: self.threat_max_depth,
             },
-            resignation: gomoku_core::ResignationSettings {
-                candidates: self.ai.resignation_candidates(),
+            candidate_checks: gomoku_core::CandidateChecksSettings {
+                count: self.ai.candidate_checks(),
             },
             players: gomoku_core::PlayersSettings {
                 black: self.seat_settings(Color::Black),
@@ -2791,18 +2792,18 @@ mod tests {
     }
 
     #[test]
-    fn resignation_candidates_round_trip_through_settings() {
+    fn candidate_checks_round_trip_through_settings() {
         let mut settings = Settings::default();
-        settings.resignation.candidates = 17;
+        settings.candidate_checks.count = 17;
         let mut session = Session::new(&settings);
-        assert_eq!(session.resignation_candidates(), 17);
+        assert_eq!(session.candidate_checks(), 17);
 
-        session.set_resignation_candidates(4).unwrap();
+        session.set_candidate_checks(4).unwrap();
         let written = session.settings(&WindowGeometry::default());
-        assert_eq!(written.resignation.candidates, 4);
+        assert_eq!(written.candidate_checks.count, 4);
         let restored = Session::new(&written);
 
-        assert_eq!(restored.resignation_candidates(), 4);
+        assert_eq!(restored.candidate_checks(), 4);
     }
 
     #[test]
