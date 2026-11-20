@@ -193,6 +193,15 @@ impl History {
         self.nodes[self.current_node()].certificate.as_ref()
     }
 
+    /// The certificate of the child at `index` in creation order, without
+    /// moving the cursor. None when the index does not exist or the child is
+    /// an ordinary, uncertified variation.
+    pub(crate) fn certificate_of_child(&self, index: usize) -> Option<&Refutation> {
+        let current = self.current_node();
+        let &child = self.nodes[current].children.get(index)?;
+        self.nodes[child].certificate.as_ref()
+    }
+
     /// The certified refutations among the current node's children, as
     /// candidate moves and their one-based ranks, in creation order.
     pub(crate) fn certified_children(&self) -> Vec<(Move, u8)> {

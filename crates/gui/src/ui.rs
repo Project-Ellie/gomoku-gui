@@ -512,7 +512,9 @@ fn status_line(session: &Session) -> String {
     } else {
         String::new()
     };
-    // The caption naming the refutation certificate painted at the cursor.
+    // The caption naming the refutation certificate painted at the cursor:
+    // the cursor node's own inside a branch, else the selected child's as a
+    // preview while the remembered branch is cycled at the branch point.
     let refutation = session
         .refutation_at_cursor()
         .map(|certificate| {
@@ -525,6 +527,17 @@ fn status_line(session: &Session) -> String {
                 label(candidate),
                 certificate.ordinal
             )
+        })
+        .or_else(|| {
+            session
+                .previewed_refutation()
+                .map(|(candidate, certificate)| {
+                    format!(
+                        " — refutation of {} (candidate {})",
+                        label(candidate),
+                        certificate.ordinal
+                    )
+                })
         })
         .unwrap_or_default();
     let line = match session.game().outcome() {
@@ -993,7 +1006,8 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     // The wgpu pass draws the half-size proof stones; egui adds only their
     // numbers, in the opposite colour to each stone, above the policy rings.
     // The visible proof is a refutation certificate at a refutation branch,
-    // otherwise the live threat search.
+    // the selected child's certificate previewed at a certified branch
+    // point, otherwise the live threat search.
     if let Some(proof) = session.visible_proof() {
         // One size for one and two digits alike: deep proofs number past 9,
         // so the glyphs are sized for a pair from the start (two digits span
@@ -3558,11 +3572,13 @@ mod tests {
         );
         assert_eq!(session.visible_proof(), Some(&certificate));
 
-        // Leaving and re-entering the node restores the certificate.
+        // Back at the branch point the selected child's certificate previews,
+        // and re-entering the node restores it as the node's own.
         session.rewind();
-        assert!(
-            session.visible_proof().is_none(),
-            "the resigned node has neither certificate nor live proof"
+        assert_eq!(
+            session.visible_proof(),
+            Some(&certificate),
+            "the selected child's certificate previews at the branch point"
         );
         session.forward();
         assert_eq!(
@@ -3574,6 +3590,64 @@ mod tests {
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.text() == "3")));
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn cycling_branch_options_previews_certificates_without_entering() {
+        let context = egui::Context::default();
+        let mut session = resigned_session_with_evidence();
+        assert_eq!(session.game().cursor(), 0);
+        assert!(!session.threat_sequences);
+
+        // Before any selection the resigned node paints no proof.
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        for number in ["1", "2", "3"] {
+            assert!(
+                !output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == number)),
+                "no certificate paints before a candidate is selected"
+            );
+        }
+        output.textures_delta.clear();
+
+        // Cycling to the second candidate previews its certificate as
+        // numbered proof stones and names it, still at the resigned node.
+        session.cycle_branch(1);
+        assert_eq!(session.selected_branch(), Some(1));
+        assert_eq!(session.game().cursor(), 0, "cycling does not enter");
+        assert_eq!(
+            status_line(&session),
+            "Black to play — move 2 — reviewing 0 of 1 — refutation of D12 (candidate 2)"
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        for number in ["1", "2", "3"] {
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == number)),
+                "certificate move {number} paints while previewing"
+            );
+        }
+        output.textures_delta.clear();
+
+        // Cycling back previews the first candidate instead.
+        session.cycle_branch(1);
+        assert_eq!(session.selected_branch(), Some(0));
+        assert_eq!(session.game().cursor(), 0);
+        assert_eq!(
+            status_line(&session),
+            "Black to play — move 2 — reviewing 0 of 1 — refutation of H8 (candidate 1)"
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "3")));
+        output.textures_delta.clear();
+
+        // Entering the branch works exactly as before.
+        session.select_branch(0);
+        assert_eq!(
+            status_line(&session),
+            "White to play — move 2 — refutation of H8 (candidate 1)"
+        );
     }
 
     /// The banner as drawn: the red rect and the text it carries, if any.

@@ -122,8 +122,11 @@ winning line, or stone sound. The live result stays visible during review.
 An AI resignation arrives with its evidence: every candidate move the
 concession check weighed becomes a branch at the resigned node, tagged
 “(refuted)” in the Moves list and painted as a branch alternative on the
-board. Entering a branch plays the candidate stone and paints the certified
-opponent VCF that refutes it as numbered half-size stones; the status line
+board. Cycling the branch alternatives with the arrow keys previews the
+selected candidate's certified opponent VCF right away — numbered half-size
+stones on the board and a status-line caption naming the candidate — without
+entering the branch. Entering a branch plays the candidate stone and paints
+the same certificate; the status line
 names it (“refutation of H8 (candidate 1)”). The certificate owns its node —
 the threat-sequences toggle does not compete with it there — and re-entering
 the branch always restores it. Playing onward inside a branch is ordinary

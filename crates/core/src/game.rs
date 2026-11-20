@@ -336,6 +336,13 @@ impl Game {
         self.history.certified_children()
     }
 
+    /// The certificate of the child branch at `index`, in `branch_options`
+    /// order, without entering the branch. None when the index does not
+    /// exist or the child is an ordinary, uncertified variation.
+    pub fn refutation_of_branch(&self, index: usize) -> Option<&Refutation> {
+        self.history.certificate_of_child(index)
+    }
+
     /// Play a stone at `point`.
     ///
     /// At a reviewed position this follows an identical existing child or
@@ -839,6 +846,33 @@ mod tests {
         assert_eq!(game.stone_at(point(7, 7)), Some(Color::Black));
         assert_eq!(game.cursor(), 0);
         assert!(!game.undo(), "nothing to undo at the root");
+    }
+
+    #[test]
+    fn refutation_of_branch_reads_a_childs_certificate_without_entering_it() {
+        let mut game = game();
+        let certificate = |ordinal: u8| Refutation {
+            ordinal,
+            proof: engine::Proof {
+                winner: Color::White,
+                line: vec![point(9, 9)],
+            },
+        };
+        game.add_refutation(point(7, 7), certificate(1))
+            .expect("empty cell");
+        game.add_refutation(point(3, 3), certificate(2))
+            .expect("empty cell");
+        game.play(point(5, 5)).expect("empty cell");
+        game.rewind();
+
+        assert_eq!(game.refutation_of_branch(0).map(|r| r.ordinal), Some(1));
+        assert_eq!(game.refutation_of_branch(1).map(|r| r.ordinal), Some(2));
+        assert!(
+            game.refutation_of_branch(2).is_none(),
+            "an ordinary variation has no certificate"
+        );
+        assert!(game.refutation_of_branch(3).is_none(), "no such child");
+        assert_eq!(game.cursor(), 0, "the cursor does not move");
     }
 
     #[test]

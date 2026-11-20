@@ -434,14 +434,15 @@ impl Session {
 
     /// Search once for each visible position while threat sequences are enabled.
     ///
-    /// A refutation branch needs no search: its node already carries the
-    /// certified proof, so the toggle does not compete with it there.
+    /// A refutation certificate needs no search: a certified node, and a
+    /// branch point whose selected child carries a certificate, already hold
+    /// the certified proof, so the toggle does not compete with it there.
     pub fn refresh_threat_sequences(&mut self) {
         if !self.threat_sequences {
             self.threat_cache = None;
             return;
         }
-        if self.refutation_at_cursor().is_some() {
+        if self.refutation_at_cursor().is_some() || self.previewed_refutation().is_some() {
             return;
         }
         let position = self.game.board_snapshot();
@@ -864,16 +865,33 @@ impl Session {
         self.game.refutation_at_cursor()
     }
 
+    /// The certificate the board previews at the cursor: the selected child
+    /// branch's candidate move and certificate, without entering the branch.
+    /// None when nothing is selected or the selected child is an ordinary,
+    /// uncertified variation.
+    pub fn previewed_refutation(&self) -> Option<(Move, &gomoku_core::Refutation)> {
+        let index = self.game.selected_branch()?;
+        let point = *self.game.branch_options().get(index)?;
+        let refutation = self.game.refutation_of_branch(index)?;
+        Some((point, refutation))
+    }
+
     /// The certified line painted on the board as numbered half-size stones.
     ///
     /// Precedence: a refutation certificate owns its node. Entering a
     /// refutation branch paints the certificate no matter how the threat
     /// sequences toggle stands, and the live search is not run there (the
     /// certificate already is the position's certified forced win), so no
-    /// toggle fights it and re-entering the node always restores it. Every
-    /// other position shows the live threat search exactly as before.
+    /// toggle fights it and re-entering the node always restores it. One
+    /// step earlier, at the branch point itself, the selected child's
+    /// certificate paints as a live preview while the remembered branch is
+    /// cycled; a selected child without a certificate previews nothing.
+    /// Every other position shows the live threat search exactly as before.
     pub fn visible_proof(&self) -> Option<&engine::Proof> {
         if let Some(refutation) = self.refutation_at_cursor() {
+            return Some(&refutation.proof);
+        }
+        if let Some((_, refutation)) = self.previewed_refutation() {
             return Some(&refutation.proof);
         }
         self.threat_proof()
@@ -2041,6 +2059,112 @@ mod tests {
         assert!(!session.is_branch_point());
         assert!(session.game().refutation_options().is_empty());
         assert!(session.refutation_at_cursor().is_none());
+    }
+
+    /// An AI resignation with evidence whose candidates carry distinct
+    /// fabricated proofs, so a preview can be told apart by its first point.
+    fn resigned_session_with_distinct_proofs() -> Session {
+        let mut session = Session::new(&Settings::default());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        let first = gomoku_core::point(7, 7).unwrap();
+        let second = gomoku_core::point(3, 3).unwrap();
+        let mut evidence = evidence([(1, first), (2, second)]).expect("evidence");
+        for (index, candidate) in evidence.candidates.iter_mut().enumerate() {
+            candidate.proof.line = vec![gomoku_core::point(9, index as u8).unwrap()];
+        }
+        assert!(session.apply_ai_reply(resign_reply(&request, Some(evidence))));
+        session
+    }
+
+    #[test]
+    fn cycling_at_a_resigned_node_previews_each_candidates_certificate() {
+        let mut session = resigned_session_with_distinct_proofs();
+        assert_eq!(session.game().cursor(), 0);
+        assert!(
+            session.visible_proof().is_none(),
+            "nothing is selected before the first cycle"
+        );
+
+        session.cycle_branch(1);
+        assert_eq!(session.selected_branch(), Some(1));
+        assert_eq!(
+            session.game().cursor(),
+            0,
+            "cycling does not enter the branch"
+        );
+        let preview = session
+            .visible_proof()
+            .expect("the selected candidate's certificate previews");
+        assert_eq!(preview.line, vec![gomoku_core::point(9, 1).unwrap()]);
+
+        session.cycle_branch(1);
+        assert_eq!(session.selected_branch(), Some(0));
+        let preview = session
+            .visible_proof()
+            .expect("cycling back previews the first candidate");
+        assert_eq!(preview.line, vec![gomoku_core::point(9, 0).unwrap()]);
+
+        // The preview owns the position like a certified node does: no live
+        // threat search runs while a certificate previews.
+        session.threat_sequences = true;
+        session.refresh_threat_sequences();
+        assert!(
+            session.threat_cache.is_none(),
+            "no live search runs while a certificate previews"
+        );
+        assert!(session.visible_proof().is_some());
+    }
+
+    #[test]
+    fn an_uncertified_selection_previews_nothing_and_entering_still_shows_the_certificate() {
+        let mut session = Session::new(&Settings::default());
+        session.place_now(gomoku_core::point(7, 7).unwrap());
+        session.release_seat(Color::White);
+        let request = session.next_ai_request().unwrap();
+        let first = gomoku_core::point(3, 3).unwrap();
+        let second = gomoku_core::point(4, 4).unwrap();
+        assert!(
+            session.apply_ai_reply(resign_reply(&request, evidence([(1, first), (2, second)])))
+        );
+
+        // Undoing the resignation keeps the certified branches; a fresh move
+        // adds an ordinary, uncertified child beside them.
+        session.undo();
+        session.place_now(gomoku_core::point(5, 5).unwrap());
+        session.rewind();
+        assert_eq!(session.branch_options().len(), 3);
+        assert_eq!(session.selected_branch(), Some(2));
+        assert!(
+            session.visible_proof().is_none(),
+            "an ordinary selection previews nothing"
+        );
+        assert!(session.previewed_refutation().is_none());
+
+        session.cycle_branch(1);
+        assert_eq!(session.selected_branch(), Some(0));
+        let (candidate, certificate) = session
+            .previewed_refutation()
+            .expect("the certified child previews");
+        assert_eq!(candidate, first);
+        assert_eq!(certificate.ordinal, 1);
+        let previewed = session.visible_proof().expect("the preview paints").clone();
+
+        // Entering the branch shows the very same certificate.
+        session.select_branch(0);
+        assert_eq!(
+            session.refutation_at_cursor().map(|c| &c.proof),
+            Some(&previewed)
+        );
+        assert_eq!(session.visible_proof(), Some(&previewed));
+
+        // Away from the certified branch point the board is back to normal.
+        session.seek(0);
+        assert!(session.previewed_refutation().is_none());
+        assert!(
+            session.visible_proof().is_none(),
+            "leaving the node restores normal behavior"
+        );
     }
 
     fn vcf_session() -> Session {
