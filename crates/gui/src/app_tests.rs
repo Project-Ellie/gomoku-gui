@@ -220,6 +220,7 @@ fn idle_worker_completion_requests_redraw_without_pointer_input() {
                 Ok(crate::ai::AiPlayerDecision {
                     action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
                     search: None,
+                    own_proof: None,
                     guard: None,
                     resignation: None,
                 })
@@ -255,6 +256,7 @@ fn closing_ignores_already_queued_completion_and_never_schedules() {
     let reply = request.reply(Ok(crate::ai::AiPlayerDecision {
         action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
         search: None,
+        own_proof: None,
         guard: None,
         resignation: None,
     }));
@@ -498,6 +500,7 @@ fn zero_move_resigned_exit_writes_recovery_but_pristine_exit_discards_it() {
                     candidates: 1,
                 }),
                 search: None,
+                own_proof: None,
                 guard: None,
                 resignation: None,
             })))
@@ -1208,6 +1211,7 @@ fn undo_and_release_restart_thinking() {
                 Ok(crate::ai::AiPlayerDecision {
                     action: crate::ai::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
                     search: None,
+                    own_proof: None,
                     guard: None,
                     resignation: None,
                 })

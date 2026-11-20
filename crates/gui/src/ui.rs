@@ -1383,6 +1383,7 @@ mod tests {
                 candidates: 5,
             }),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         })));
@@ -1397,6 +1398,7 @@ mod tests {
                 candidates: 5,
             }),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         })));
@@ -1549,6 +1551,7 @@ mod tests {
         assert!(session.apply_ai_reply(request.reply(Ok(player::Decision {
             action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         }))));
@@ -1720,6 +1723,7 @@ mod tests {
         assert!(!session.apply_ai_reply(flight.reply(Ok(player::Decision {
             action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         }))));
@@ -1730,6 +1734,7 @@ mod tests {
         assert!(session.apply_ai_reply(request.reply(Ok(player::Decision {
             action: player::DecisionAction::Play(gomoku_core::point(7, 8).unwrap()),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         }))));
@@ -1757,6 +1762,7 @@ mod tests {
                 candidates: 5,
             }),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         })));
@@ -1864,6 +1870,7 @@ mod tests {
                 candidates: 5,
             }),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         })));
@@ -3063,6 +3070,7 @@ mod tests {
                 candidates: 5,
             }),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         })));
@@ -3292,6 +3300,7 @@ mod tests {
                 candidates: 5,
             }),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         })));

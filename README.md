@@ -16,14 +16,14 @@ game history. Games are saved and loaded, and the game in progress survives a cr
 - `gomoku-core` — game state, undo and rewind history, notation, the versioned
   record format, and the settings schema. Complete.
 - `engine` — the rules engine from `Project-Ellie/rust-ml`, pinned to git
-  revision `158b6114029d8708fe5d55394b2930f5e4fd1d8c`. Cargo fetches it;
+  revision `27f00e878266e69f44175c5107b2935c19dfddce`. Cargo fetches it;
   no sibling checkout is needed. See the
   [integration plan](docs/plans/2026-11-07-rust-ml-integration.md).
   `player`, `mcts`, and the Burn-backed `baseline` share this pin. A dedicated
   worker runs genuine baseline evaluation on Burn's Flex CPU backend.
 - `gomoku-gui` — the window, board and stone shaders, stone knock, automatic AI
-  controller/worker, and per-color ownership and search controls. Analysis
-  overlays, trained networks, and Swap2 remain future milestones.
+  controller/worker, and per-color ownership and search controls. Trained
+  networks and Swap2 remain future milestones.
 - Puzzle loading (File → Load puzzle...) for `vcf-material-v1` files with a
   `.parser` sidecar. The first move of the claimed solution is marked with a
   bright green cursor ring. Games loaded from a puzzle position cannot be saved
@@ -110,10 +110,11 @@ cargo fmt --all -- --check
 
 Black starts **Human**, White **AI · baseline**. Place a black stone and White
 thinks automatically—there is no Step command. Both colors may be AI. Each
-seat retains its own **Sims** (default 400, range 1–10,000) and **Temp** (default
+seat retains its own **Sims** (default 4000, range 1–50,000) and **Temp** (default
 0, range 0–2 in steps of 0.1), including while human-owned. Click a value to
 type it, or drag it. Player names are editable saved metadata; Take/Release
-never replaces them. Seat ownership and search settings are session-only.
+never replaces them. Seat ownership is session-only; the tuned search settings
+are remembered.
 
 **Resignation is ON by default.** It is the baseline's heuristic concession,
 not a proof. A resignation records the result, not a stone, move number,

@@ -256,6 +256,7 @@ mod tests {
         request.reply(Ok(AiPlayerDecision {
             action: DecisionAction::Play(point(row, col).unwrap()),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         }))
@@ -267,6 +268,7 @@ mod tests {
                 candidates: 5,
             }),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         }))
@@ -967,6 +969,7 @@ mod tests {
                 prior: vec![(mv, 1.0)],
                 value: 0.0,
             }),
+            own_proof: None,
             guard: Some(player::GuardDiagnostics {
                 proposal: mv,
                 refuted: vec![],

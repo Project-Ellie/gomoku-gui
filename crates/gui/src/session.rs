@@ -1740,6 +1740,7 @@ mod tests {
                     candidates: 1,
                 }),
                 search: None,
+                own_proof: None,
                 guard: None,
                 resignation: None,
             })))
@@ -1811,6 +1812,7 @@ mod tests {
                 prior: vec![],
                 value: 0.0,
             }),
+            own_proof: None,
             guard: None,
             resignation: None,
         }));
@@ -1966,6 +1968,7 @@ mod tests {
                     candidates: 1,
                 }),
                 search: None,
+                own_proof: None,
                 guard: None,
                 resignation: None,
             })))
@@ -2081,6 +2084,7 @@ mod tests {
                     candidates: 1
                 }),
                 search: None,
+                own_proof: None,
                 guard: None,
                 resignation: None,
             })))

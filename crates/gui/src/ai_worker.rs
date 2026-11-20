@@ -134,6 +134,7 @@ mod tests {
         Ok(AiPlayerDecision {
             action: DecisionAction::Play(point(7, 8).unwrap()),
             search: None,
+            own_proof: None,
             guard: None,
             resignation: None,
         })
@@ -499,6 +500,7 @@ mod tests {
                     Ok(AiPlayerDecision {
                         action: DecisionAction::Play(*local),
                         search: None,
+                        own_proof: None,
                         guard: None,
                         resignation: None,
                     })
