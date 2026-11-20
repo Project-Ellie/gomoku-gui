@@ -4,12 +4,12 @@
 //! open. It only reads and edits the session's Explorer state; loading a
 //! record is the application's job, asked for through [`Requests`].
 
-use egui::RichText;
+use egui::{FontId, RichText};
 
 use engine::Color;
 
 use crate::session::{SelfplayCorpus, Session};
-use crate::theme::{PANEL_CURRENT, PANEL_INK};
+use crate::theme::{PANEL_CURRENT, PANEL_INK, RECENT_FONT_SIZE};
 use crate::ui::{Requests, editable_style_scope};
 
 /// The manifest block above the record list: who played, how they
@@ -64,14 +64,21 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
         draw_selfplay_manifest(ui, corpus);
     }
 
+    // Filter, jump, and the record list share the recent-files font size —
+    // the panel's agreed floor for readable text.
+    let font = || FontId::proportional(RECENT_FONT_SIZE);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Filter:").color(PANEL_INK));
+        ui.label(RichText::new("Filter:").font(font()).color(PANEL_INK));
         let mut filter = session
             .explorer()
             .map(|explorer| explorer.filter.clone())
             .unwrap_or_default();
         if ui
-            .add(egui::TextEdit::singleline(&mut filter).id(egui::Id::new("explorer-filter")))
+            .add(
+                egui::TextEdit::singleline(&mut filter)
+                    .id(egui::Id::new("explorer-filter"))
+                    .font(font()),
+            )
             .changed()
         {
             session.set_explorer_filter(filter);
@@ -79,18 +86,22 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
     });
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Jump to #").color(PANEL_INK));
+        ui.label(RichText::new("Jump to #").font(font()).color(PANEL_INK));
         let mut jump = session
             .explorer()
             .map(|explorer| explorer.jump.clone())
             .unwrap_or_default();
         if ui
-            .add(egui::TextEdit::singleline(&mut jump).id(egui::Id::new("explorer-jump")))
+            .add(
+                egui::TextEdit::singleline(&mut jump)
+                    .id(egui::Id::new("explorer-jump"))
+                    .font(font()),
+            )
             .changed()
         {
             session.set_explorer_jump(jump);
         }
-        if ui.button("Go").clicked() {
+        if ui.button(RichText::new("Go").font(font())).clicked() {
             if let Ok(index) = session.explorer_jump_index() {
                 requests.explorer_select = Some(index);
             }
@@ -159,7 +170,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             for record in records {
                 let here = selected == Some(record.index);
                 let text = format!("{:>5} {}", record.index, record.name);
-                let text = RichText::new(text).color(PANEL_INK);
+                let text = RichText::new(text).font(font()).color(PANEL_INK);
                 let text = if here { text.strong() } else { text };
                 let frame = if here {
                     egui::Frame::NONE.fill(PANEL_CURRENT).inner_margin(2.0)
