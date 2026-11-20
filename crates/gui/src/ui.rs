@@ -144,7 +144,13 @@ fn panel_section_header(
 /// at twice the body size and a 40-point interaction height. The Players
 /// section's Sims/Temp rows are the reference; every editable setting in the
 /// panel matches them — same alignment, same font, same size.
-fn editable_style_scope(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+/// Run `add_contents` in the panel's shared editable style: every text style
+/// at twice the body size and a 40-point interaction height. The Players
+/// section's Sims/Temp rows are the reference; every editable setting in the
+/// panel matches them — same alignment, same font, same size. The Explorer's
+/// self-play manifest block shares the scale for its read-only labels: the
+/// panel never shows anything smaller.
+pub(crate) fn editable_style_scope(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     ui.scope(|ui| {
         for font in ui.style_mut().text_styles.values_mut() {
             font.size *= 2.0;

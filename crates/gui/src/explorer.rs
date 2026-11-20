@@ -10,44 +10,44 @@ use engine::Color;
 
 use crate::session::{SelfplayCorpus, Session};
 use crate::theme::{PANEL_CURRENT, PANEL_INK};
-use crate::ui::Requests;
+use crate::ui::{Requests, editable_style_scope};
 
 /// The manifest block above the record list: who played, how they
 /// explored, and how much of it there is — the corpus's identity card.
+/// Shares the panel's editable text scale (the Players rows): nothing in
+/// the panel renders smaller than the Explorer's file names.
 fn draw_selfplay_manifest(ui: &mut egui::Ui, corpus: &SelfplayCorpus) {
-    let manifest = &corpus.manifest;
-    ui.label(RichText::new("Self-play corpus").color(PANEL_INK).strong());
-    for (side, color) in [("Black", Color::Black), ("White", Color::White)] {
+    editable_style_scope(ui, |ui| {
+        let manifest = &corpus.manifest;
+        ui.label(RichText::new("Self-play corpus").color(PANEL_INK).strong());
+        for (side, color) in [("Black", Color::Black), ("White", Color::White)] {
+            ui.label(
+                RichText::new(format!("{side}: {}", corpus.seat_label(color))).color(PANEL_INK),
+            );
+        }
+        let exploration = &manifest.pairing.exploration;
         ui.label(
-            RichText::new(format!("{side}: {}", corpus.seat_label(color)))
-                .color(PANEL_INK)
-                .small(),
+            RichText::new(format!(
+                "Exploration: {} plies · τ {} · ε {} · α {}",
+                exploration.plies,
+                exploration.temperature,
+                exploration.noise_epsilon,
+                exploration.noise_alpha
+            ))
+            .color(PANEL_INK),
         );
-    }
-    let exploration = &manifest.pairing.exploration;
-    ui.label(
-        RichText::new(format!(
-            "Exploration: {} plies · τ {} · ε {} · α {}",
-            exploration.plies,
-            exploration.temperature,
-            exploration.noise_epsilon,
-            exploration.noise_alpha
-        ))
-        .color(PANEL_INK)
-        .small(),
-    );
-    let seeds = match (manifest.seeds.first(), manifest.seeds.last()) {
-        (Some(first), Some(last)) => format!(" · seeds {first}–{last}"),
-        _ => String::new(),
-    };
-    ui.label(
-        RichText::new(format!(
-            "{} games{seeds} · rust-ml {}",
-            manifest.game_count, manifest.workspace_version
-        ))
-        .color(PANEL_INK)
-        .small(),
-    );
+        let seeds = match (manifest.seeds.first(), manifest.seeds.last()) {
+            (Some(first), Some(last)) => format!(" · seeds {first}–{last}"),
+            _ => String::new(),
+        };
+        ui.label(
+            RichText::new(format!(
+                "{} games{seeds} · rust-ml {}",
+                manifest.game_count, manifest.workspace_version
+            ))
+            .color(PANEL_INK),
+        );
+    });
     ui.separator();
 }
 

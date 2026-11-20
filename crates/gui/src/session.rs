@@ -95,6 +95,8 @@ pub struct SelfplayCorpus {
 /// The recorded search data of one post-opening ply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelfplayPlyData {
+    /// The move the seat played.
+    pub mv: Move,
     /// Sparse raw root visits of the generating seat.
     pub visits: Vec<(Move, u32)>,
     /// Top root priors after Dirichlet noise, in descending order.
@@ -116,6 +118,9 @@ pub struct SelfplayGame {
     pub opening_stones: usize,
     /// One entry per post-opening ply.
     pub plies: Vec<SelfplayPlyData>,
+    /// The winner, or `None` for a draw — the source of every sample's
+    /// value target z.
+    pub winner: Option<Color>,
     /// Post-opening ply from which the certified forced-win suffix runs.
     pub certified_from: Option<usize>,
     /// The side that resigned, when the record ends in a concession.
@@ -165,6 +170,7 @@ impl SelfplayGame {
             .plies
             .iter()
             .map(|ply| SelfplayPlyData {
+                mv: ply.mv,
                 visits: ply.visits.clone(),
                 prior: ply.prior.clone(),
                 root_value: ply.root_value,
@@ -174,6 +180,10 @@ impl SelfplayGame {
             .certified_suffix
             .as_ref()
             .map(|suffix| suffix.from_ply as usize);
+        let winner = match record.outcome {
+            Outcome::Won { winner, .. } => Some(winner),
+            Outcome::Draw => None,
+        };
 
         Ok((
             game,
@@ -182,6 +192,7 @@ impl SelfplayGame {
                 evaluator: record.header.evaluator.clone(),
                 opening_stones,
                 plies,
+                winner,
                 certified_from,
                 resigned,
             },
@@ -194,6 +205,38 @@ impl SelfplayGame {
     pub fn ply_at(&self, cursor: usize) -> Option<&SelfplayPlyData> {
         let ply = cursor.checked_sub(self.opening_stones)?;
         self.plies.get(ply)
+    }
+
+    /// The value target z the training sample at `cursor` carries: +1 when
+    /// the side to move won the game, −1 when it lost, 0 for a draw.
+    ///
+    /// Certainty is not an annotation here — z *is* the label the value
+    /// head trains on, so proven plies show it like any other.
+    pub fn value_target(&self, to_move: Color) -> f32 {
+        match self.winner {
+            Some(winner) if winner == to_move => 1.0,
+            Some(_) => -1.0,
+            None => 0.0,
+        }
+    }
+
+    /// The policy target π the training sample at `cursor` carries: the
+    /// recorded visits normalized, or — when the ply was decided without
+    /// search — a one-hot on the proved move, mirroring the exporter's
+    /// rule. `None` for ceremony stones and out-of-range cursors.
+    pub fn policy_target(&self, cursor: usize) -> Option<Vec<(Move, f32)>> {
+        let ply = self.ply_at(cursor)?;
+        let total: u64 = ply.visits.iter().map(|(_, n)| u64::from(*n)).sum();
+        let mut target: Vec<(Move, f32)> = if total == 0 {
+            vec![(ply.mv, 1.0)]
+        } else {
+            ply.visits
+                .iter()
+                .map(|(mv, n)| (*mv, *n as f32 / total as f32))
+                .collect()
+        };
+        target.sort_by(|a, b| b.1.total_cmp(&a.1));
+        Some(target)
     }
 
     /// The move-list badge for the move at 0-based `index`: `proven` on the
@@ -523,21 +566,20 @@ impl Session {
             return;
         }
 
-        // Design D4: a self-play record's own search data beats live
-        // recomputation — the Dirichlet-noised priors cannot be reproduced
-        // after the fact, and the recorded value is what the generating
-        // seat actually saw. The recorded data of ply p describes the
-        // position *before* move p, so the visible cursor indexes it
-        // directly.
+        // Browsing a self-play record shows what the learning model sees:
+        // the headline is the value target z (the game's outcome from the
+        // side-to-move's perspective, ±1, draw 0), and the rings are the
+        // policy target π — the recorded visits normalized, or a one-hot on
+        // the proved move when no search ran. The recorded data of ply p
+        // describes the position *before* move p, so the visible cursor
+        // indexes it directly.
         let cursor = self.game.cursor();
-        if let Some(ply) = self
-            .selfplay_game
-            .as_ref()
-            .and_then(|game| game.ply_at(cursor))
+        if let Some(game) = self.selfplay_game.as_ref()
+            && let Some(target) = game.policy_target(cursor)
         {
-            self.position_value = ply.root_value;
+            self.position_value = Some(game.value_target(self.game.to_move()));
             if self.policy_overlay {
-                self.policy_rings = Self::spread_policy_rings(ply.prior.clone());
+                self.policy_rings = Some(target);
             }
             return;
         }
@@ -566,12 +608,12 @@ impl Session {
         self.policy_rings = Self::spread_policy_rings(prior);
     }
 
-    /// Spread a prior over its own range into overlay ring values (0..=1):
-    /// shift by the weakest candidate, scale by the span, strongest reads
-    /// 1.0. A (near-)flat prior — the empty board, dead symmetry — carries
-    /// no guidance and shows nothing; the epsilon keeps float noise from
-    /// being amplified into fake rings. Serves both the live baseline prior
-    /// and a record's stored top-k prior.
+    /// Spread a live prior over its own range into overlay ring values
+    /// (0..=1): shift by the weakest candidate, scale by the span,
+    /// strongest reads 1.0. A (near-)flat prior — the empty board, dead
+    /// symmetry — carries no guidance and shows nothing; the epsilon keeps
+    /// float noise from being amplified into fake rings. The recorded
+    /// policy targets bypass this: they are shown as-is.
     fn spread_policy_rings(mut prior: Vec<(Move, f32)>) -> Option<Vec<(Move, f32)>> {
         let center_distance = |mv: engine::Move| {
             let row = mv.row().abs_diff(7);
@@ -2184,8 +2226,11 @@ mod tests {
                 reason: WinReason::FiveOrMore,
             },
         );
-        // A two-entry prior on the first ply, so the spread has a span.
-        record.plies[0].prior = vec![(mv((3, 3)), 0.6), (mv((4, 4)), 0.4)];
+        // A two-entry visit histogram on the first ply, so the policy
+        // target has a spread; the second ply stands in for a proved
+        // no-search decision (empty visits → one-hot target).
+        record.plies[0].visits = vec![(mv((3, 3)), 300), (mv((4, 4)), 100)];
+        record.plies[1].visits = vec![];
         record.certified_suffix = Some(selfplay::record::CertifiedSuffix {
             from_ply: 2,
             line: vec![mv((5, 5)), mv((7, 9)), mv((7, 5))],
@@ -2203,21 +2248,19 @@ mod tests {
         session.load_explorer_record(&registry, 0);
         session.set_policy_overlay(true);
 
-        // At the first post-opening position the overlays show the recorded
-        // prior spread and root value, not a live recomputation.
+        // At the first post-opening position the overlays show the training
+        // targets: White to move lost, so z = −1; the rings are the
+        // normalized visit histogram.
         session.seek(3);
-        assert_eq!(session.position_value, Some(0.05));
-        let rings = session.policy_rings.clone().expect("recorded rings");
-        assert_eq!(
-            rings,
-            vec![(mv((3, 3)), 1.0), (mv((4, 4)), 0.0)],
-            "the recorded prior spreads over its own range"
-        );
+        assert_eq!(session.position_value, Some(-1.0));
+        let rings = session.policy_rings.clone().expect("policy target rings");
+        assert_eq!(rings, vec![(mv((3, 3)), 0.75), (mv((4, 4)), 0.25)]);
 
-        // A ply decided without search has no recorded value and no rings.
+        // A ply decided without search carries a one-hot target on the
+        // proved move; Black to move won, so z = +1.
         session.seek(4);
-        assert_eq!(session.position_value, None);
-        assert_eq!(session.policy_rings, None);
+        assert_eq!(session.position_value, Some(1.0));
+        assert_eq!(session.policy_rings, Some(vec![(mv((7, 6)), 1.0)]));
 
         // The tip is terminal — the overlay stays quiet there.
         session.seek(9);
