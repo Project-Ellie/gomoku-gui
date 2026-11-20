@@ -10,7 +10,8 @@ use anyhow::{Context as _, Result};
 use gomoku_core::{Color, Game, Move, Outcome, PositionError, Puzzle, Settings, WinMethod};
 
 use crate::ai::{
-    AiOptions, AiReply, AiRequest, Controller, DecisionAction, InvalidAiOptions, SeatOwner,
+    AiOptions, AiReply, AiRequest, Controller, DecisionAction, InvalidAiOptions,
+    InvalidResignationCandidates, SeatOwner,
 };
 use crate::camera::Camera;
 
@@ -44,8 +45,8 @@ pub enum PanelSection {
     Players,
     /// The game's move list.
     Moves,
-    /// The live AI policy display.
-    Policy,
+    /// Display toggles and sitting-wide AI configuration.
+    Settings,
     /// The open record corpus.
     Explorer,
 }
@@ -301,6 +302,9 @@ impl Session {
             open_panel_section: PanelSection::Players,
         };
         session.apply_player_settings(settings);
+        // The file was sanitized on load, so this cannot fail; a hand-made
+        // edit that slipped through simply keeps the default.
+        let _ = session.set_resignation_candidates(settings.resignation.candidates);
         session.refresh_policy_rings();
         session
     }
@@ -683,6 +687,21 @@ impl Session {
     /// Whether heuristic resignation is enabled for both AI seats.
     pub fn resignation_enabled(&self) -> bool {
         self.ai_options(Color::Black).resign && self.ai_options(Color::White).resign
+    }
+    /// How many candidate moves the concession analysis weighs before resigning.
+    pub fn resignation_candidates(&self) -> usize {
+        self.ai.resignation_candidates()
+    }
+    /// Replace the concession budget; the next decision uses it.
+    ///
+    /// # Errors
+    /// Returns [`InvalidResignationCandidates`] without changing anything for
+    /// an out-of-range count.
+    pub fn set_resignation_candidates(
+        &mut self,
+        candidates: usize,
+    ) -> Result<(), InvalidResignationCandidates> {
+        self.ai.set_resignation_candidates(candidates)
     }
     /// Enable or disable heuristic resignation for both AI seats.
     pub fn set_resignation(&mut self, enabled: bool) {
@@ -1444,12 +1463,15 @@ impl Session {
                 section: match self.open_panel_section {
                     PanelSection::Players => "players".to_string(),
                     PanelSection::Moves => "moves".to_string(),
-                    PanelSection::Policy => "policy".to_string(),
+                    PanelSection::Settings => "settings".to_string(),
                     PanelSection::Explorer => "explorer".to_string(),
                 },
             },
             threat: gomoku_core::ThreatSettings {
                 max_depth: self.threat_max_depth,
+            },
+            resignation: gomoku_core::ResignationSettings {
+                candidates: self.ai.resignation_candidates(),
             },
             players: gomoku_core::PlayersSettings {
                 black: self.seat_settings(Color::Black),
@@ -2421,9 +2443,9 @@ mod tests {
     }
 
     #[test]
-    fn policy_section_and_overlay_are_written_but_startup_always_opens_players() {
+    fn settings_section_and_overlay_are_written_but_startup_always_opens_players() {
         let mut settings = Settings::default();
-        settings.panel.section = "policy".to_string();
+        settings.panel.section = "settings".to_string();
         let mut session = Session::new(&settings);
         assert_eq!(
             session.open_panel_section(),
@@ -2433,9 +2455,9 @@ mod tests {
         assert!(!session.policy_overlay);
 
         session.policy_overlay = true;
-        session.toggle_panel_section(PanelSection::Policy);
+        session.toggle_panel_section(PanelSection::Settings);
         let written = session.settings(&WindowGeometry::default());
-        assert_eq!(written.panel.section, "policy");
+        assert_eq!(written.panel.section, "settings");
         assert!(written.overlays.policy_overlay);
         let restored = Session::new(&written);
         assert_eq!(
@@ -2444,6 +2466,21 @@ mod tests {
             "the written section is ignored at startup"
         );
         assert!(restored.policy_overlay);
+    }
+
+    #[test]
+    fn resignation_candidates_round_trip_through_settings() {
+        let mut settings = Settings::default();
+        settings.resignation.candidates = 17;
+        let mut session = Session::new(&settings);
+        assert_eq!(session.resignation_candidates(), 17);
+
+        session.set_resignation_candidates(4).unwrap();
+        let written = session.settings(&WindowGeometry::default());
+        assert_eq!(written.resignation.candidates, 4);
+        let restored = Session::new(&written);
+
+        assert_eq!(restored.resignation_candidates(), 4);
     }
 
     #[test]
@@ -2467,13 +2504,13 @@ mod tests {
         assert!(!session.branch_alternatives);
 
         session.branch_alternatives = true;
-        session.toggle_panel_section(PanelSection::Policy);
+        session.toggle_panel_section(PanelSection::Settings);
         let written = session.settings(&WindowGeometry::default());
         assert!(written.overlays.branch_alternatives);
         let restored = Session::new(&written);
 
         assert!(restored.branch_alternatives);
-        assert_eq!(written.panel.section, "policy");
+        assert_eq!(written.panel.section, "settings");
     }
 
     #[test]

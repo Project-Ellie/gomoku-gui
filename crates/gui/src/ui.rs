@@ -354,11 +354,11 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
             if panel_section_header(
                 ui,
                 session,
-                PanelSection::Policy,
-                "Display options",
+                PanelSection::Settings,
+                "Settings",
                 header_size,
             ) {
-                body_paints.push(paint_panel_body(ui, PanelSection::Policy, |ui| {
+                body_paints.push(paint_panel_body(ui, PanelSection::Settings, |ui| {
                     if on_off_button(
                         ui,
                         "Policy overlay",
@@ -383,6 +383,23 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
                     ) {
                         session.branch_alternatives = !session.branch_alternatives;
                     }
+                    ui.horizontal(|ui| {
+                        ui.label("Resignation candidates").on_hover_text(
+                            "How many of the strongest moves the concession analysis weighs before the AI resigns, 1–25.",
+                        );
+                        let mut candidates = session.resignation_candidates();
+                        if ui
+                            .add(egui::DragValue::new(&mut candidates).range(
+                                crate::ai::MIN_RESIGNATION_CANDIDATES
+                                    ..=crate::ai::MAX_RESIGNATION_CANDIDATES,
+                            ))
+                            .changed()
+                        {
+                            if let Err(error) = session.set_resignation_candidates(candidates) {
+                                session.notice = Some(error.to_string());
+                            }
+                        }
+                    });
                 }));
             }
             // The Explorer header appears only while its corpus is available.
@@ -1566,6 +1583,34 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_section_edits_resignation_candidates_into_the_next_request() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.toggle_panel_section(PanelSection::Settings);
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "Resignation candidates")));
+        output.textures_delta.clear();
+        assert_eq!(
+            session.resignation_candidates(),
+            player::DEFAULT_RESIGNATION_CANDIDATES
+        );
+
+        edit_value(&context, &mut session, "10", "12");
+        assert_eq!(session.resignation_candidates(), 12);
+        assert!(!session.changed(), "AI settings are not game metadata");
+
+        // Out-of-range typing is clamped by the widget's range.
+        edit_value(&context, &mut session, "12", "99");
+        assert_eq!(session.resignation_candidates(), 25);
+
+        session.release_seat(Color::White);
+        session.place(gomoku_core::point(7, 7).unwrap());
+        let request = session.next_ai_request().unwrap();
+        assert_eq!(request.options.resignation_candidates, 25);
+    }
+
+    #[test]
     fn the_initiative_button_hands_the_side_to_move_to_the_ai() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
@@ -2329,10 +2374,10 @@ mod tests {
     }
 
     #[test]
-    fn display_options_section_offers_policy_overlay_on_off_button() {
+    fn settings_section_offers_policy_overlay_on_off_button() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
-        session.toggle_panel_section(PanelSection::Policy);
+        session.toggle_panel_section(PanelSection::Settings);
         let mut output = ui_frame(&context, &mut session, vec![]);
         let button = output
             .shapes
@@ -2341,11 +2386,11 @@ mod tests {
                 egui::Shape::Text(text) if text.galley.text() == "Policy overlay OFF" => Some(text),
                 _ => None,
             })
-            .expect("the open Display options section contains its ON/OFF button");
+            .expect("the open Settings section contains its ON/OFF button");
         assert_eq!(
             button.galley.job.sections[0].format.font_id.size,
             crate::theme::BODY_FONT_SIZE * 2.0,
-            "the display option matches the Resignation switch: twice the body size"
+            "the setting matches the Resignation switch: twice the body size"
         );
         output.textures_delta.clear();
 
@@ -2379,14 +2424,14 @@ mod tests {
     }
 
     #[test]
-    fn display_options_section_offers_the_branch_alternatives_toggle() {
+    fn settings_section_offers_the_branch_alternatives_toggle() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
-        session.toggle_panel_section(PanelSection::Policy);
+        session.toggle_panel_section(PanelSection::Settings);
 
         let mut output = ui_frame(&context, &mut session, vec![]);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-            egui::Shape::Text(text) if text.galley.text() == "Display options")));
+            egui::Shape::Text(text) if text.galley.text() == "Settings")));
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::Shape::Text(text) if text.galley.text() == "Branch alternatives OFF")));
         assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
@@ -2492,10 +2537,10 @@ mod tests {
     }
 
     #[test]
-    fn display_options_section_offers_the_threat_sequences_toggle() {
+    fn settings_section_offers_the_threat_sequences_toggle() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
-        session.toggle_panel_section(PanelSection::Policy);
+        session.toggle_panel_section(PanelSection::Settings);
 
         let mut output = ui_frame(&context, &mut session, vec![]);
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
@@ -2890,7 +2935,7 @@ mod tests {
         assert_eq!(
             strips.len(),
             3,
-            "Players, Moves and Display options each get a grey strip"
+            "Players, Moves and Settings each get a grey strip"
         );
         for strip in strips {
             assert!(

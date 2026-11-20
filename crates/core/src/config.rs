@@ -122,6 +122,27 @@ impl Default for ThreatSettings {
     }
 }
 
+/// The AI's heuristic concession decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResignationSettings {
+    /// How many of the strongest candidate moves the concession analysis
+    /// weighs before the AI resigns. The default matches the player's
+    /// `DEFAULT_RESIGNATION_CANDIDATES`; this crate does not depend on the
+    /// player, so the value is spelled out here.
+    pub candidates: usize,
+}
+
+/// The fewest and most candidates a hand-edited file may ask for.
+const MIN_RESIGNATION_CANDIDATES: usize = 1;
+const MAX_RESIGNATION_CANDIDATES: usize = 25;
+
+impl Default for ResignationSettings {
+    fn default() -> ResignationSettings {
+        ResignationSettings { candidates: 10 }
+    }
+}
+
 /// The right panel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -130,7 +151,7 @@ pub struct PanelSettings {
     pub width: f32,
     /// True when the panel is collapsed.
     pub collapsed: bool,
-    /// The open section: "players", "moves", or "explorer".
+    /// The open section: "players", "moves", "settings", or "explorer".
     pub section: String,
 }
 
@@ -284,6 +305,8 @@ pub struct Settings {
     pub audio: AudioSettings,
     /// The threat-sequence search.
     pub threat: ThreatSettings,
+    /// The AI's concession decision.
+    pub resignation: ResignationSettings,
     /// The two seats and their AI settings.
     pub players: PlayersSettings,
     /// The file settings.
@@ -312,6 +335,11 @@ impl Settings {
             .threat
             .max_depth
             .clamp(MIN_THREAT_DEPTH, MAX_THREAT_DEPTH);
+
+        self.resignation.candidates = self
+            .resignation
+            .candidates
+            .clamp(MIN_RESIGNATION_CANDIDATES, MAX_RESIGNATION_CANDIDATES);
 
         for seat in [&mut self.players.black, &mut self.players.white] {
             seat.simulations = seat.simulations.clamp(1, 50_000);
@@ -433,6 +461,7 @@ mod tests {
         assert!(settings.audio.enabled);
         assert_eq!(settings.audio.volume, 0.7);
         assert_eq!(settings.threat.max_depth, 9);
+        assert_eq!(settings.resignation.candidates, 10);
         assert!(settings.files.last_corpus_directory.is_none());
         assert!(settings.files.recent.is_empty());
         assert_eq!(settings.board.gain, 2.8);
@@ -496,6 +525,7 @@ mod tests {
                 volume: 0.25,
             },
             threat: ThreatSettings { max_depth: 19 },
+            resignation: ResignationSettings { candidates: 5 },
             players: PlayersSettings {
                 black: SeatSettings {
                     ai: true,
@@ -537,6 +567,10 @@ mod tests {
         assert_eq!(loaded.settings.audio.volume, 0.5);
         assert_eq!(
             loaded.settings.threat.max_depth, 9,
+            "the missing section keeps its default"
+        );
+        assert_eq!(
+            loaded.settings.resignation.candidates, 10,
             "the missing section keeps its default"
         );
         assert!(
@@ -598,6 +632,20 @@ mod tests {
         settings.threat.max_depth = u8::MAX;
         settings.sanitize();
         assert_eq!(settings.threat.max_depth, MAX_THREAT_DEPTH);
+    }
+
+    #[test]
+    fn sanitize_clamps_the_resignation_candidates() {
+        let mut settings = Settings {
+            resignation: ResignationSettings { candidates: 0 },
+            ..Settings::default()
+        };
+        settings.sanitize();
+        assert_eq!(settings.resignation.candidates, MIN_RESIGNATION_CANDIDATES);
+
+        settings.resignation.candidates = usize::MAX;
+        settings.sanitize();
+        assert_eq!(settings.resignation.candidates, MAX_RESIGNATION_CANDIDATES);
     }
 
     #[test]

@@ -88,6 +88,24 @@ impl std::fmt::Display for InvalidAiOptions {
 }
 impl std::error::Error for InvalidAiOptions {}
 
+/// The fewest and most candidate moves the concession analysis may weigh.
+pub(crate) const MIN_RESIGNATION_CANDIDATES: usize = 1;
+pub(crate) const MAX_RESIGNATION_CANDIDATES: usize = 25;
+
+/// The candidate count is outside what the concession analysis accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidResignationCandidates;
+
+impl std::fmt::Display for InvalidResignationCandidates {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "AI resignation requires {MIN_RESIGNATION_CANDIDATES}..={MAX_RESIGNATION_CANDIDATES} candidates"
+        )
+    }
+}
+impl std::error::Error for InvalidResignationCandidates {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Flight {
     pub generation: u64,
@@ -141,6 +159,8 @@ pub(crate) struct AutomationIntent {
 /// Bookkeeping only: the session supplies eligibility and commits decisions.
 pub(crate) struct Controller {
     seats: [Seat; 2],
+    /// The concession budget, a sitting-wide setting rather than a seat's.
+    resignation_candidates: usize,
     pub generation: u64,
     outstanding: Option<Flight>,
     next_id: u64,
@@ -168,6 +188,7 @@ impl Default for Controller {
                     options: AiOptions::default(),
                 },
             ],
+            resignation_candidates: player::DEFAULT_RESIGNATION_CANDIDATES,
             generation: 0,
             outstanding: None,
             next_id: 0,
@@ -196,6 +217,26 @@ impl Controller {
     pub fn set_options(&mut self, side: Color, options: AiOptions) -> Result<(), InvalidAiOptions> {
         options.validate()?;
         self.seats[index(side)].options = options;
+        self.invalidate();
+        Ok(())
+    }
+    /// How many candidates the concession analysis currently weighs.
+    pub fn resignation_candidates(&self) -> usize {
+        self.resignation_candidates
+    }
+    /// Replace the concession budget, invalidating pending work like any
+    /// other AI setting change.
+    ///
+    /// # Errors
+    /// Returns [`InvalidResignationCandidates`] for an out-of-range count.
+    pub fn set_resignation_candidates(
+        &mut self,
+        candidates: usize,
+    ) -> Result<(), InvalidResignationCandidates> {
+        if !(MIN_RESIGNATION_CANDIDATES..=MAX_RESIGNATION_CANDIDATES).contains(&candidates) {
+            return Err(InvalidResignationCandidates);
+        }
+        self.resignation_candidates = candidates;
         self.invalidate();
         Ok(())
     }
@@ -229,9 +270,11 @@ impl Controller {
             id: self.next_id,
         };
         self.outstanding = Some(flight);
+        let mut options = self.options(side).player_options();
+        options.resignation_candidates = self.resignation_candidates;
         Some(AiRequest {
             board,
-            options: self.options(side).player_options(),
+            options,
             generation: self.generation,
             side,
             flight,
@@ -546,6 +589,35 @@ mod tests {
                 )
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn resignation_candidates_are_validated_retained_and_reach_the_next_request() {
+        let mut session = white_turn();
+        assert_eq!(
+            session.resignation_candidates(),
+            player::DEFAULT_RESIGNATION_CANDIDATES
+        );
+        let generation = session.generation();
+        for candidates in [0, 26, usize::MAX] {
+            assert!(session.set_resignation_candidates(candidates).is_err());
+        }
+        assert_eq!(session.generation(), generation);
+        assert_eq!(session.resignation_candidates(), 10);
+        session.set_resignation_candidates(3).unwrap();
+        assert!(session.generation() > generation);
+        let request = session.next_ai_request().unwrap();
+        assert_eq!(request.options.resignation_candidates, 3);
+        assert!(request.options.resign);
+        // A change lands while stale work occupies the slot: the next flight
+        // carries it, the stale one is discarded.
+        let stale = request;
+        session.set_resignation_candidates(25).unwrap();
+        assert!(!session.apply_ai_reply(play(&stale, 7, 8)));
+        let request = session.next_ai_request().unwrap();
+        assert_eq!(request.options.resignation_candidates, 25);
+        assert!(session.apply_ai_reply(play(&request, 7, 8)));
+        assert_eq!(session.game().len(), 2);
     }
 
     #[test]
@@ -1034,6 +1106,10 @@ mod tests {
         assert_eq!(request.options.own, player::OwnTssConfig::baseline());
         assert_eq!(request.options.guard, player::GuardConfig::baseline());
         assert!(request.options.resign);
+        assert_eq!(
+            request.options.resignation_candidates,
+            player::DEFAULT_RESIGNATION_CANDIDATES
+        );
         assert!(session.next_ai_request().is_none());
     }
     #[test]
