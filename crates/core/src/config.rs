@@ -128,7 +128,7 @@ impl Default for ThreatSettings {
 pub struct ResignationSettings {
     /// How many of the strongest candidate moves the concession analysis
     /// weighs before the AI resigns. The default matches the player's
-    /// `DEFAULT_RESIGNATION_CANDIDATES`; this crate does not depend on the
+    /// `DEFAULT_CANDIDATE_CHECKS`; this crate does not depend on the
     /// player, so the value is spelled out here.
     pub candidates: usize,
 }

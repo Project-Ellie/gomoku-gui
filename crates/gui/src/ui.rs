@@ -1673,7 +1673,7 @@ mod tests {
         output.textures_delta.clear();
         assert_eq!(
             session.resignation_candidates(),
-            player::DEFAULT_RESIGNATION_CANDIDATES
+            player::DEFAULT_CANDIDATE_CHECKS
         );
 
         edit_value(&context, &mut session, "10", "12");
@@ -1687,7 +1687,7 @@ mod tests {
         session.release_seat(Color::White);
         session.place(gomoku_core::point(7, 7).unwrap());
         let request = session.next_ai_request().unwrap();
-        assert_eq!(request.options.resignation_candidates, 25);
+        assert_eq!(request.options.candidate_checks, 25);
     }
 
     #[test]

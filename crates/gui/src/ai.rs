@@ -188,7 +188,7 @@ impl Default for Controller {
                     options: AiOptions::default(),
                 },
             ],
-            resignation_candidates: player::DEFAULT_RESIGNATION_CANDIDATES,
+            resignation_candidates: player::DEFAULT_CANDIDATE_CHECKS,
             generation: 0,
             outstanding: None,
             next_id: 0,
@@ -271,7 +271,7 @@ impl Controller {
         };
         self.outstanding = Some(flight);
         let mut options = self.options(side).player_options();
-        options.resignation_candidates = self.resignation_candidates;
+        options.candidate_checks = self.resignation_candidates;
         Some(AiRequest {
             board,
             options,
@@ -596,7 +596,7 @@ mod tests {
         let mut session = white_turn();
         assert_eq!(
             session.resignation_candidates(),
-            player::DEFAULT_RESIGNATION_CANDIDATES
+            player::DEFAULT_CANDIDATE_CHECKS
         );
         let generation = session.generation();
         for candidates in [0, 26, usize::MAX] {
@@ -607,7 +607,7 @@ mod tests {
         session.set_resignation_candidates(3).unwrap();
         assert!(session.generation() > generation);
         let request = session.next_ai_request().unwrap();
-        assert_eq!(request.options.resignation_candidates, 3);
+        assert_eq!(request.options.candidate_checks, 3);
         assert!(request.options.resign);
         // A change lands while stale work occupies the slot: the next flight
         // carries it, the stale one is discarded.
@@ -615,7 +615,7 @@ mod tests {
         session.set_resignation_candidates(25).unwrap();
         assert!(!session.apply_ai_reply(play(&stale, 7, 8)));
         let request = session.next_ai_request().unwrap();
-        assert_eq!(request.options.resignation_candidates, 25);
+        assert_eq!(request.options.candidate_checks, 25);
         assert!(session.apply_ai_reply(play(&request, 7, 8)));
         assert_eq!(session.game().len(), 2);
     }
@@ -1107,8 +1107,8 @@ mod tests {
         assert_eq!(request.options.guard, player::GuardConfig::baseline());
         assert!(request.options.resign);
         assert_eq!(
-            request.options.resignation_candidates,
-            player::DEFAULT_RESIGNATION_CANDIDATES
+            request.options.candidate_checks,
+            player::DEFAULT_CANDIDATE_CHECKS
         );
         assert!(session.next_ai_request().is_none());
     }

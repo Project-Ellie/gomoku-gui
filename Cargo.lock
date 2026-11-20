@@ -336,7 +336,7 @@ dependencies = [
 [[package]]
 name = "baseline"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=27f00e878266e69f44175c5107b2935c19dfddce#27f00e878266e69f44175c5107b2935c19dfddce"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=0eb90fd352e856739ec2b0cf4f9e21d47d012da2#0eb90fd352e856739ec2b0cf4f9e21d47d012da2"
 dependencies = [
  "burn",
  "engine",
@@ -1523,7 +1523,7 @@ dependencies = [
 [[package]]
 name = "engine"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=27f00e878266e69f44175c5107b2935c19dfddce#27f00e878266e69f44175c5107b2935c19dfddce"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=0eb90fd352e856739ec2b0cf4f9e21d47d012da2#0eb90fd352e856739ec2b0cf4f9e21d47d012da2"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -2709,7 +2709,7 @@ dependencies = [
 [[package]]
 name = "mcts"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=27f00e878266e69f44175c5107b2935c19dfddce#27f00e878266e69f44175c5107b2935c19dfddce"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=0eb90fd352e856739ec2b0cf4f9e21d47d012da2#0eb90fd352e856739ec2b0cf4f9e21d47d012da2"
 dependencies = [
  "engine",
  "rand 0.10.3",
@@ -3446,7 +3446,7 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 [[package]]
 name = "patterns"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=27f00e878266e69f44175c5107b2935c19dfddce#27f00e878266e69f44175c5107b2935c19dfddce"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=0eb90fd352e856739ec2b0cf4f9e21d47d012da2#0eb90fd352e856739ec2b0cf4f9e21d47d012da2"
 dependencies = [
  "burn",
  "engine",
@@ -3512,7 +3512,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "player"
 version = "0.1.0"
-source = "git+https://github.com/Project-Ellie/rust-ml?rev=27f00e878266e69f44175c5107b2935c19dfddce#27f00e878266e69f44175c5107b2935c19dfddce"
+source = "git+https://github.com/Project-Ellie/rust-ml?rev=0eb90fd352e856739ec2b0cf4f9e21d47d012da2#0eb90fd352e856739ec2b0cf4f9e21d47d012da2"
 dependencies = [
  "engine",
  "mcts",
