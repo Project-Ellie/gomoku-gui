@@ -30,11 +30,11 @@ fn golden_game() -> Game {
 }
 
 #[test]
-fn the_encoder_writes_a_v3_tree_with_resignation() {
+fn the_encoder_writes_a_v4_tree_with_resignation() {
     let mut game = golden_game();
     game.resign().unwrap();
     let record = Record::from_game(&game).expect("the record builds");
-    assert_eq!(record.version, 3);
+    assert_eq!(record.version, 4);
     assert_eq!(record.tree.len(), 5);
     assert_eq!(record.tree[4].resigned, Some(StoredColor::Black));
 }
@@ -60,7 +60,7 @@ fn both_golden_files_load_and_validate() {
             expected.resign().unwrap();
         }
         assert_eq!(game, expected);
-        assert_eq!(Record::from_game(&game).unwrap().version, 3);
+        assert_eq!(Record::from_game(&game).unwrap().version, 4);
     }
 }
 
@@ -90,7 +90,7 @@ fn saving_a_reviewed_resignation_keeps_the_whole_game_and_loads_finished_live() 
         save(&path, &game).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let record = Record::from_json(&text).unwrap();
-        assert_eq!(record.version, 3, "all new records use v3");
+        assert_eq!(record.version, 4, "all new records use v4");
         let loaded = load(&path).unwrap();
         assert_eq!(
             loaded, live,
@@ -122,8 +122,8 @@ fn v1_cannot_claim_a_resignation() {
 }
 
 #[test]
-fn versions_other_than_v1_v2_or_v3_are_rejected() {
-    for version in [0, 4, u32::MAX] {
+fn versions_other_than_v1_to_v4_are_rejected() {
+    for version in [0, 5, u32::MAX] {
         let mut record = Record::from_game(&golden_game()).unwrap();
         record.version = version;
         let parsed = Record::from_json(&record.to_json().unwrap()).unwrap();
@@ -173,7 +173,7 @@ fn both_linear_versions_read_ongoing_five_and_draw_results() {
     for game in [golden_game(), common::won_game(), common::drawn_game()] {
         for version in [1, 2] {
             let mut record = Record::from_game(&game).unwrap();
-            assert_eq!(record.version, 3, "new records always use v3");
+            assert_eq!(record.version, 4, "new records always use v4");
             record.version = version;
             let loaded = Record::from_json(&record.to_json().unwrap())
                 .unwrap()
@@ -236,6 +236,98 @@ fn a_damaged_file_is_a_parse_error() {
     std::fs::write(&path, "{\"format\": \"gomoku-gui/record\",").expect("the file writes");
     let error = load(&path).expect_err("the text is not a record");
     assert!(matches!(error, RecordError::Parse(_)));
+}
+
+#[test]
+fn refutation_certificates_round_trip_through_v4_records() {
+    let mut game = common::lost_game();
+    game.resign().unwrap();
+    let first = Move::new(14, 14).unwrap();
+    let second = Move::new(13, 13).unwrap();
+    game.add_refutation(first, common::refutation(&game, 1, first))
+        .unwrap();
+    game.add_refutation(second, common::refutation(&game, 2, second))
+        .unwrap();
+
+    let record = Record::from_game(&game).unwrap();
+    assert_eq!(record.version, 4);
+    assert_eq!(record.tree.len(), 13, "ten moves plus two branch nodes");
+    assert_eq!(record.tree[10].resigned, Some(StoredColor::Black));
+    assert!(record.tree[11].certificate.is_some());
+    assert!(record.tree[12].certificate.is_some());
+
+    let loaded = Record::from_json(&record.to_json().unwrap())
+        .unwrap()
+        .into_game()
+        .unwrap();
+    assert_eq!(loaded, game, "branches and certificates round-trip exactly");
+    assert_eq!(
+        loaded.refutation_options(),
+        vec![(first, 1), (second, 2)],
+        "the resigned node still names its refuted candidates"
+    );
+    let mut entered = loaded.clone();
+    assert!(entered.select_branch(0));
+    assert!(entered.refutation_at_cursor().is_some());
+}
+
+#[test]
+fn a_certificate_that_fails_verification_is_dropped_not_fatal() {
+    let mut game = common::lost_game();
+    game.resign().unwrap();
+    let first = Move::new(14, 14).unwrap();
+    let second = Move::new(13, 13).unwrap();
+    game.add_refutation(first, common::refutation(&game, 1, first))
+        .unwrap();
+    game.add_refutation(second, common::refutation(&game, 2, second))
+        .unwrap();
+    let mut record = Record::from_game(&game).unwrap();
+
+    // Corrupt both certificates: a legal but wrong line move, and a point
+    // outside the board.
+    record.tree[11].certificate.as_mut().unwrap().line[0] = [5, 5];
+    record.tree[12].certificate.as_mut().unwrap().line[0] = [15, 0];
+
+    let loaded = Record::from_json(&record.to_json().unwrap())
+        .unwrap()
+        .into_game()
+        .expect("a damaged certificate does not fail the load");
+    assert_eq!(
+        loaded.branch_options(),
+        vec![first, second],
+        "the branches themselves survive"
+    );
+    assert!(
+        loaded.refutation_options().is_empty(),
+        "both certificates failed verification and were dropped"
+    );
+}
+
+#[test]
+fn a_v3_record_rejects_children_below_a_resigned_node() {
+    let mut game = common::lost_game();
+    game.resign().unwrap();
+    let candidate = Move::new(14, 14).unwrap();
+    game.add_refutation(candidate, common::refutation(&game, 1, candidate))
+        .unwrap();
+    let mut record = Record::from_game(&game).unwrap();
+    record.version = 3;
+    let parsed = Record::from_json(&record.to_json().unwrap()).unwrap();
+    assert!(
+        matches!(parsed.into_game(), Err(RecordError::InvalidTree(_))),
+        "v3 never wrote children below a resigned node"
+    );
+}
+
+#[test]
+fn a_v3_tree_record_without_certificates_loads_unchanged() {
+    let game = golden_game();
+    let mut record = Record::from_game(&game).unwrap();
+    record.version = 3;
+    let parsed = Record::from_json(&record.to_json().unwrap()).unwrap();
+    let loaded = parsed.into_game().unwrap();
+    assert_eq!(loaded, game);
+    assert!(loaded.refutation_options().is_empty());
 }
 
 #[test]

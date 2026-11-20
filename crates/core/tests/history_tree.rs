@@ -223,7 +223,7 @@ fn child_choices_survive_switching_to_an_outer_sibling() {
 fn a_branched_record_round_trips_the_whole_tree_and_branch_choices() {
     let game = branched_game();
     let record = Record::from_game(&game).unwrap();
-    assert_eq!(record.version, 3);
+    assert_eq!(record.version, 4);
     let text = record.to_json().unwrap();
     let loaded = Record::from_json(&text).unwrap().into_game().unwrap();
 
@@ -266,7 +266,7 @@ fn an_old_linear_file_loads_as_a_degenerate_tree() {
     assert_eq!(loaded.cursor(), 4);
 
     let tree = Record::from_game(&loaded).unwrap();
-    assert_eq!(tree.version, 3);
+    assert_eq!(tree.version, 4);
     assert_eq!(tree.tree.len(), 5);
     for (index, node) in tree.tree.iter().enumerate() {
         assert_eq!(node.parent, index.checked_sub(1).map(|id| id as u32));

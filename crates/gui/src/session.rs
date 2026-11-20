@@ -433,9 +433,15 @@ impl Session {
     }
 
     /// Search once for each visible position while threat sequences are enabled.
+    ///
+    /// A refutation branch needs no search: its node already carries the
+    /// certified proof, so the toggle does not compete with it there.
     pub fn refresh_threat_sequences(&mut self) {
         if !self.threat_sequences {
             self.threat_cache = None;
+            return;
+        }
+        if self.refutation_at_cursor().is_some() {
             return;
         }
         let position = self.game.board_snapshot();
@@ -792,15 +798,23 @@ impl Session {
         }
         let result = match reply.result {
             Ok(decision) => {
-                let player::Decision { action, .. } = decision;
+                let player::Decision {
+                    action,
+                    resignation,
+                    ..
+                } = decision;
                 match action {
                     DecisionAction::Play(point) => self.commit_move(point),
                     DecisionAction::Resign(_) => self.game.resign().map(|()| {
+                        self.materialize_refutations(resignation);
                         self.revision += 1;
                         self.ai.invalidate();
                         self.knock = None;
                         self.hover = None;
                         self.title_stale = true;
+                        // The refutation branches are the point of interest:
+                        // show them in the Moves list.
+                        self.open_panel_section = PanelSection::Moves;
                         self.refresh_policy_rings();
                     }),
                 }
@@ -820,6 +834,49 @@ impl Session {
         self.invalidate_automation();
         self.take_ai_to_move();
         self.notice = Some(format!("AI error: {error}"));
+    }
+
+    /// Turn a resignation's evidence into history: every checked candidate
+    /// becomes a branch off the resigned node, carrying the certified opponent
+    /// VCF that refutes it. The cursor, the selected continuation and the
+    /// resignation outcome do not move. A human resignation carries no
+    /// evidence, and neither does an AI resignation without it: both behave
+    /// exactly as they always have.
+    fn materialize_refutations(&mut self, evidence: Option<player::ResignationEvidence>) {
+        let Some(evidence) = evidence else {
+            return;
+        };
+        for candidate in evidence.candidates {
+            let refutation = gomoku_core::Refutation {
+                ordinal: candidate.ordinal,
+                proof: candidate.proof,
+            };
+            // The concession check admitted only legal candidates with
+            // verified proofs; a candidate that does not fit the tree is
+            // skipped rather than failing the resignation.
+            let _ = self.game.add_refutation(candidate.mv, refutation);
+        }
+    }
+
+    /// The certificate refuting the move at the cursor, if the cursor sits on
+    /// a refutation branch of an AI resignation.
+    pub fn refutation_at_cursor(&self) -> Option<&gomoku_core::Refutation> {
+        self.game.refutation_at_cursor()
+    }
+
+    /// The certified line painted on the board as numbered half-size stones.
+    ///
+    /// Precedence: a refutation certificate owns its node. Entering a
+    /// refutation branch paints the certificate no matter how the threat
+    /// sequences toggle stands, and the live search is not run there (the
+    /// certificate already is the position's certified forced win), so no
+    /// toggle fights it and re-entering the node always restores it. Every
+    /// other position shows the live threat search exactly as before.
+    pub fn visible_proof(&self) -> Option<&engine::Proof> {
+        if let Some(refutation) = self.refutation_at_cursor() {
+            return Some(&refutation.proof);
+        }
+        self.threat_proof()
     }
 
     /// Fit the whole board into the viewport.
@@ -1843,6 +1900,147 @@ mod tests {
         assert_eq!(session.game().to_move(), Color::Black);
         assert_ne!(session.policy_rings, Some(vec![(visit_candidate, 1.0)]));
         assert_current_policy(&session);
+    }
+
+    /// Fabricated resignation evidence: the session consumes the evidence
+    /// without re-verifying it, so the proof lines need not be real.
+    fn evidence(
+        candidates: impl IntoIterator<Item = (u8, gomoku_core::Move)>,
+    ) -> Option<player::ResignationEvidence> {
+        Some(player::ResignationEvidence {
+            options: player::PlayerOptions::default(),
+            candidates: candidates
+                .into_iter()
+                .map(|(ordinal, mv)| player::RefutedCandidate {
+                    ordinal,
+                    mv,
+                    visits: 100 * u32::from(ordinal),
+                    prior: 0.5,
+                    probe_budget: engine::SearchBudget {
+                        max_nodes: 1_000,
+                        max_depth: 10,
+                    },
+                    proof: engine::Proof {
+                        winner: Color::White,
+                        line: vec![
+                            gomoku_core::point(9, 9).unwrap(),
+                            gomoku_core::point(10, 10).unwrap(),
+                            gomoku_core::point(11, 11).unwrap(),
+                        ],
+                    },
+                })
+                .collect(),
+        })
+    }
+
+    fn resign_reply(
+        request: &crate::ai::AiRequest,
+        evidence: Option<player::ResignationEvidence>,
+    ) -> crate::ai::AiReply {
+        request.reply(Ok(crate::ai::AiPlayerDecision {
+            action: DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                candidates: evidence
+                    .as_ref()
+                    .map_or(1, |evidence| evidence.candidates.len()),
+            }),
+            search: None,
+            own_proof: None,
+            guard: None,
+            resignation: evidence,
+        }))
+    }
+
+    #[test]
+    fn an_ai_resignation_materializes_refutation_branches() {
+        let mut session = Session::new(&Settings::default());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        let first = gomoku_core::point(7, 7).unwrap();
+        let second = gomoku_core::point(3, 3).unwrap();
+        assert!(
+            session.apply_ai_reply(resign_reply(&request, evidence([(1, first), (2, second)])))
+        );
+
+        // The resignation stands, the cursor does not move, and every checked
+        // candidate is a waiting branch at the resigned node.
+        assert_eq!(
+            session.game().outcome(),
+            Outcome::Won {
+                winner: Color::White,
+                method: WinMethod::Resignation
+            }
+        );
+        assert_eq!(session.game().cursor(), 0);
+        assert!(session.game().is_empty());
+        assert!(session.is_branch_point());
+        assert_eq!(session.branch_options(), vec![first, second]);
+        assert_eq!(
+            session.game().refutation_options(),
+            vec![(first, 1), (second, 2)]
+        );
+        assert!(session.refutation_at_cursor().is_none());
+
+        // Entering a branch shows its certificate; the result follows the
+        // selected branch.
+        session.select_branch(0);
+        let certificate = session
+            .refutation_at_cursor()
+            .expect("the branch carries its certificate");
+        assert_eq!(certificate.ordinal, 1);
+        assert_eq!(certificate.proof.winner, Color::White);
+        assert_eq!(certificate.proof.line.len(), 3);
+        assert_eq!(session.game().outcome(), Outcome::Ongoing);
+
+        // Playing onward inside the branch is ordinary play with no
+        // certificate, and re-entering the branch node restores it.
+        session.place_now(gomoku_core::point(5, 5).unwrap());
+        assert!(session.refutation_at_cursor().is_none());
+        session.seek(1);
+        assert!(session.refutation_at_cursor().is_some());
+    }
+
+    #[test]
+    fn undoing_an_ai_resignation_keeps_the_refutation_branches() {
+        let mut session = Session::new(&Settings::default());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        let first = gomoku_core::point(7, 7).unwrap();
+        let second = gomoku_core::point(3, 3).unwrap();
+        assert!(
+            session.apply_ai_reply(resign_reply(&request, evidence([(1, first), (2, second)])))
+        );
+
+        session.undo();
+
+        assert_eq!(session.game().outcome(), Outcome::Ongoing);
+        assert_eq!(
+            session.owner(Color::Black),
+            SeatOwner::Human,
+            "undoing the AI's resignation takes its seat"
+        );
+        assert_eq!(
+            session.branch_options(),
+            vec![first, second],
+            "the refutation branches remain as ordinary variations"
+        );
+        session.select_branch(1);
+        let certificate = session
+            .refutation_at_cursor()
+            .expect("the certificate survives the undone resignation");
+        assert_eq!(certificate.ordinal, 2);
+    }
+
+    #[test]
+    fn a_resignation_without_evidence_materializes_no_branches() {
+        let mut session = Session::new(&Settings::default());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        assert!(session.apply_ai_reply(resign_reply(&request, None)));
+
+        assert!(session.game().branch_options().is_empty());
+        assert!(!session.is_branch_point());
+        assert!(session.game().refutation_options().is_empty());
+        assert!(session.refutation_at_cursor().is_none());
     }
 
     fn vcf_session() -> Session {

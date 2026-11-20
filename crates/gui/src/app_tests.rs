@@ -1290,6 +1290,60 @@ fn visible_stones_add_small_alternating_proof_stones_only_when_enabled() {
 }
 
 #[test]
+fn refutation_certificate_stones_paint_at_half_size_without_the_threat_toggle() {
+    let mut session = Session::new(&Settings::default());
+    session.release_seat(gomoku_core::Color::Black);
+    let request = session.next_ai_request().unwrap();
+    let candidate = gomoku_core::point(7, 7).unwrap();
+    let line = [
+        gomoku_core::point(9, 9).unwrap(),
+        gomoku_core::point(10, 10).unwrap(),
+        gomoku_core::point(11, 11).unwrap(),
+    ];
+    session.apply_ai_reply(request.reply(Ok(player::Decision {
+        action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+            candidates: 1,
+        }),
+        search: None,
+        own_proof: None,
+        guard: None,
+        resignation: Some(player::ResignationEvidence {
+            options: player::PlayerOptions::default(),
+            candidates: vec![player::RefutedCandidate {
+                ordinal: 1,
+                mv: candidate,
+                visits: 100,
+                prior: 0.5,
+                probe_budget: engine::SearchBudget {
+                    max_nodes: 1_000,
+                    max_depth: 10,
+                },
+                proof: engine::Proof {
+                    winner: gomoku_core::Color::White,
+                    line: line.to_vec(),
+                },
+            }],
+        }),
+    })));
+    assert!(!session.threat_sequences);
+
+    session.select_branch(0);
+    let stones = visible_stone_instances(&session);
+    assert_eq!(stones.len(), 1 + line.len());
+    let expected = [
+        (candidate, SLATE, 1.0),
+        (line[0], SHELL, 0.5),
+        (line[1], SLATE, 0.5),
+        (line[2], SHELL, 0.5),
+    ];
+    for (stone, (point, material, scale)) in stones.iter().zip(expected) {
+        assert_eq!(stone.centre, [point.col() as f32, point.row() as f32]);
+        assert_eq!(stone.params[1], material.kind);
+        assert_eq!(stone.scale, scale);
+    }
+}
+
+#[test]
 fn the_activating_click_is_swallowed_but_the_next_one_lands() {
     use winit::event::ElementState::{Pressed, Released};
     let start = std::time::Instant::now();

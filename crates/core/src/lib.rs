@@ -29,14 +29,14 @@ pub use format::{
     CORPUS_PROBE_LIMIT, Confidence, Format, LoadError, OpenedThing, RecordKind, RecordMeta,
     RecordUnit, Registry,
 };
-pub use game::{Game, MetaData, Outcome, WinMethod};
+pub use game::{Game, MetaData, Outcome, Refutation, WinMethod};
 pub use index::{IndexEntry, index_directory};
 pub use notation::label;
 pub use psq::PsqFormat;
 pub use puzzle::{Puzzle, PuzzleError, load_puzzles};
 pub use record::{
-    BOARD_SIZE, FORMAT_MARKER, FORMAT_VERSION, NodeRecord, Players, Record, StoredColor,
-    StoredMethod, StoredOutcome,
+    BOARD_SIZE, CertificateRecord, FORMAT_MARKER, FORMAT_VERSION, NodeRecord, Players, Record,
+    StoredColor, StoredMethod, StoredOutcome,
 };
 pub use storage::{load, save, write_atomic};
 

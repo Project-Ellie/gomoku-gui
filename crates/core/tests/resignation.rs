@@ -4,6 +4,8 @@ mod common;
 
 use gomoku_core::{Color, Game, GameError, Outcome, Status, WinMethod, point};
 
+use common::{lost_game, refutation};
+
 fn played_game() -> Game {
     let mut game = Game::new();
     for col in 0..3 {
@@ -197,4 +199,111 @@ fn can_play_allows_branching_behind_a_board_win_or_draw() {
         game.live();
         assert!(!game.can_play());
     }
+}
+
+#[test]
+fn refutation_branches_materialize_without_moving_cursor_or_result() {
+    let mut game = lost_game();
+    game.resign().unwrap();
+    let resigned = game.clone();
+    let first = point(14, 14).unwrap();
+    let second = point(13, 13).unwrap();
+    let first_refutation = refutation(&game, 1, first);
+    let second_refutation = refutation(&game, 2, second);
+
+    game.add_refutation(first, first_refutation.clone())
+        .unwrap();
+    game.add_refutation(second, second_refutation).unwrap();
+
+    assert_eq!(game.cursor(), resigned.cursor(), "the cursor does not move");
+    assert_eq!(
+        game.moves(),
+        resigned.moves(),
+        "the selected line is unchanged"
+    );
+    assert_eq!(
+        game.outcome(),
+        resigned.outcome(),
+        "the result is unchanged"
+    );
+    assert!(!game.can_play(), "the resigned game still blocks placement");
+    assert_eq!(
+        game.refutation_at_cursor(),
+        None,
+        "the resigned node carries none"
+    );
+    assert_eq!(game.refutation_options(), vec![(first, 1), (second, 2)]);
+    assert!(game.is_branch_point());
+    assert_eq!(game.selected_branch(), None, "the branches wait unexplored");
+    assert!(!game.forward(), "no continuation is selected for redo");
+
+    // Entering a branch plays only the candidate stone and shows the
+    // certificate; the result follows the selected branch.
+    assert!(game.select_branch(0));
+    assert_eq!(game.cursor(), 11);
+    assert_eq!(game.last_move(), Some(first));
+    assert_eq!(game.stone_at(first), Some(Color::Black));
+    assert_eq!(game.refutation_at_cursor(), Some(&first_refutation));
+    assert_eq!(game.outcome(), Outcome::Ongoing);
+
+    // Playing onward inside the branch is ordinary play with no certificate.
+    game.play(point(12, 12).unwrap()).unwrap();
+    assert_eq!(
+        game.refutation_at_cursor(),
+        None,
+        "deeper moves are ordinary"
+    );
+
+    // Re-entering the branch node restores its certificate.
+    game.seek(11);
+    assert_eq!(game.refutation_at_cursor(), Some(&first_refutation));
+    game.seek(10);
+    assert_eq!(game.refutation_at_cursor(), None);
+    assert_eq!(game.refutation_options(), vec![(first, 1), (second, 2)]);
+}
+
+#[test]
+fn a_refutation_branch_reuses_an_existing_child() {
+    let mut game = lost_game();
+    let candidate = point(14, 14).unwrap();
+    game.resign().unwrap();
+    game.add_refutation(candidate, refutation(&game, 1, candidate))
+        .unwrap();
+    assert_eq!(game.branch_options(), vec![candidate]);
+
+    // Undoing the resignation keeps the branch as an ordinary variation.
+    assert!(game.undo());
+    assert_eq!(game.outcome(), Outcome::Ongoing);
+    assert_eq!(
+        game.branch_options(),
+        vec![candidate],
+        "the branch survived"
+    );
+    assert_eq!(game.refutation_options(), vec![(candidate, 1)]);
+
+    // A second resignation with the same candidate reuses the child.
+    game.resign().unwrap();
+    game.add_refutation(candidate, refutation(&game, 1, candidate))
+        .unwrap();
+    assert_eq!(game.branch_options(), vec![candidate], "no duplicate child");
+    assert_eq!(game.refutation_options(), vec![(candidate, 1)]);
+    assert_eq!(
+        gomoku_core::Record::from_game(&game).unwrap().tree.len(),
+        12,
+        "the tree gained exactly one node per candidate"
+    );
+}
+
+#[test]
+fn an_illegal_refutation_candidate_is_rejected_without_changing_the_game() {
+    let mut game = lost_game();
+    game.resign().unwrap();
+    let occupied = *game.moves().first().unwrap();
+    let certificate = refutation(&game, 1, point(14, 14).unwrap());
+    let before = game.clone();
+    assert_eq!(
+        game.add_refutation(occupied, certificate),
+        Err(GameError::Occupied)
+    );
+    assert_eq!(game, before);
 }

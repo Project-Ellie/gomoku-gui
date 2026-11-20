@@ -6,6 +6,8 @@
 
 use engine::{Color, Move};
 
+use crate::game::Refutation;
+
 /// One node in the move tree. Node zero is the root and has no move.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HistoryNode {
@@ -15,6 +17,9 @@ pub(crate) struct HistoryNode {
     pub(crate) current_child: Option<usize>,
     /// The side that resigned at this node, rather than the winner.
     pub(crate) resigned: Option<Color>,
+    /// The certified refutation of the move entering this node, when the
+    /// move was a checked candidate of an AI resignation at the parent.
+    pub(crate) certificate: Option<Refutation>,
 }
 
 /// A move tree plus the selected branch and review cursor.
@@ -35,6 +40,7 @@ impl History {
                 children: Vec::new(),
                 current_child: None,
                 resigned: None,
+                certificate: None,
             }],
             line: Vec::new(),
             moves: Vec::new(),
@@ -76,6 +82,10 @@ impl History {
 
     pub(crate) fn resigned_at_tip(&self) -> Option<Color> {
         self.nodes[self.tip_node()].resigned
+    }
+
+    pub(crate) fn resigned_at_cursor(&self) -> Option<Color> {
+        self.nodes[self.current_node()].resigned
     }
 
     pub(crate) fn clear_resignation(&mut self) -> bool {
@@ -150,6 +160,61 @@ impl History {
         Some(point)
     }
 
+    /// Reuse or append a child of the current node carrying a refutation
+    /// certificate. Neither the cursor nor the selected continuation moves:
+    /// the child waits to be entered like any unexplored branch. Reusing an
+    /// existing child replaces its certificate: the latest resignation's
+    /// evidence wins.
+    pub(crate) fn ensure_certified_child(&mut self, point: Move, certificate: Refutation) {
+        let parent = self.current_node();
+        let existing = self.nodes[parent]
+            .children
+            .iter()
+            .copied()
+            .find(|&child| self.nodes[child].point == Some(point));
+        if let Some(child) = existing {
+            self.nodes[child].certificate = Some(certificate);
+            return;
+        }
+        let id = self.nodes.len();
+        self.nodes.push(HistoryNode {
+            parent: Some(parent),
+            point: Some(point),
+            children: Vec::new(),
+            current_child: None,
+            resigned: None,
+            certificate: Some(certificate),
+        });
+        self.nodes[parent].children.push(id);
+    }
+
+    /// The certificate at the cursor node, if its incoming move was refuted.
+    pub(crate) fn certificate_at_cursor(&self) -> Option<&Refutation> {
+        self.nodes[self.current_node()].certificate.as_ref()
+    }
+
+    /// The certified refutations among the current node's children, as
+    /// candidate moves and their one-based ranks, in creation order.
+    pub(crate) fn certified_children(&self) -> Vec<(Move, u8)> {
+        self.nodes[self.current_node()]
+            .children
+            .iter()
+            .filter_map(|&child| {
+                let node = &self.nodes[child];
+                let certificate = node.certificate.as_ref()?;
+                Some((node.point?, certificate.ordinal))
+            })
+            .collect()
+    }
+
+    pub(crate) fn restore_certificate(&mut self, node: usize, certificate: Refutation) -> bool {
+        if node >= self.nodes.len() {
+            return false;
+        }
+        self.nodes[node].certificate = Some(certificate);
+        true
+    }
+
     /// Follow an identical child or append a sibling, without deleting nodes.
     pub(crate) fn play(&mut self, point: Move) {
         let parent = self.current_node();
@@ -166,6 +231,7 @@ impl History {
                 children: Vec::new(),
                 current_child: None,
                 resigned: None,
+                certificate: None,
             });
             self.nodes[parent].children.push(id);
             id
@@ -271,6 +337,7 @@ impl History {
             children: Vec::new(),
             current_child: None,
             resigned: None,
+            certificate: None,
         });
         self.nodes[parent].children.push(id);
         Some(id)

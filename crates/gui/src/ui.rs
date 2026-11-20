@@ -5,7 +5,7 @@
 //! they stay attached to the board at any zoom.
 
 use egui::{Align2, Color32, FontId, Frame, RichText, Stroke, Vec2};
-use gomoku_core::{Color, Outcome, WinMethod, label};
+use gomoku_core::{Color, Game, Outcome, WinMethod, label};
 
 use crate::ai::SeatOwner;
 use crate::render::WOOD;
@@ -300,7 +300,7 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
     // A concession is the one result the board itself cannot show, so it gets
     // the loudest surface there is: a persistent red banner across the top of
     // the board. It takes no space in any other state of the game.
-    if let Some(line) = resignation_banner(session.game().outcome()) {
+    if let Some(line) = resignation_banner(session.game()) {
         egui::Panel::top("resignation")
             .frame(Frame::NONE.fill(BANNER).inner_margin(8.0))
             .show(ui, |ui| {
@@ -482,21 +482,23 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
 ///
 /// The text is the same one the status line and the title use. It does not
 /// carry the review position: a resignation belongs to the game, not to the
-/// move under the cursor, so the banner stays while the game is reviewed.
-fn resignation_banner(outcome: Outcome) -> Option<String> {
-    if let Outcome::Won {
-        winner,
-        method: WinMethod::Resignation,
-    } = outcome
-    {
-        let (resigned, wins) = match winner {
-            Color::Black => ("White", "Black"),
-            Color::White => ("Black", "White"),
-        };
-        Some(format!("{resigned} resigned — {wins} wins"))
-    } else {
-        None
-    }
+/// move under the cursor, so the banner stays while the game is reviewed. The
+/// resigned node itself is annotated too: while a refutation branch below it
+/// is selected the result follows the branch, but the concession marker stays
+/// where the concession happened.
+fn resignation_banner(game: &Game) -> Option<String> {
+    let resigned = match game.outcome() {
+        Outcome::Won {
+            winner,
+            method: WinMethod::Resignation,
+        } => Some(winner.other()),
+        _ => game.resigned_at_cursor(),
+    }?;
+    let (resigned, wins) = match resigned {
+        Color::White => ("White", "Black"),
+        Color::Black => ("Black", "White"),
+    };
+    Some(format!("{resigned} resigned — {wins} wins"))
 }
 
 /// The line of text that says what is happening.
@@ -510,7 +512,22 @@ fn status_line(session: &Session) -> String {
     } else {
         String::new()
     };
-    match session.game().outcome() {
+    // The caption naming the refutation certificate painted at the cursor.
+    let refutation = session
+        .refutation_at_cursor()
+        .map(|certificate| {
+            let candidate = session
+                .game()
+                .last_move()
+                .expect("a certificate sits on the move that entered the node");
+            format!(
+                " — refutation of {} (candidate {})",
+                label(candidate),
+                certificate.ordinal
+            )
+        })
+        .unwrap_or_default();
+    let line = match session.game().outcome() {
         Outcome::Ongoing => {
             let side = if session.game().to_move() == Color::Black {
                 "Black"
@@ -520,7 +537,7 @@ fn status_line(session: &Session) -> String {
             if session.owner(session.game().to_move()) == SeatOwner::Ai
                 && !session.game().is_rewound()
             {
-                return format!("{side} · Thinking…");
+                return format!("{side} · Thinking…{refutation}");
             }
             let notice = session
                 .notice
@@ -551,7 +568,8 @@ fn status_line(session: &Session) -> String {
             }
         }
         Outcome::Draw => format!("A draw{review}"),
-    }
+    };
+    format!("{line}{refutation}")
 }
 
 /// Seat intent is separate from editable player metadata. Only actual widget
@@ -676,9 +694,20 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
         ui.label(RichText::new(format!("Live result: {}", status_line(session))).color(PANEL_INK));
     }
     let cursor = session.game().cursor();
-    let branch_options = session.is_branch_point().then(|| session.branch_options());
+    let children = session.branch_options();
+    let at_tip = cursor == session.game().len();
+    // Mid-line, child choices are listed only at a branch point: a single
+    // child is the next row of the record. At the tip there is no next row,
+    // so even a single child is listed — that is how a resignation's
+    // refutation branches are visible the moment the AI concedes.
+    let list_children = if at_tip {
+        !children.is_empty()
+    } else {
+        children.len() > 1
+    };
     let selected_branch = session.selected_branch();
     let branch_colour = session.game().to_move();
+    let refutations = session.game().refutation_options();
     let mut seek = None;
     let mut select_branch = None;
     // The whole game, so that the moves ahead of the cursor stay visible. They
@@ -691,48 +720,24 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
         .show(ui, |ui| {
             for (index, (point, colour)) in record.into_iter().enumerate() {
                 let number = index + 1;
-                if index == cursor {
-                    if let Some(options) = &branch_options {
-                        // Replace the selected line's next row with all child choices,
-                        // rather than drawing its selected child a second time.
-                        for (branch, point) in options.iter().enumerate() {
-                            let ink = RichText::new(format!("{number:>4}"))
-                                .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
-                                .color(MUTED);
-                            let place = RichText::new(format!("[{branch}] {}", label(*point)))
-                                .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
-                                .color(PANEL_INK);
-                            // The whole row is the click target, including its text.
-                            let row = if selected_branch == Some(branch) {
-                                Frame::NONE
-                                    .fill(PANEL_CURRENT)
-                                    .inner_margin(2.0)
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.add(
-                                                egui::Label::new(ink.strong()).selectable(false),
-                                            );
-                                            stone_dot(ui, branch_colour, MOVE_LIST_STONE_DOT_SIZE);
-                                            ui.add(
-                                                egui::Label::new(place.strong()).selectable(false),
-                                            );
-                                        });
-                                    })
-                                    .response
-                            } else {
-                                ui.horizontal(|ui| {
-                                    ui.add(egui::Label::new(ink).selectable(false));
-                                    stone_dot(ui, branch_colour, MOVE_LIST_STONE_DOT_SIZE);
-                                    ui.add(egui::Label::new(place).selectable(false));
-                                })
-                                .response
-                            };
-                            if row.interact(egui::Sense::click()).clicked() {
-                                select_branch = Some(branch);
-                            }
+                if index == cursor && list_children && !at_tip {
+                    // Replace the selected line's next row with all child choices,
+                    // rather than drawing its selected child a second time.
+                    for (branch, point) in children.iter().enumerate() {
+                        let refuted = refutations.iter().any(|(candidate, _)| candidate == point);
+                        if branch_row(
+                            ui,
+                            number,
+                            branch,
+                            *point,
+                            branch_colour,
+                            selected_branch == Some(branch),
+                            refuted,
+                        ) {
+                            select_branch = Some(branch);
                         }
-                        continue;
                     }
+                    continue;
                 }
                 let here = number == cursor;
                 let ink = if number > cursor {
@@ -778,6 +783,22 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                     }
                 }
             }
+            if at_tip {
+                for (branch, point) in children.iter().enumerate() {
+                    let refuted = refutations.iter().any(|(candidate, _)| candidate == point);
+                    if branch_row(
+                        ui,
+                        cursor + 1,
+                        branch,
+                        *point,
+                        branch_colour,
+                        selected_branch == Some(branch),
+                        refuted,
+                    ) {
+                        select_branch = Some(branch);
+                    }
+                }
+            }
         });
     if let Some(branch) = select_branch {
         session.select_branch(branch);
@@ -785,6 +806,49 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
     if let Some(number) = seek {
         session.seek(number);
     }
+}
+
+/// One branch-choice row in the move list: the child index, its move, and a
+/// "refuted" tag when the child carries a resignation's refutation
+/// certificate. Returns true when the row was clicked.
+fn branch_row(
+    ui: &mut egui::Ui,
+    number: usize,
+    branch: usize,
+    point: gomoku_core::Move,
+    colour: Color,
+    selected: bool,
+    refuted: bool,
+) -> bool {
+    let ink = RichText::new(format!("{number:>4}"))
+        .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
+        .color(MUTED);
+    let suffix = if refuted { " (refuted)" } else { "" };
+    let place = RichText::new(format!("[{branch}] {}{suffix}", label(point)))
+        .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
+        .color(PANEL_INK);
+    // The whole row is the click target, including its text.
+    let row = if selected {
+        Frame::NONE
+            .fill(PANEL_CURRENT)
+            .inner_margin(2.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(ink.strong()).selectable(false));
+                    stone_dot(ui, colour, MOVE_LIST_STONE_DOT_SIZE);
+                    ui.add(egui::Label::new(place.strong()).selectable(false));
+                });
+            })
+            .response
+    } else {
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(ink).selectable(false));
+            stone_dot(ui, colour, MOVE_LIST_STONE_DOT_SIZE);
+            ui.add(egui::Label::new(place).selectable(false));
+        })
+        .response
+    };
+    row.interact(egui::Sense::click()).clicked()
 }
 
 /// A filled circle in the colour of a stone.
@@ -903,7 +967,7 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
             // A crossing that carries a proof stone keeps it unobstructed:
             // the stones read as standing on top of the policy overlay.
             let proof_points: &[engine::Move] = session
-                .threat_proof()
+                .visible_proof()
                 .map(|proof| proof.line.as_slice())
                 .unwrap_or(&[]);
             for (point, value) in rings {
@@ -928,7 +992,9 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
 
     // The wgpu pass draws the half-size proof stones; egui adds only their
     // numbers, in the opposite colour to each stone, above the policy rings.
-    if let Some(proof) = session.threat_proof() {
+    // The visible proof is a refutation certificate at a refutation branch,
+    // otherwise the live threat search.
+    if let Some(proof) = session.visible_proof() {
         // One size for one and two digits alike: deep proofs number past 9,
         // so the glyphs are sized for a pair from the start (two digits span
         // about half the half-size stone). The clamp mirrors the move
@@ -3352,6 +3418,164 @@ mod tests {
         session
     }
 
+    /// An AI resignation with fabricated evidence for two candidates, so the
+    /// resigned node has two refutation branches. The session consumes the
+    /// evidence without re-verifying it, so the proof lines need not be real.
+    fn resigned_session_with_evidence() -> Session {
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.release_seat(Color::Black);
+        let request = session.next_ai_request().unwrap();
+        let candidates = [
+            gomoku_core::point(7, 7).unwrap(),
+            gomoku_core::point(3, 3).unwrap(),
+        ];
+        session.apply_ai_reply(
+            request.reply(Ok(player::Decision {
+                action: player::DecisionAction::Resign(player::ResignReason::VerifiedOpponentVcf {
+                    candidates: candidates.len(),
+                }),
+                search: None,
+                own_proof: None,
+                guard: None,
+                resignation: Some(player::ResignationEvidence {
+                    options: player::PlayerOptions::default(),
+                    candidates: candidates
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, mv)| player::RefutedCandidate {
+                            ordinal: index as u8 + 1,
+                            mv,
+                            visits: 100,
+                            prior: 0.5,
+                            probe_budget: engine::SearchBudget {
+                                max_nodes: 1_000,
+                                max_depth: 10,
+                            },
+                            proof: engine::Proof {
+                                winner: Color::White,
+                                line: vec![
+                                    gomoku_core::point(9, 9).unwrap(),
+                                    gomoku_core::point(10, 10).unwrap(),
+                                    gomoku_core::point(11, 11).unwrap(),
+                                ],
+                            },
+                        })
+                        .collect(),
+                }),
+            })),
+        );
+        session
+    }
+
+    #[test]
+    fn a_resignation_lists_refutation_branches_whose_certificates_paint() {
+        let context = egui::Context::default();
+        let mut session = resigned_session_with_evidence();
+
+        // Right after the resignation the banner stays and the move list
+        // shows the refuted candidates at the resigned tip, tagged.
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(banner(&output).is_some(), "the resignation banner stays");
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        output.textures_delta.clear();
+        for (branch, point) in [
+            (0, gomoku_core::point(7, 7).unwrap()),
+            (1, gomoku_core::point(3, 3).unwrap()),
+        ] {
+            let row = format!("[{branch}] {} (refuted)", label(point));
+            assert!(
+                texts.iter().any(|text| text == &row),
+                "the move list shows the refuted candidate: {row}"
+            );
+        }
+
+        // Entering a branch paints the certificate as numbered proof stones
+        // and names it in the status line, with no threat-sequences toggle.
+        assert!(!session.threat_sequences);
+        session.select_branch(0);
+        assert_eq!(
+            status_line(&session),
+            "White to play — move 2 — refutation of H8 (candidate 1)"
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        for number in ["1", "2", "3"] {
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == number)),
+                "certificate move {number} is painted"
+            );
+        }
+        assert!(
+            banner(&output).is_none(),
+            "inside the branch the result follows the branch"
+        );
+        output.textures_delta.clear();
+
+        // Back at the resigned node the concession annotation returns.
+        session.rewind();
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(
+            banner(&output).is_some(),
+            "the resigned node keeps its concession annotation"
+        );
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_refutation_certificate_owns_its_node_against_the_threat_toggle() {
+        let context = egui::Context::default();
+        let mut session = resigned_session_with_evidence();
+        session.select_branch(0);
+        let certificate = session.refutation_at_cursor().unwrap().proof.clone();
+
+        // The toggle does not run a competing search at a certified node.
+        session.threat_sequences = true;
+        session.refresh_threat_sequences();
+        assert_eq!(
+            session.visible_proof(),
+            Some(&certificate),
+            "the certificate paints whatever the toggle says"
+        );
+        assert!(
+            session.threat_proof().is_none(),
+            "no live search ran at the certified node"
+        );
+
+        // Even a live proof cached for the position does not displace it.
+        cache_threat_proof(
+            &mut session,
+            engine::Proof {
+                winner: Color::White,
+                line: vec![gomoku_core::point(5, 5).unwrap()],
+            },
+        );
+        assert_eq!(session.visible_proof(), Some(&certificate));
+
+        // Leaving and re-entering the node restores the certificate.
+        session.rewind();
+        assert!(
+            session.visible_proof().is_none(),
+            "the resigned node has neither certificate nor live proof"
+        );
+        session.forward();
+        assert_eq!(
+            session.visible_proof(),
+            Some(&certificate),
+            "re-entering restores the certificate"
+        );
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "3")));
+        output.textures_delta.clear();
+    }
+
     /// The banner as drawn: the red rect and the text it carries, if any.
     fn banner(output: &egui::FullOutput) -> Option<(egui::Rect, egui::epaint::TextShape)> {
         let fill = output.shapes.iter().find_map(|shape| match &shape.shape {
@@ -3426,15 +3650,22 @@ mod tests {
     #[test]
     fn no_banner_for_ongoing_five_or_draw() {
         // The gate itself: only a resignation earns the banner.
-        assert_eq!(resignation_banner(Outcome::Ongoing), None);
-        assert_eq!(resignation_banner(Outcome::Draw), None);
-        assert_eq!(
-            resignation_banner(Outcome::Won {
-                winner: Color::Black,
-                method: WinMethod::Five
-            }),
-            None
-        );
+        assert_eq!(resignation_banner(&Game::new()), None);
+        let mut five = Game::new();
+        for column in 0..5_u8 {
+            five.play(gomoku_core::point(7, column).unwrap()).unwrap();
+            if column < 4 {
+                five.play(gomoku_core::point(0, column).unwrap()).unwrap();
+            }
+        }
+        assert!(matches!(
+            five.outcome(),
+            Outcome::Won {
+                method: WinMethod::Five,
+                ..
+            }
+        ));
+        assert_eq!(resignation_banner(&five), None);
 
         // And through the interface, for the states a test can reach by play:
         // no banner, and no blank space where it would be.

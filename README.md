@@ -119,6 +119,16 @@ are remembered.
 **Resignation is ON by default.** It is the baseline's heuristic concession,
 not a proof. A resignation records the result, not a stone, move number,
 winning line, or stone sound. The live result stays visible during review.
+An AI resignation arrives with its evidence: every candidate move the
+concession check weighed becomes a branch at the resigned node, tagged
+“(refuted)” in the Moves list and painted as a branch alternative on the
+board. Entering a branch plays the candidate stone and paints the certified
+opponent VCF that refutes it as numbered half-size stones; the status line
+names it (“refutation of H8 (candidate 1)”). The certificate owns its node —
+the threat-sequences toggle does not compete with it there — and re-entering
+the branch always restores it. Playing onward inside a branch is ordinary
+play, and undoing the resignation takes the AI's seat while keeping the
+branches as ordinary variations.
 
 Undo and history navigation pause AI. Return to the latest position, then
 use **Resume AI** when the current color is AI. Releasing the current seat also
@@ -145,8 +155,12 @@ was written, and it points at the detail in each architecture document.
 ## Records
 
 A game is saved as a versioned JSON document with the marker
-`"format": "gomoku-gui/record"`. New saves write **version 2**, including
-resignation results; the loader reads **versions 1 and 2**. The schema is in
+`"format": "gomoku-gui/record"`. New saves write **version 4**: the move tree
+including resignation results and, for AI resignations, the refutation
+certificates of the checked candidate moves. The loader reads **versions 1
+through 4**; older records simply have no branches or certificates. Every
+stored certificate is re-verified against the engine on load, and one that
+fails verification is dropped rather than failing the load. The schema is in
 [docs/architecture/03_PERSISTENCE.md](docs/architecture/03_PERSISTENCE.md).
 
 SGF FF[4] with `GM[4]` is the official Gomoku and Renju record format. It was

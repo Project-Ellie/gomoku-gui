@@ -1107,11 +1107,13 @@ pub fn stone_instances(game: &gomoku_core::Game) -> Vec<StoneInstance> {
 /// The played stones plus half-size stones for the visible certified proof.
 ///
 /// The proof alternates sides from its winner, just as the numbered overlay
-/// does. Keeping this construction pure makes the GPU input testable without
-/// a graphics adapter.
+/// does. The visible proof is the cursor node's refutation certificate when
+/// there is one, otherwise the live threat search (see
+/// [`Session::visible_proof`]). Keeping this construction pure makes the GPU
+/// input testable without a graphics adapter.
 pub fn visible_stone_instances(session: &Session) -> Vec<StoneInstance> {
     let mut stones = stone_instances(session.game());
-    if let Some(proof) = session.threat_proof() {
+    if let Some(proof) = session.visible_proof() {
         let first_proof_index = stones.len();
         stones.extend(proof.line.iter().enumerate().map(|(index, point)| {
             let side = if index % 2 == 0 {

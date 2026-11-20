@@ -1,4 +1,11 @@
-//! The game record: writes JSON schema v3, reads linear v1/v2 and tree v3.
+//! The game record: writes JSON schema v4, reads linear v1/v2 and tree v3/v4.
+//!
+//! Version 4 adds refutation certificates to tree nodes and relaxes two v3
+//! invariants for them: a resigned node may have children (the refutation
+//! branches of an AI resignation), and a node with children may have no
+//! selected continuation (the branches wait unexplored). Every certificate is
+//! re-verified against the engine on load; one that fails verification is
+//! dropped, never fatal.
 
 use engine::{Color, Move};
 use serde::{Deserialize, Serialize};
@@ -9,8 +16,8 @@ use crate::game::{Game, Outcome, WinMethod};
 
 /// The value of the `format` field of a record.
 pub const FORMAT_MARKER: &str = "gomoku-gui/record";
-/// The record schema version this build writes. It also reads v1 and v2.
-pub const FORMAT_VERSION: u32 = 3;
+/// The record schema version this build writes. It also reads v1, v2 and v3.
+pub const FORMAT_VERSION: u32 = 4;
 /// The board size this application plays.
 pub const BOARD_SIZE: u32 = 15;
 /// The rule set this application plays.
@@ -118,18 +125,36 @@ impl From<StoredOutcome> for Outcome {
     }
 }
 
-/// One node in a version 3 move tree. Node zero is the empty-board root.
+/// A verified proof that a node's incoming move loses by force, stored in a
+/// version 4 tree. The proof is re-verified on load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateRecord {
+    /// One-based rank of the refuted candidate in the resignation check.
+    pub ordinal: u8,
+    /// The side with the certified forced win: the opponent of the side that
+    /// played the node's move.
+    pub winner: StoredColor,
+    /// The forcing line as `[column, row]` pairs, starting with the winner.
+    pub line: Vec<[u8; 2]>,
+}
+
+/// One node in a version 3 or 4 move tree. Node zero is the empty-board root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRecord {
     /// Parent node ID, or null for the root.
     pub parent: Option<u32>,
     /// The move as `[column, row]`, or null for the root.
     pub point: Option<[u8; 2]>,
-    /// The child followed by redo, or null for a leaf.
+    /// The child followed by redo, or null for a leaf. Version 4 also allows
+    /// null on a node with children: its refutation branches wait unexplored.
     pub current: Option<u32>,
     /// The side that resigned at this node, if this branch ended by resignation.
+    /// In version 4 the node may still have children: the refutation branches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resigned: Option<StoredColor>,
+    /// The certificate refuting the move entering this node, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<CertificateRecord>,
 }
 
 /// A game record as it is stored on disk.
@@ -137,7 +162,7 @@ pub struct NodeRecord {
 pub struct Record {
     /// The format marker. Always [`FORMAT_MARKER`].
     pub format: String,
-    /// The schema version: 1, 2 or 3 on read; [`FORMAT_VERSION`] for new records.
+    /// The schema version: 1, 2, 3 or 4 on read; [`FORMAT_VERSION`] for new records.
     pub version: u32,
     /// The board size. Always [`BOARD_SIZE`].
     pub size: u32,
@@ -160,7 +185,7 @@ pub struct Record {
 }
 
 impl Record {
-    /// Build a v3 record of the full tree and current branch, even during review.
+    /// Build a v4 record of the full tree and current branch, even during review.
     ///
     /// # Errors
     /// `RecordError::FromPosition` if the game was loaded from a puzzle
@@ -196,6 +221,19 @@ impl Record {
                     point: node.point.map(|mv| [mv.col(), mv.row()]),
                     current: node.current_child.map(|id| id as u32),
                     resigned: node.resigned.map(StoredColor::from),
+                    certificate: node
+                        .certificate
+                        .as_ref()
+                        .map(|certificate| CertificateRecord {
+                            ordinal: certificate.ordinal,
+                            winner: certificate.proof.winner.into(),
+                            line: certificate
+                                .proof
+                                .line
+                                .iter()
+                                .map(|mv| [mv.col(), mv.row()])
+                                .collect(),
+                        }),
                 })
                 .collect(),
         })
@@ -228,7 +266,7 @@ impl Record {
     /// A `RecordError` when the header, moves, tree links or result are invalid.
     pub fn into_game(self) -> Result<Game, RecordError> {
         self.check_header()?;
-        if self.version == 3 {
+        if self.version >= 3 {
             self.into_tree_game()
         } else {
             self.into_linear_game()
@@ -302,7 +340,15 @@ impl Record {
         for (index, node) in self.tree.iter().enumerate() {
             let child_count = game.tree_nodes()[index].children.len();
             let current = node.current.map(|id| id as usize);
-            if (child_count == 0) != current.is_none()
+            // A leaf has nothing to select in any version. Version 3 writes a
+            // selected child for every node with children; version 4 also
+            // allows unexplored children below a resigned node.
+            let selection_mismatch = if child_count == 0 {
+                current.is_some()
+            } else {
+                self.version < 4 && current.is_none()
+            };
+            if selection_mismatch
                 || current.is_some_and(|child| {
                     self.tree
                         .get(child)
@@ -322,7 +368,10 @@ impl Record {
                 let board = game.board_at_node(index).ok_or_else(|| {
                     RecordError::InvalidTree(format!("node {index} has no legal board"))
                 })?;
-                if child_count != 0
+                // Version 4 allows children below a resigned node: they are
+                // the refutation branches of the resignation. Version 3 never
+                // wrote them, so a v3 file claiming both is rejected.
+                if (self.version < 4 && child_count != 0)
                     || board.status() != engine::Status::Ongoing
                     || Color::from(resigned) != board.to_move()
                 {
@@ -333,6 +382,39 @@ impl Record {
                         "node {index} has an invalid resignation"
                     )));
                 }
+            }
+        }
+        // Certificates are evidence, not truth: each stored proof is
+        // re-verified against the engine, and one that fails is dropped
+        // rather than failing the load. A certificate on the root refutes no
+        // move and is dropped the same way.
+        for (index, node) in self.tree.iter().enumerate().skip(1) {
+            let Some(certificate) = &node.certificate else {
+                continue;
+            };
+            let Some(board) = game.board_at_node(index) else {
+                continue;
+            };
+            let line: Option<Vec<Move>> = certificate
+                .line
+                .iter()
+                .map(|&[col, row]| Move::new(row, col))
+                .collect();
+            let Some(line) = line else {
+                continue;
+            };
+            let proof = engine::Proof {
+                winner: certificate.winner.into(),
+                line,
+            };
+            if engine::verify_line(&board, &proof) {
+                game.restore_certificate(
+                    index,
+                    crate::game::Refutation {
+                        ordinal: certificate.ordinal,
+                        proof,
+                    },
+                );
             }
         }
         if !game.finish_restore() {
@@ -354,7 +436,7 @@ impl Record {
                 found: self.format.clone(),
             });
         }
-        if !matches!(self.version, 1..=3) {
+        if !matches!(self.version, 1..=4) {
             return Err(RecordError::UnsupportedVersion(self.version));
         }
         if self.size != BOARD_SIZE {
@@ -492,7 +574,7 @@ mod tests {
         record.version = FORMAT_VERSION + 1;
         assert!(matches!(
             record.into_game(),
-            Err(RecordError::UnsupportedVersion(4))
+            Err(RecordError::UnsupportedVersion(5))
         ));
     }
 

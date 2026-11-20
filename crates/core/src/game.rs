@@ -36,6 +36,21 @@ pub enum Outcome {
     Draw,
 }
 
+/// A certified proof that the move entering a history node loses by force.
+///
+/// When the AI resigns, every candidate move it checked becomes a branch off
+/// the resigned node, and the branch node carries the verified opponent proof
+/// that refutes the candidate. The certificate belongs to the node, not to
+/// the resignation: undoing the resignation keeps the branches and their
+/// certificates as ordinary historical variations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refutation {
+    /// One-based rank of the candidate in the resignation check.
+    pub ordinal: u8,
+    /// The opponent's certified forced win from the position after the move.
+    pub proof: engine::Proof,
+}
+
 /// Game data that is not a move.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetaData {
@@ -282,6 +297,45 @@ impl Game {
         Ok(())
     }
 
+    /// The side that resigned at the cursor node, if the view is on a
+    /// concession. A resigned node keeps its marker when its refutation
+    /// branches are selected: the result follows the branch, the annotation
+    /// stays where the concession happened.
+    pub fn resigned_at_cursor(&self) -> Option<Color> {
+        self.history.resigned_at_cursor()
+    }
+
+    /// Attach a refutation certificate to the branch for `point` at the
+    /// cursor, reusing an existing child or appending a new one. The cursor,
+    /// the selected continuation and the outcome do not move: the branch
+    /// waits at the resigned node like any unexplored variation.
+    ///
+    /// # Errors
+    /// `GameError::Occupied` if the point holds a stone.
+    /// `GameError::GameOver` if the board at the cursor is finished.
+    pub fn add_refutation(&mut self, point: Move, refutation: Refutation) -> Result<(), GameError> {
+        if self.stone_at(point).is_some() {
+            return Err(GameError::Occupied);
+        }
+        if self.status() != Status::Ongoing {
+            return Err(GameError::GameOver);
+        }
+        self.history.ensure_certified_child(point, refutation);
+        Ok(())
+    }
+
+    /// The certificate refuting the move that entered the cursor node, if
+    /// the cursor sits on a refutation branch.
+    pub fn refutation_at_cursor(&self) -> Option<&Refutation> {
+        self.history.certificate_at_cursor()
+    }
+
+    /// The refutation branches at the cursor: candidate moves and their
+    /// one-based ranks, in creation order.
+    pub fn refutation_options(&self) -> Vec<(Move, u8)> {
+        self.history.certified_children()
+    }
+
     /// Play a stone at `point`.
     ///
     /// At a reviewed position this follows an identical existing child or
@@ -444,6 +498,10 @@ impl Game {
 
     pub(crate) fn restore_resignation(&mut self, node: usize, side: Color) -> bool {
         self.history.restore_resignation(node, side)
+    }
+
+    pub(crate) fn restore_certificate(&mut self, node: usize, certificate: Refutation) -> bool {
+        self.history.restore_certificate(node, certificate)
     }
 
     pub(crate) fn finish_restore(&mut self) -> bool {
