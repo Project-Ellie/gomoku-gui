@@ -13,3 +13,6 @@ proptest-regressions/
 # agent session state
 .pi/
 /.superpowers
+
+# IDE
+.idea/

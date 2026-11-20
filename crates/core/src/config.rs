@@ -103,6 +103,25 @@ impl Default for OverlaySettings {
     }
 }
 
+/// The threat-sequence search behind the threat-sequences overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThreatSettings {
+    /// The deepest line the proof search may certify, in plies. Deeper
+    /// proofs take longer; the node budget still bounds the search.
+    pub max_depth: u8,
+}
+
+/// The shallowest and deepest threat searches a hand-edited file may ask for.
+const MIN_THREAT_DEPTH: u8 = 1;
+const MAX_THREAT_DEPTH: u8 = 64;
+
+impl Default for ThreatSettings {
+    fn default() -> ThreatSettings {
+        ThreatSettings { max_depth: 9 }
+    }
+}
+
 /// The right panel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -263,6 +282,8 @@ pub struct Settings {
     pub stones: StoneSettings,
     /// The sound settings.
     pub audio: AudioSettings,
+    /// The threat-sequence search.
+    pub threat: ThreatSettings,
     /// The two seats and their AI settings.
     pub players: PlayersSettings,
     /// The file settings.
@@ -286,6 +307,11 @@ impl Settings {
             self.board.gain = BoardSettings::default().gain;
         }
         self.board.gain = self.board.gain.clamp(1.0, 6.0);
+
+        self.threat.max_depth = self
+            .threat
+            .max_depth
+            .clamp(MIN_THREAT_DEPTH, MAX_THREAT_DEPTH);
 
         for seat in [&mut self.players.black, &mut self.players.white] {
             seat.simulations = seat.simulations.clamp(1, 50_000);
@@ -406,6 +432,7 @@ mod tests {
         assert_eq!(settings.stones.set, "slate_shell");
         assert!(settings.audio.enabled);
         assert_eq!(settings.audio.volume, 0.7);
+        assert_eq!(settings.threat.max_depth, 9);
         assert!(settings.files.last_corpus_directory.is_none());
         assert!(settings.files.recent.is_empty());
         assert_eq!(settings.board.gain, 2.8);
@@ -468,6 +495,7 @@ mod tests {
                 enabled: false,
                 volume: 0.25,
             },
+            threat: ThreatSettings { max_depth: 19 },
             players: PlayersSettings {
                 black: SeatSettings {
                     ai: true,
@@ -507,6 +535,10 @@ mod tests {
         let loaded = load_settings(&path);
         assert_eq!(loaded.notice, None);
         assert_eq!(loaded.settings.audio.volume, 0.5);
+        assert_eq!(
+            loaded.settings.threat.max_depth, 9,
+            "the missing section keeps its default"
+        );
         assert!(
             loaded.settings.audio.enabled,
             "the missing field keeps its default"
@@ -552,6 +584,20 @@ mod tests {
         settings.audio.volume = -1.0;
         settings.sanitize();
         assert_eq!(settings.audio.volume, 0.0);
+    }
+
+    #[test]
+    fn sanitize_clamps_the_threat_depth() {
+        let mut settings = Settings {
+            threat: ThreatSettings { max_depth: 0 },
+            ..Settings::default()
+        };
+        settings.sanitize();
+        assert_eq!(settings.threat.max_depth, MIN_THREAT_DEPTH);
+
+        settings.threat.max_depth = u8::MAX;
+        settings.sanitize();
+        assert_eq!(settings.threat.max_depth, MAX_THREAT_DEPTH);
     }
 
     #[test]

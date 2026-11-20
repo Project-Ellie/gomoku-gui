@@ -50,10 +50,10 @@ pub enum PanelSection {
     Explorer,
 }
 
-const THREAT_SEARCH_BUDGET: engine::SearchBudget = engine::SearchBudget {
-    max_nodes: 100_000,
-    max_depth: 9,
-};
+/// The node cap of the threat search. The depth cap is not a constant: the
+/// settings carry it (`[threat] max_depth`), so a sitting proves as deep as
+/// the configured number of plies.
+const THREAT_SEARCH_MAX_NODES: u32 = 100_000;
 
 /// The pointer must be this close to a crossing's screen-space centre for the
 /// hover halo to appear. The distance is measured in logical pixels (points),
@@ -201,6 +201,8 @@ pub struct Session {
     pub policy_overlay: bool,
     /// Whether certified threat-sequence numbers are painted.
     pub threat_sequences: bool,
+    /// The deepest line the threat search may prove, from the settings.
+    pub threat_max_depth: u8,
     /// Whether branch alternatives are painted and selectable on the board.
     pub branch_alternatives: bool,
     /// The current position's threat search, computed at most once per position.
@@ -275,6 +277,7 @@ impl Session {
             knock: None,
             policy_overlay: settings.overlays.policy_overlay,
             threat_sequences: settings.overlays.threat_sequences,
+            threat_max_depth: settings.threat.max_depth,
             branch_alternatives: settings.overlays.branch_alternatives,
             threat_cache: None,
             initiative_override: false,
@@ -440,7 +443,11 @@ impl Session {
             return;
         }
         let side = position.to_move();
-        let proof = engine::prove_shortest_forced_win(&position, side, THREAT_SEARCH_BUDGET)
+        let budget = engine::SearchBudget {
+            max_nodes: THREAT_SEARCH_MAX_NODES,
+            max_depth: self.threat_max_depth,
+        };
+        let proof = engine::prove_shortest_forced_win(&position, side, budget)
             .filter(|proof| engine::verify_line(&position, proof));
         self.threat_cache = Some(ThreatSequenceCache { position, proof });
     }
@@ -1440,6 +1447,9 @@ impl Session {
                     PanelSection::Policy => "policy".to_string(),
                     PanelSection::Explorer => "explorer".to_string(),
                 },
+            },
+            threat: gomoku_core::ThreatSettings {
+                max_depth: self.threat_max_depth,
             },
             players: gomoku_core::PlayersSettings {
                 black: self.seat_settings(Color::Black),
