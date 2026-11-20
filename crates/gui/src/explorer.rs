@@ -6,9 +6,50 @@
 
 use egui::RichText;
 
-use crate::session::Session;
+use engine::Color;
+
+use crate::session::{SelfplayCorpus, Session};
 use crate::theme::{PANEL_CURRENT, PANEL_INK};
 use crate::ui::Requests;
+
+/// The manifest block above the record list: who played, how they
+/// explored, and how much of it there is — the corpus's identity card.
+fn draw_selfplay_manifest(ui: &mut egui::Ui, corpus: &SelfplayCorpus) {
+    let manifest = &corpus.manifest;
+    ui.label(RichText::new("Self-play corpus").color(PANEL_INK).strong());
+    for (side, color) in [("Black", Color::Black), ("White", Color::White)] {
+        ui.label(
+            RichText::new(format!("{side}: {}", corpus.seat_label(color)))
+                .color(PANEL_INK)
+                .small(),
+        );
+    }
+    let exploration = &manifest.pairing.exploration;
+    ui.label(
+        RichText::new(format!(
+            "Exploration: {} plies · τ {} · ε {} · α {}",
+            exploration.plies,
+            exploration.temperature,
+            exploration.noise_epsilon,
+            exploration.noise_alpha
+        ))
+        .color(PANEL_INK)
+        .small(),
+    );
+    let seeds = match (manifest.seeds.first(), manifest.seeds.last()) {
+        (Some(first), Some(last)) => format!(" · seeds {first}–{last}"),
+        _ => String::new(),
+    };
+    ui.label(
+        RichText::new(format!(
+            "{} games{seeds} · rust-ml {}",
+            manifest.game_count, manifest.workspace_version
+        ))
+        .color(PANEL_INK)
+        .small(),
+    );
+    ui.separator();
+}
 
 /// Draw the Explorer section and return any application requests.
 ///
@@ -17,6 +58,10 @@ pub fn draw(ui: &mut egui::Ui, session: &mut Session) -> Requests {
     let mut requests = Requests::default();
     if session.explorer().is_none() {
         return requests;
+    }
+
+    if let Some(corpus) = session.selfplay_corpus() {
+        draw_selfplay_manifest(ui, corpus);
     }
 
     ui.horizontal(|ui| {

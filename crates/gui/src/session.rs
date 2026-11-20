@@ -197,6 +197,29 @@ impl SelfplayGame {
     }
 }
 
+impl SelfplayCorpus {
+    /// One-line seat description for the manifest panel, e.g.
+    /// `net:first-corpus@0.1.0 · 400 sims`. Corpora without recorded
+    /// evaluator identities predate per-seat provenance and ran the
+    /// baseline on both seats.
+    pub fn seat_label(&self, color: Color) -> String {
+        let config = match color {
+            Color::Black => &self.manifest.pairing.black,
+            Color::White => &self.manifest.pairing.white,
+        };
+        let descriptor = self
+            .manifest
+            .evaluators
+            .as_ref()
+            .map(|evaluators| match color {
+                Color::Black => evaluators.black.as_str(),
+                Color::White => evaluators.white.as_str(),
+            })
+            .unwrap_or("baseline");
+        format!("{descriptor} · {} sims", config.simulations)
+    }
+}
+
 /// The Explorer list label for one self-play record.
 fn selfplay_entry_name(record: &selfplay::record::GameRecord) -> String {
     use selfplay::game::{Outcome, WinReason};
@@ -2169,6 +2192,11 @@ mod tests {
         // Any other game source drops the side channel with the game.
         session.install_game(Game::new());
         assert!(session.selfplay_game().is_none());
+
+        // The manifest panel's seat lines fall back to the baseline label
+        // for corpora without recorded evaluator identities.
+        let corpus = session.selfplay_corpus().expect("corpus stays open");
+        assert_eq!(corpus.seat_label(Color::Black), "baseline · 400 sims");
     }
 
     fn game() -> Game {
