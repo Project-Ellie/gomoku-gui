@@ -12,8 +12,9 @@ use crate::render::WOOD;
 use crate::session::{Dialog, PanelSection, Session, name_of, winning_line};
 use crate::theme::{
     BANNER, BANNER_FONT_SIZE, MENU_BAR_HEIGHT, MENU_FONT_SIZE, MOVE_LIST_FONT_SIZE,
-    MOVE_LIST_STONE_DOT_SIZE, MUTED, PANEL, PANEL_CURRENT, PANEL_HEADER, PANEL_INK, PANEL_MARGIN,
-    RECENT_FONT_SIZE, SECTION_HEADER_FONT_SIZE, STONE_DOT_SIZE, SURFACE,
+    MOVE_LIST_STONE_DOT_SIZE, MUTED, PANEL, PANEL_CURRENT, PANEL_HEADER, PANEL_HEADER_ACTIVE,
+    PANEL_HEADER_HOVER, PANEL_INK, PANEL_MARGIN, RECENT_FONT_SIZE, SECTION_HEADER_FONT_SIZE,
+    STONE_DOT_SIZE, SURFACE,
 };
 
 /// What the interface asks the application to do once the frame is drawn. The
@@ -105,19 +106,31 @@ fn panel_section_header(
         egui::Sense::hover(),
     );
     let strip = rect.expand2(Vec2::new(PANEL_MARGIN as f32, 0.0));
-    ui.painter()
-        .rect_filled(strip, egui::CornerRadius::ZERO, PANEL_HEADER);
+    // The strip owns the interaction and mirrors the button states: the
+    // accent on hover, a darker cut while pressed, the quiet grey otherwise.
+    // The title is painted, not a widget, so it cannot steal the hover.
     let response = ui
-        .put(
-            rect.shrink2(Vec2::new(2.0, 0.0)),
-            egui::Label::new(
-                RichText::new(title)
-                    .font(crate::theme::bold(font_size))
-                    .color(Color32::WHITE),
-            )
-            .sense(egui::Sense::click()),
-        )
+        .interact(strip, ui.id().with(title), egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if response.is_pointer_button_down_on() {
+        PANEL_HEADER_ACTIVE
+    } else if response.hovered() {
+        PANEL_HEADER_HOVER
+    } else {
+        PANEL_HEADER
+    };
+    ui.painter()
+        .rect_filled(strip, egui::CornerRadius::ZERO, fill);
+    // Headers speak the interface's proportional face; the vendored
+    // JetBrains Mono is reserved for coordinates and numbers, where
+    // fixed-width alignment matters.
+    ui.painter().text(
+        rect.shrink2(Vec2::new(2.0, 0.0)).left_center(),
+        Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(font_size),
+        Color32::WHITE,
+    );
     if response.clicked() {
         session.toggle_panel_section(section);
     }
@@ -667,10 +680,10 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                         // rather than drawing its selected child a second time.
                         for (branch, point) in options.iter().enumerate() {
                             let ink = RichText::new(format!("{number:>4}"))
-                                .size(MOVE_LIST_FONT_SIZE)
+                                .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
                                 .color(MUTED);
                             let place = RichText::new(format!("[{branch}] {}", label(*point)))
-                                .size(MOVE_LIST_FONT_SIZE)
+                                .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
                                 .color(PANEL_INK);
                             // The whole row is the click target, including its text.
                             let row = if selected_branch == Some(branch) {
@@ -707,11 +720,11 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                 let here = number == cursor;
                 let ink = if number > cursor {
                     RichText::new(format!("{number:>4}"))
-                        .size(MOVE_LIST_FONT_SIZE)
+                        .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
                         .color(MUTED)
                 } else {
                     RichText::new(format!("{number:>4}"))
-                        .size(MOVE_LIST_FONT_SIZE)
+                        .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
                         .color(PANEL_INK)
                 };
                 // A move that was one of several options carries ",…".
@@ -721,7 +734,7 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
                     ""
                 };
                 let place = RichText::new(format!("{}{marker}", label(point)))
-                    .size(MOVE_LIST_FONT_SIZE)
+                    .font(FontId::monospace(MOVE_LIST_FONT_SIZE))
                     .color(PANEL_INK);
                 if here {
                     let row = Frame::NONE
@@ -899,7 +912,11 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
     // The wgpu pass draws the half-size proof stones; egui adds only their
     // numbers, in the opposite colour to each stone, above the policy rings.
     if let Some(proof) = session.threat_proof() {
-        let radius = ppc * 0.47 * 0.5 / pixels_per_point;
+        // One size for one and two digits alike: deep proofs number past 9,
+        // so the glyphs are sized for a pair from the start (two digits span
+        // about half the half-size stone). The clamp mirrors the move
+        // numbers' legibility floor.
+        let number_font = FontId::monospace((ppc * 0.21 / pixels_per_point).clamp(5.4, 16.8));
         for (index, point) in proof.line.iter().enumerate() {
             let centre = to_screen([point.col() as f32, point.row() as f32]);
             let side = if index % 2 == 0 {
@@ -915,7 +932,7 @@ fn overlays(painter: &egui::Painter, session: &Session, pixels_per_point: f32) {
                 centre,
                 Align2::CENTER_CENTER,
                 (index + 1).to_string(),
-                FontId::monospace(radius * 1.2),
+                number_font.clone(),
                 ink,
             );
         }
@@ -2278,6 +2295,33 @@ mod tests {
     }
 
     #[test]
+    fn move_rows_are_monospace_so_coordinates_align() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        session.take_seat(Color::White);
+        session.place(gomoku_core::point(7, 7).unwrap());
+        session.seek(1);
+
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        for label in ["   1", "H8"] {
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => Some(text),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("move-row text is drawn: {label}"));
+            assert_eq!(
+                text.galley.job.sections[0].format.font_id.family,
+                egui::FontFamily::Monospace,
+                "{label} uses the vendored fixed-width face"
+            );
+        }
+        output.textures_delta.clear();
+    }
+
+    #[test]
     fn display_options_section_offers_policy_overlay_on_off_button() {
         let context = egui::Context::default();
         let mut session = Session::new(&gomoku_core::Settings::default());
@@ -2792,6 +2836,11 @@ mod tests {
             Color32::WHITE,
             "the header text is white on its grey strip"
         );
+        assert_eq!(
+            header.galley.job.sections[0].format.font_id.family,
+            egui::FontFamily::Proportional,
+            "headers use the interface's proportional face, not the mono cut"
+        );
         output.textures_delta.clear();
 
         session.place(gomoku_core::point(7, 7).unwrap());
@@ -2842,6 +2891,105 @@ mod tests {
                 "the strip reaches the window's right border, got {strip:?}"
             );
         }
+    }
+
+    #[test]
+    fn panel_headers_mirror_button_feedback_on_hover_and_press() {
+        let context = egui::Context::default();
+        let mut session = Session::new(&gomoku_core::Settings::default());
+        let mut output = ui_frame(&context, &mut session, vec![]);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Players" => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .expect("the Players header is drawn");
+        let strip_fill = |output: &egui::FullOutput| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.contains(position)
+                        && [
+                            crate::theme::PANEL_HEADER,
+                            crate::theme::PANEL_HEADER_HOVER,
+                            crate::theme::PANEL_HEADER_ACTIVE,
+                        ]
+                        .contains(&rect.fill) =>
+                {
+                    Some(rect.fill)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(
+            strip_fill(&output),
+            Some(crate::theme::PANEL_HEADER),
+            "at rest the strip is the quiet grey"
+        );
+        output.textures_delta.clear();
+
+        for _ in 0..2 {
+            output = ui_frame(
+                &context,
+                &mut session,
+                vec![egui::Event::PointerMoved(position)],
+            );
+            output.textures_delta.clear();
+        }
+        output = ui_frame(
+            &context,
+            &mut session,
+            vec![egui::Event::PointerMoved(position)],
+        );
+        assert_eq!(
+            strip_fill(&output),
+            Some(crate::theme::PANEL_HEADER_HOVER),
+            "hover paints the accent, like a hovered button"
+        );
+        output.textures_delta.clear();
+
+        output = ui_frame(
+            &context,
+            &mut session,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert_eq!(
+            strip_fill(&output),
+            Some(crate::theme::PANEL_HEADER_ACTIVE),
+            "the press darkens the strip, like a pressed button"
+        );
+        output.textures_delta.clear();
+
+        output = ui_frame(
+            &context,
+            &mut session,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        assert_eq!(
+            strip_fill(&output),
+            Some(crate::theme::PANEL_HEADER_HOVER),
+            "release returns to the hover accent"
+        );
+        output.textures_delta.clear();
     }
 
     #[test]

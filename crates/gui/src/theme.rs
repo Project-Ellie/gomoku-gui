@@ -9,48 +9,53 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use egui::{Color32, CornerRadius, FontId, Stroke, Style, TextStyle, Vec2, Visuals};
 
-/// Seravek is the chosen UI font on the owner's macOS development machine.
-/// Face zero of the collection is the Regular weight. Other systems retain
-/// egui's built-in fonts when this system path is unavailable.
-const DEFAULT_UI_FONT_PATH: &str = "/System/Library/Fonts/Supplemental/Seravek.ttc";
+/// The application font: JetBrains Mono 2.304, from the official JetBrains
+/// release and vendored in `assets/fonts/` (SIL Open Font License 1.1, see
+/// the OFL.txt beside the files). Embedding the font keeps the build
+/// independent of system fonts and the network, and every platform renders
+/// the same face. It heads the monospace family, so it covers the numbers
+/// on the stones; panel text uses egui's proportional default, and the
+/// engraved board coordinates are unaffected (they live in the glyph atlas).
+const REGULAR_FONT: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+/// The bold cut of the application font, same provenance.
+const BOLD_FONT: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
 
-/// The key used for the selected application font in egui's font table.
+/// The key used for the application font in egui's font table.
 const OVERRIDE_FONT: &str = "app-font-override";
 
-/// The bold cut of the interface font, for controls that must read as controls
-/// (the section headers). Always bound: Seravek Bold when the default
-/// collection is installed, the override or default face otherwise.
+/// The bold cut of the interface font, for the one display that wants a
+/// mono bold: the position-value headline.
 pub(crate) const BOLD_FONT_FAMILY: &str = "app-font-bold";
-
-/// Seravek Bold is face nine of the default TrueType collection.
-const SERAVEK_BOLD_FACE: u32 = 9;
 
 /// Bold text of the interface font.
 pub(crate) fn bold(size: f32) -> FontId {
     FontId::new(size, egui::FontFamily::Name(BOLD_FONT_FAMILY.into()))
 }
 
-/// Put an override before the built-in proportional fonts, retaining glyph fallbacks.
-fn font_definitions(font: egui::FontData) -> egui::FontDefinitions {
+/// The vendored font heads the monospace and the bold family, retaining
+/// egui's built-in fonts as fallbacks for glyphs it does not contain.
+fn font_definitions() -> egui::FontDefinitions {
     let mut definitions = egui::FontDefinitions::default();
-    definitions
-        .font_data
-        .insert(OVERRIDE_FONT.to_owned(), std::sync::Arc::new(font));
-    if let Some(proportional) = definitions
-        .families
-        .get_mut(&egui::FontFamily::Proportional)
-    {
-        proportional.insert(0, OVERRIDE_FONT.to_owned());
+    definitions.font_data.insert(
+        OVERRIDE_FONT.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(REGULAR_FONT)),
+    );
+    definitions.font_data.insert(
+        BOLD_FONT_FAMILY.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(BOLD_FONT)),
+    );
+    if let Some(monospace) = definitions.families.get_mut(&egui::FontFamily::Monospace) {
+        monospace.insert(0, OVERRIDE_FONT.to_owned());
     }
-    // An override carries no bold cut of its own: bold falls back to it.
     definitions.families.insert(
         egui::FontFamily::Name(BOLD_FONT_FAMILY.into()),
-        vec![OVERRIDE_FONT.to_owned()],
+        vec![BOLD_FONT_FAMILY.to_owned(), OVERRIDE_FONT.to_owned()],
     );
     definitions
 }
 
-/// Install a TTF/OTF/TTC font as the primary face for every text style.
+/// Install a TTF/OTF font as the primary face for every text style,
+/// replacing the vendored application font (the bold cut stays).
 ///
 /// Font collections use face index zero, the first font in the collection.
 /// Built-in egui fonts remain as fallbacks for glyphs the override does not contain.
@@ -66,9 +71,21 @@ pub(crate) fn install_font(context: &egui::Context, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Install loaded font data and route every text style through it.
+/// Install loaded font data as the primary face everywhere and route every
+/// text style through it.
 fn install_font_data(context: &egui::Context, font: egui::FontData) {
-    context.set_fonts(font_definitions(font));
+    let mut definitions = font_definitions();
+    definitions
+        .font_data
+        .insert(OVERRIDE_FONT.to_owned(), std::sync::Arc::new(font));
+    // A deliberate custom font replaces the proportional default as well.
+    if let Some(proportional) = definitions
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+    {
+        proportional.insert(0, OVERRIDE_FONT.to_owned());
+    }
+    context.set_fonts(definitions);
     route_text_styles(context);
 }
 
@@ -91,6 +108,10 @@ pub(crate) const PANEL_INK: Color32 = Color32::from_rgb(40, 45, 47);
 pub(crate) const MUTED: Color32 = Color32::from_rgb(101, 107, 105);
 /// Section-header strip grey: dark enough to carry bold white text.
 pub(crate) const PANEL_HEADER: Color32 = MUTED;
+/// Section-header strip on hover: the interactive accent, like a button.
+pub(crate) const PANEL_HEADER_HOVER: Color32 = ACCENT;
+/// Section-header strip while pressed: a darker cut of the accent.
+pub(crate) const PANEL_HEADER_ACTIVE: Color32 = Color32::from_rgb(45, 84, 89);
 /// Quiet background for editable fields.
 pub(crate) const PANEL_FIELD: Color32 = Color32::from_rgb(252, 251, 248);
 /// Soft teal wash marking the current row or selection.
@@ -145,50 +166,9 @@ const WINDOW_CORNER_RADIUS: u8 = 8;
 
 /// Install the designed light theme on an egui context.
 pub(crate) fn install(context: &egui::Context) {
-    install_with_default_font(context, Path::new(DEFAULT_UI_FONT_PATH));
-}
-
-/// Install the theme, retaining egui's fonts if the preferred font cannot be read.
-fn install_with_default_font(context: &egui::Context, default_font: &Path) {
     context.global_style_mut(|style| *style = lab_style());
-    match std::fs::read(default_font) {
-        Ok(bytes) => {
-            // Face zero of the collection is the regular cut.
-            let mut definitions = font_definitions(egui::FontData::from_owned(bytes.clone()));
-            let bold = egui::FontData {
-                index: SERAVEK_BOLD_FACE,
-                ..egui::FontData::from_owned(bytes)
-            };
-            definitions
-                .font_data
-                .insert(BOLD_FONT_FAMILY.to_owned(), std::sync::Arc::new(bold));
-            if let Some(family) = definitions
-                .families
-                .get_mut(&egui::FontFamily::Name(BOLD_FONT_FAMILY.into()))
-            {
-                family.insert(0, BOLD_FONT_FAMILY.to_owned());
-            }
-            context.set_fonts(definitions);
-            route_text_styles(context);
-        }
-        Err(error) => {
-            log::warn!("the default UI font is unavailable; using egui's fonts: {error}");
-            // egui's built-ins have no bold cut: bind the family to the
-            // proportional default so bold text always has a face.
-            let mut definitions = egui::FontDefinitions::default();
-            if let Some(proportional) = definitions
-                .families
-                .get(&egui::FontFamily::Proportional)
-                .cloned()
-            {
-                definitions.families.insert(
-                    egui::FontFamily::Name(BOLD_FONT_FAMILY.into()),
-                    proportional,
-                );
-            }
-            context.set_fonts(definitions);
-        }
-    }
+    context.set_fonts(font_definitions());
+    route_text_styles(context);
 }
 
 /// Build a complete style rather than layering more local colour overrides.
@@ -309,40 +289,24 @@ mod tests {
     }
 
     #[test]
-    fn seravek_is_the_default_primary_font_when_available() {
-        let path = Path::new(DEFAULT_UI_FONT_PATH);
-        if !path.is_file() {
-            eprintln!("Seravek is unavailable; skipping the default-font assertion");
-            return;
-        }
-
+    fn the_vendored_font_heads_the_monospace_family() {
         let context = egui::Context::default();
         install(&context);
         let mut output = context.run_ui(egui::RawInput::default(), |_| {});
-        let proportional = context.fonts(|fonts| {
-            fonts.definitions().families[&egui::FontFamily::Proportional]
-                .first()
-                .cloned()
-        });
-        output.textures_delta.clear();
-        assert_eq!(proportional.as_deref(), Some(OVERRIDE_FONT));
-    }
-
-    #[test]
-    fn missing_default_font_keeps_egui_fallbacks() {
-        let context = egui::Context::default();
-        install_with_default_font(
-            &context,
-            Path::new("../../target/font-previews/no-such-default-font.ttf"),
-        );
-        let mut output = context.run_ui(egui::RawInput::default(), |_| {});
-        let proportional = context.fonts(|fonts| {
-            fonts.definitions().families[&egui::FontFamily::Proportional]
-                .first()
-                .cloned()
+        let (proportional, monospace) = context.fonts(|fonts| {
+            let families = &fonts.definitions().families;
+            (
+                families[&egui::FontFamily::Proportional].first().cloned(),
+                families[&egui::FontFamily::Monospace].first().cloned(),
+            )
         });
         output.textures_delta.clear();
         assert_eq!(proportional.as_deref(), Some("Ubuntu-Light"));
+        assert_eq!(
+            monospace.as_deref(),
+            Some(OVERRIDE_FONT),
+            "the numbers on the stones use the monospace family"
+        );
     }
 
     #[test]
@@ -385,18 +349,28 @@ mod tests {
     }
 
     #[test]
-    fn custom_font_is_the_primary_proportional_font() {
-        let definitions = font_definitions(egui::FontData::from_static(&[]));
+    fn the_default_definitions_keep_the_builtin_proportional_face() {
+        let definitions = font_definitions();
         let proportional = definitions
             .families
             .get(&egui::FontFamily::Proportional)
             .expect("egui defines a proportional family");
         assert_eq!(
             proportional.first().map(String::as_str),
-            Some(OVERRIDE_FONT)
+            Some("Ubuntu-Light"),
+            "panel text uses egui's built-in proportional face"
+        );
+        let monospace = definitions
+            .families
+            .get(&egui::FontFamily::Monospace)
+            .expect("egui defines a monospace family");
+        assert_eq!(
+            monospace.first().map(String::as_str),
+            Some(OVERRIDE_FONT),
+            "the numbers on the stones use the vendored font"
         );
         assert!(
-            proportional.iter().any(|name| name == "Ubuntu-Light"),
+            monospace.iter().any(|name| name == "Hack"),
             "built-in fonts remain available as fallbacks"
         );
         assert_eq!(definitions.font_data[OVERRIDE_FONT].index, 0);
