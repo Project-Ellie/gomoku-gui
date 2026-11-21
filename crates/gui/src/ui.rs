@@ -917,6 +917,15 @@ fn move_list(ui: &mut egui::Ui, session: &mut Session) {
     if session.game().outcome() != Outcome::Ongoing {
         ui.label(RichText::new(format!("Live result: {}", status_line(session))).color(PANEL_INK));
     }
+    // A browsed self-play record names its seats — arena records flip the
+    // candidate's color per game, so the pairing is per-record truth.
+    if let Some(game) = session.selfplay_game() {
+        ui.label(
+            RichText::new(format!("Seats: {}", game.evaluator))
+                .color(PANEL_INK)
+                .size(RECENT_FONT_SIZE),
+        );
+    }
     let cursor = session.game().cursor();
     let children = session.branch_options();
     let at_tip = cursor == session.game().len();
